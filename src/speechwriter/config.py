@@ -20,15 +20,14 @@ disk, so it never appears as a real folder — it lives in the persistent Store.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load a local .env (if present) so ANTHROPIC_API_KEY / TAVILY_API_KEY / LANGSMITH_*
-# are available without exporting them by hand. Real shell env always wins.
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 # The workhorse model. Sonnet 5 is a strong writer at sensible cost; override with
 # SPEECHWRITER_MODEL (e.g. "claude-opus-4-8" for the highest-quality drafting).
@@ -90,6 +89,13 @@ def load_settings() -> Settings:
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
+    # Load the project's own .env (if present) so ANTHROPIC_API_KEY / TAVILY_API_KEY /
+    # LANGSMITH_* are available without exporting them by hand. We point at the project
+    # root explicitly rather than letting python-dotenv walk *up* the directory tree —
+    # an upward walk can pull keys from an unrelated ancestor .env. Done here (not at
+    # import) so `import speechwriter` has no side effects; real shell env wins.
+    load_dotenv(project_root / ".env")
+
     workspace_dir = project_root / "workspace"
     skills_dir = project_root / "skills"
     store_path = project_root / ".speechwriter" / "memory-store.json"
@@ -106,5 +112,21 @@ def load_settings() -> Settings:
         workspace_dir=workspace_dir,
         skills_dir=skills_dir,
         store_path=store_path,
-        max_research_results=int(os.environ.get("SPEECHWRITER_MAX_RESEARCH_RESULTS", "5")),
+        max_research_results=_int_env("SPEECHWRITER_MAX_RESEARCH_RESULTS", 5),
     )
+
+
+def _int_env(name: str, default: int) -> int:
+    """Parse an int from the environment, falling back (with a warning) on bad input.
+
+    A stray ``SPEECHWRITER_MAX_RESEARCH_RESULTS=ten`` should not crash startup with an
+    opaque ``ValueError`` before the CLI can even render.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r; using default %d.", name, raw, default)
+        return default

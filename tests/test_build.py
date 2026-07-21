@@ -7,12 +7,15 @@ save/load round-trip, and every SKILL.md is well-formed — all in CI, for free.
 
 from __future__ import annotations
 
+import json
 import re
+import subprocess
+import sys
 
 import yaml
 
 from speechwriter import config, memory
-from speechwriter.agent import build_agent
+from speechwriter.agent import _write_sandbox, build_agent
 from speechwriter.config import load_settings
 from speechwriter.subagents import build_subagents
 
@@ -63,13 +66,76 @@ def test_memory_snapshot_roundtrip(monkeypatch, tmp_path):
     assert item.value == {"content": "warm, plainspoken"}
 
 
-def test_corrupt_snapshot_does_not_crash(monkeypatch, tmp_path):
+def test_memory_roundtrip_beyond_search_limit(monkeypatch, tmp_path):
+    # Regression: save_store must page past the Store's default search limit (10) and
+    # list_namespaces limit (100), or profiles beyond those bounds are silently lost.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+
+    store = memory.load_store(settings)
+    for i in range(25):
+        store.put(("speechwriter", "memories"), f"speaker-{i:02d}.md", {"content": f"v{i}"})
+    assert memory.save_store(store, settings) == 25
+
+    reloaded = memory.load_store(settings)
+    got = memory._all_items(reloaded, ("speechwriter", "memories"))
+    assert len(got) == 25
+    assert {item.value["content"] for item in got} == {f"v{i}" for i in range(25)}
+
+
+def test_corrupt_snapshot_is_quarantined_not_clobbered(monkeypatch, tmp_path):
+    # Invalid JSON: must not crash, must move the bad file aside (never overwrite it).
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     settings = load_settings()
     settings.store_path.write_text("{not valid json", encoding="utf-8")
-    # Should degrade to an empty store rather than raising.
+
     store = memory.load_store(settings)
     assert list(store.list_namespaces()) == []
+    assert not settings.store_path.exists()  # moved aside
+    backup = settings.store_path.with_name(settings.store_path.name + ".corrupt")
+    assert backup.exists() and backup.read_text(encoding="utf-8") == "{not valid json"
+
+
+def test_wrong_shape_snapshot_is_quarantined(monkeypatch, tmp_path):
+    # Valid JSON but wrong shape (object, not list of records): must degrade, not crash.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    settings.store_path.write_text(json.dumps({"oops": "not a list"}), encoding="utf-8")
+
+    store = memory.load_store(settings)
+    assert list(store.list_namespaces()) == []
+    assert settings.store_path.with_name(settings.store_path.name + ".corrupt").exists()
+
+
+def test_bad_int_env_falls_back(monkeypatch, tmp_path):
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MAX_RESEARCH_RESULTS", "ten")
+    assert load_settings().max_research_results == 5  # default, no crash
+
+
+def test_write_sandbox_confines_writes(monkeypatch, tmp_path):
+    from deepagents.middleware.filesystem import _check_fs_permission
+
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    rules = _write_sandbox(load_settings())
+
+    assert _check_fs_permission(rules, "write", "/workspace/speeches/t.md") == "allow"
+    assert _check_fs_permission(rules, "write", "/memories/mayor.md") == "allow"
+    assert _check_fs_permission(rules, "write", "/src/speechwriter/agent.py") == "deny"
+    assert _check_fs_permission(rules, "write", "/pyproject.toml") == "deny"
+    # Reads stay open so skills and reference material still load.
+    assert _check_fs_permission(rules, "read", "/src/speechwriter/agent.py") == "allow"
+
+
+def test_import_speechwriter_is_lazy():
+    # `import speechwriter` must not pull in the heavy agent stack (deepagents).
+    script = (
+        "import sys, speechwriter\n"
+        "assert 'deepagents' not in sys.modules, 'deepagents imported eagerly'\n"
+        "_ = speechwriter.build_agent\n"  # now triggers the lazy import
+        "assert 'deepagents' in sys.modules, 'lazy build_agent did not import'\n"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_all_skills_have_valid_frontmatter():

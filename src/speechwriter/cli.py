@@ -87,8 +87,8 @@ def _run_turn(
     user_text: str,
     config: dict[str, Any],
     seen_ids: set[str],
-) -> None:
-    """Stream one user turn through the agent, rendering new messages as they arrive."""
+) -> bool:
+    """Stream one user turn, rendering new messages. Returns True if interrupted."""
     payload = {"messages": [{"role": "user", "content": user_text}]}
     try:
         for chunk in bundle.agent.stream(payload, config=config, stream_mode="values"):
@@ -101,6 +101,8 @@ def _run_turn(
                 _render_message(console, message)
     except KeyboardInterrupt:
         console.print("\n[yellow]⏹  Cancelled this turn.[/] (Your session is still open.)")
+        return True
+    return False
 
 
 def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
@@ -142,8 +144,9 @@ def main() -> None:
 
     _banner(console, bundle)
 
-    # One thread for the whole session -> planning state and conversation persist across turns.
-    config = {"configurable": {"thread_id": f"cli-{uuid.uuid4().hex[:8]}"}}
+    # One thread for the whole session -> planning state and conversation persist across
+    # turns. Rotated only after an interrupt, so we never resume a half-executed graph.
+    thread_id = f"cli-{uuid.uuid4().hex[:8]}"
     seen_ids: set[str] = set()
 
     try:
@@ -157,7 +160,11 @@ def main() -> None:
             if user_text.lower() in _EXIT_WORDS:
                 break
             console.print(Rule(style="dim"))
-            _run_turn(console, bundle, user_text, config, seen_ids)
+            config = {"configurable": {"thread_id": thread_id}}
+            interrupted = _run_turn(console, bundle, user_text, config, seen_ids)
+            if interrupted:
+                thread_id = f"cli-{uuid.uuid4().hex[:8]}"
+                console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")
     finally:
         count = save_store(bundle.store, bundle.settings)
         console.print(f"\n[dim]💾 Saved {count} memory item(s) to {bundle.settings.store_path}.[/]")

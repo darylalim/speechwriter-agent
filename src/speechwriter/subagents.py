@@ -19,8 +19,15 @@ from speechwriter.prompts import critic_prompt, researcher_prompt
 from speechwriter.tools import build_research_tool
 
 
-def build_subagents(settings: Settings) -> list[dict[str, Any]]:
-    """Return the ``SubAgent`` dicts to pass to ``create_deep_agent(subagents=...)``."""
+def build_subagents(
+    settings: Settings, permissions: list[Any] | None = None
+) -> list[dict[str, Any]]:
+    """Return the ``SubAgent`` dicts to pass to ``create_deep_agent(subagents=...)``.
+
+    ``permissions`` (a list of ``FilesystemPermission``) is applied to every subagent
+    so the write-sandbox is enforced for delegated work too — subagents run their own
+    filesystem middleware and do not inherit the orchestrator's permissions.
+    """
     subagents: list[dict[str, Any]] = []
 
     research_tool = build_research_tool(settings)
@@ -52,5 +59,9 @@ def build_subagents(settings: Settings) -> list[dict[str, Any]]:
             "skills": [settings.skills_vpath],
         }
     )
+
+    if permissions:
+        for subagent in subagents:
+            subagent["permissions"] = permissions
 
     return subagents
