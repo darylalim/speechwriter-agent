@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Agent runtime output (drafts + persistent memory snapshot).
+# These are local working state; remove from ignore if you want to version them.
+/workspace/
+/.speechwriter/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
