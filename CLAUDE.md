@@ -17,6 +17,8 @@ uvx ruff check . && uvx ruff format .    # lint + format (line-length 100)
 uvx ty check                             # type check
 ```
 
+**When working with Python here, invoke the relevant Astral skill first** — `/astral:uv` for dependencies and environments, `/astral:ruff` for lint and format, `/astral:ty` for type checking — so the current best practices are followed rather than guessed at. They also encode the right invocation form: `uv run` for anything that must import the project's dependencies (e.g. `pytest`), `uvx` for standalone tools (`ruff`, `ty`).
+
 All three gates are **clean**: `uv run pytest` (11 passed), `uvx ruff check .`, and `uvx ty check` (0 diagnostics). Keep them that way. Prefer typing something precisely over widening it to `Any`; if a suppression is genuinely unavoidable, use a rule-specific `# ty: ignore[rule-name]`, never a blanket `# type: ignore`.
 
 ## Architecture
