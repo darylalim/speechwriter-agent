@@ -84,6 +84,32 @@ Two correctness rules in `memory.py`, both with regression tests — preserve th
 - **`load_dotenv` targets `project_root / ".env"` explicitly**, never an upward walk (an ancestor `.env` could leak unrelated keys), and it is called inside `load_settings()` so `import speechwriter` has no side effects. Real shell env wins over `.env`.
 - **The Store namespace is explicit** (`_memory_namespace` → `("speechwriter", "memories")`). deepagents' implicit-namespace mode is deprecated and removed in 0.7; the dependency is pinned `>=0.6.12,<0.8`.
 
+## Automation (`.claude/`)
+
+There is no CI, no pre-commit, and no git hooks here — the checked-in `.claude/` config is the only thing enforcing the gates and invariants above. Three hooks, wired in `.claude/settings.json`:
+
+| Hook | Event | Behavior |
+|---|---|---|
+| `hooks/ruff-ty-gate.sh` | `PostToolUse` on `Edit\|Write` | Runs `uvx ruff format` + `ruff check --fix` on the edited `.py`, then re-checks with `ruff check` and `ty check`. **Exit 2** on remaining diagnostics. ~0.6s. |
+| `hooks/invariant-hints.sh` | `PostToolUse` on `Edit\|Write` | **Advisory only.** On a `skills/` edit, compares the directory count against the hard-coded assertion in `tests/test_build.py` and reports drift. On a `config.py` edit, restates the path-agreement invariant. |
+| `hooks/pytest-gate.sh` | `Stop` | Runs `uv run pytest` if the working tree is dirty under `src/ tests/ skills/ pyproject.toml uv.lock`. **Exit 2** on failure. |
+
+Design rules to preserve if you touch these:
+
+- **Blocking vs advisory is deliberate.** Lint and type failures are objectively wrong and mechanically fixable, so those hooks exit 2. "You added a skill" is a fork in the road, not an error — `invariant-hints.sh` only emits `additionalContext` on stdout and always exits 0. Blocking on advisory signal is how a hook gets deleted.
+- **The Stop gate must stay cheap in the common case.** It short-circuits on `git status --porcelain` in ~20ms and only then pays the ~1.2s suite. `--untracked-files=all` is load-bearing: `git diff` sees only *tracked* files, so a brand-new `skills/<slug>/SKILL.md` — exactly what trips the count assertion — would slip past untested.
+- **Path matching lives in the scripts, not in settings.json.** The hook `if:` field is real, but its patterns are working-directory-relative and the leading-slash form is underspecified; `if: "Edit(/skills/**)"` can silently match nothing. Filtering inside the script is explicit and testable — each script parses `tool_input.file_path` from stdin and can be exercised directly:
+
+  ```bash
+  echo '{"tool_input":{"file_path":"'$PWD'/src/speechwriter/config.py"}}' | .claude/hooks/invariant-hints.sh
+  echo '{"stop_hook_active":false}' | .claude/hooks/pytest-gate.sh; echo $?
+  ```
+
+- **Fail open on missing tooling, closed on real failures.** A missing `uv`/`git`/`jq` exits 0 with a note; only an actual test or lint failure exits 2. A "command not found" must never masquerade as a broken gate.
+- `pytest-gate.sh` honors `stop_hook_active` so it can never re-block a turn it already blocked.
+
+Note for `invariant-hints.sh`: `README.md`'s routing table hard-codes `/skills/`, `/workspace/`, `/memories/` too, making it a fourth (documentation-level) consumer of the paths beyond the three code subsystems listed above. The virtual paths are also deliberately *asymmetric* — `skills_vpath` and `memories_vpath` carry a trailing slash, `workspace_vpath` does not, because `prompts.py` renders `{workspace_vpath}/speeches/<slug>.md`. Normalizing them for consistency silently yields `/workspace//speeches/`.
+
 ## Skills
 
 Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disclosure — the description tells the agent when to read the body). `test_all_skills_have_valid_frontmatter` enforces the contract:
