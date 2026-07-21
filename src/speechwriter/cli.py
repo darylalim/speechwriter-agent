@@ -19,6 +19,7 @@ import uuid
 from typing import Any
 
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -63,7 +64,7 @@ def _run_turn(
     console: Console,
     bundle: SpeechwriterAgent,
     user_text: str,
-    config: dict[str, Any],
+    config: RunnableConfig,
     seen_ids: set[str],
 ) -> bool:
     """Stream one user turn, rendering new messages. Returns True if interrupted."""
@@ -137,7 +138,7 @@ def main() -> None:
             if user_text.lower() in _EXIT_WORDS:
                 break
             console.print(Rule(style="dim"))
-            config = {"configurable": {"thread_id": thread_id}}
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
             interrupted = _run_turn(console, bundle, user_text, config, seen_ids)
             if interrupted:
                 thread_id = f"cli-{uuid.uuid4().hex[:8]}"

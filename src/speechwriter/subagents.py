@@ -12,7 +12,7 @@ critic is given the skill library explicitly.
 
 from __future__ import annotations
 
-from typing import Any
+from deepagents import FilesystemPermission, SubAgent
 
 from speechwriter.config import Settings
 from speechwriter.prompts import critic_prompt, researcher_prompt
@@ -20,15 +20,20 @@ from speechwriter.tools import build_research_tool
 
 
 def build_subagents(
-    settings: Settings, permissions: list[Any] | None = None
-) -> list[dict[str, Any]]:
+    settings: Settings, permissions: list[FilesystemPermission] | None = None
+) -> list[SubAgent]:
     """Return the ``SubAgent`` dicts to pass to ``create_deep_agent(subagents=...)``.
 
-    ``permissions`` (a list of ``FilesystemPermission``) is applied to every subagent
-    so the write-sandbox is enforced for delegated work too — subagents run their own
-    filesystem middleware and do not inherit the orchestrator's permissions.
+    ``SubAgent`` is a ``TypedDict``, so annotating these dicts precisely (rather than
+    ``dict[str, Any]``) makes the type checker reject a mistyped key — which matters
+    here because a silent typo in ``skills`` or ``permissions`` would not fail loudly
+    at runtime; the subagent would just quietly lose that capability.
+
+    ``permissions`` is applied to every subagent so the write-sandbox is enforced for
+    delegated work too — subagents run their own filesystem middleware and do not
+    inherit the orchestrator's permissions.
     """
-    subagents: list[dict[str, Any]] = []
+    subagents: list[SubAgent] = []
 
     research_tool = build_research_tool(settings)
     if research_tool is not None:

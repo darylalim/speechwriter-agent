@@ -17,7 +17,7 @@ uvx ruff check . && uvx ruff format .    # lint + format (line-length 100)
 uvx ty check                             # type check
 ```
 
-`uvx ty check` currently reports **2 pre-existing errors** from third-party overload mismatches (`create_deep_agent` at `agent.py:106`, `Pregel.stream` at `cli.py:72`). They are not regressions — don't chase them, but don't add new ones.
+All three gates are **clean**: `uv run pytest` (11 passed), `uvx ruff check .`, and `uvx ty check` (0 diagnostics). Keep them that way. Prefer typing something precisely over widening it to `Any`; if a suppression is genuinely unavoidable, use a rule-specific `# ty: ignore[rule-name]`, never a blanket `# type: ignore`.
 
 ## Architecture
 
@@ -54,6 +54,8 @@ Change a path and you must propagate it through all three, or the agent will be 
 - **Permissions** — passed in from `build_agent` as the `permissions=` argument.
 
 Subagents are also stateless across `task` calls; the orchestrator prompt says so, and any new subagent must be given complete self-contained instructions per call.
+
+Because "inherits nothing" makes every key load-bearing, `build_subagents()` returns `list[SubAgent]` — deepagents' `TypedDict`, not `dict[str, Any]`. That is deliberate: a typo like `"skill":` for `"skills":` would *not* fail at runtime, the `style-critic` would just silently lose the rhetoric library. Typed, `ty` rejects the unknown key. Keep the precise type when adding a subagent.
 
 ### Research is capability-gated, and it changes the agent's shape
 
