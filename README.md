@@ -109,6 +109,8 @@ result = bundle.agent.invoke(
     config=config,
 )
 print(result["messages"][-1].content)
+
+bundle.persist()   # snapshot learned voice profiles so the next run remembers them
 ```
 
 ---

@@ -24,6 +24,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ClassVar
 
 from dotenv import load_dotenv
 
@@ -40,6 +41,10 @@ _PKG_DIR = Path(__file__).resolve().parent
 @dataclass(frozen=True)
 class Settings:
     """Immutable snapshot of runtime configuration."""
+
+    # Virtual path where persistent speaker voice profiles live (routed to the Store).
+    # A fixed convention, not per-instance config — hence a ClassVar, not a field.
+    memories_vpath: ClassVar[str] = "/memories/"
 
     model: str
     anthropic_api_key: str | None
@@ -71,9 +76,6 @@ class Settings:
     def workspace_vpath(self) -> str:
         """Virtual dir the agent writes drafts under, e.g. ``/workspace``."""
         return self._vpath(self.workspace_dir)
-
-    # Where persistent speaker voice profiles live (virtual path, routed to Store).
-    memories_vpath: str = "/memories/"
 
 
 def load_settings() -> Settings:

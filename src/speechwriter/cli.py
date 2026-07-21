@@ -25,26 +25,9 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from speechwriter.agent import SpeechwriterAgent, build_agent
-from speechwriter.memory import save_store
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
 _PREVIEW_LEN = 90
-
-
-def _text_of(content: Any) -> str:
-    """Flatten a message's content (str or list of Anthropic content blocks) to text."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-            else:
-                parts.append(str(block))
-        return "".join(parts)
-    return str(content)
 
 
 def _truncate(text: str, length: int = _PREVIEW_LEN) -> str:
@@ -54,17 +37,14 @@ def _truncate(text: str, length: int = _PREVIEW_LEN) -> str:
 
 def _render_message(console: Console, message: Any) -> None:
     """Render a single new message: tool calls, tool results, or assistant prose."""
-    mtype = getattr(message, "type", None)
-
-    if mtype == "ai" or isinstance(message, AIMessage):
+    if isinstance(message, AIMessage):
         # Tool calls first — these are the agent's actions (plan, research, write, delegate).
-        for call in getattr(message, "tool_calls", None) or []:
+        for call in message.tool_calls:
             name = call.get("name", "tool")
-            args = call.get("args", {})
-            preview = _truncate(json.dumps(args, ensure_ascii=False, default=str))
+            preview = _truncate(json.dumps(call.get("args", {}), ensure_ascii=False, default=str))
             console.print(f"  [cyan]⚙  {name}[/]  [dim]{preview}[/]")
         # Then any prose the agent emitted.
-        text = _text_of(getattr(message, "content", "")).strip()
+        text = message.text.strip()
         if text:
             console.print(
                 Panel(
@@ -74,11 +54,9 @@ def _render_message(console: Console, message: Any) -> None:
                     padding=(1, 2),
                 )
             )
-    elif mtype == "tool" or isinstance(message, ToolMessage):
-        name = getattr(message, "name", "tool")
-        status = getattr(message, "status", None)
-        mark = "[red]✗[/]" if status == "error" else "[green]✓[/]"
-        console.print(f"  {mark} [dim]{name}: {_truncate(_text_of(message.content))}[/]")
+    elif isinstance(message, ToolMessage):
+        mark = "[red]✗[/]" if message.status == "error" else "[green]✓[/]"
+        console.print(f"  {mark} [dim]{message.name or 'tool'}: {_truncate(message.text)}[/]")
 
 
 def _run_turn(
@@ -94,11 +72,10 @@ def _run_turn(
         for chunk in bundle.agent.stream(payload, config=config, stream_mode="values"):
             for message in chunk.get("messages", []):
                 mid = getattr(message, "id", None) or str(id(message))
-                if mid in seen_ids or getattr(message, "type", None) in {"human", "system"}:
-                    seen_ids.add(mid)
-                    continue
+                skip = mid in seen_ids or getattr(message, "type", None) in {"human", "system"}
                 seen_ids.add(mid)
-                _render_message(console, message)
+                if not skip:
+                    _render_message(console, message)
     except KeyboardInterrupt:
         console.print("\n[yellow]⏹  Cancelled this turn.[/] (Your session is still open.)")
         return True
@@ -166,7 +143,7 @@ def main() -> None:
                 thread_id = f"cli-{uuid.uuid4().hex[:8]}"
                 console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")
     finally:
-        count = save_store(bundle.store, bundle.settings)
+        count = bundle.persist()
         console.print(f"\n[dim]💾 Saved {count} memory item(s) to {bundle.settings.store_path}.[/]")
         console.print("[bold magenta]Until next time. ✒[/]")
 

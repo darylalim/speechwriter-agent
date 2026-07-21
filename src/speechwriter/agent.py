@@ -24,18 +24,26 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from speechwriter.config import Settings, load_settings
-from speechwriter.memory import load_store
+from speechwriter.memory import load_store, save_store
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
 
 
 @dataclass
 class SpeechwriterAgent:
-    """Bundle of the compiled agent plus the handles the CLI needs to persist state."""
+    """Bundle of the compiled agent plus the handles needed to persist learned state."""
 
     agent: CompiledStateGraph
     store: BaseStore
     settings: Settings
+
+    def persist(self) -> int:
+        """Snapshot the learned speaker voice profiles to disk; returns the item count.
+
+        Durability is owned by the bundle, not by the CLI: any consumer of the public
+        API should call this when finished so cross-session memory is actually saved.
+        """
+        return save_store(self.store, self.settings)
 
 
 def _memory_namespace(_ctx: object) -> tuple[str, ...]:

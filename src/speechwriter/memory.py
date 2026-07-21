@@ -25,9 +25,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any, TypeVar
 
-from langgraph.store.base import Item
+from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
 from speechwriter.config import Settings
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 # real workloads finish in one page, but we still loop to be correct.
 _PAGE = 1000
 _REQUIRED_FIELDS = frozenset({"namespace", "key", "value"})
+_T = TypeVar("_T")
 
 
 def load_store(settings: Settings) -> InMemoryStore:
@@ -67,7 +70,7 @@ def load_store(settings: Settings) -> InMemoryStore:
     return store
 
 
-def save_store(store: InMemoryStore, settings: Settings) -> int:
+def save_store(store: BaseStore, settings: Settings) -> int:
     """Snapshot every item in the Store to the JSON file. Returns the item count.
 
     Walks every namespace and every item via exhaustive pagination, dedupes by
@@ -88,34 +91,30 @@ def save_store(store: InMemoryStore, settings: Settings) -> int:
     return len(records)
 
 
-def _all_namespaces(store: InMemoryStore) -> list[tuple[str, ...]]:
+def _paginate(fetch: Callable[[int, int], list[_T]]) -> list[_T]:
+    """Exhaust a paginated Store API, fetching (limit, offset) pages until a short one.
+
+    Both ``search`` and ``list_namespaces`` default to small limits that silently
+    truncate; this is the single place that exhaustive-read invariant is enforced.
+    """
+    out: list[_T] = []
+    offset = 0
+    while True:
+        page = fetch(_PAGE, offset)
+        out.extend(page)
+        offset += len(page)
+        if len(page) < _PAGE:
+            return out
+
+
+def _all_namespaces(store: BaseStore) -> list[tuple[str, ...]]:
     """Every namespace, paging past the default list_namespaces limit of 100."""
-    out: list[tuple[str, ...]] = []
-    offset = 0
-    while True:
-        page = store.list_namespaces(limit=_PAGE, offset=offset)
-        if not page:
-            break
-        out.extend(page)
-        offset += len(page)
-        if len(page) < _PAGE:
-            break
-    return out
+    return _paginate(lambda limit, offset: store.list_namespaces(limit=limit, offset=offset))
 
 
-def _all_items(store: InMemoryStore, namespace: tuple[str, ...]) -> list[Item]:
+def _all_items(store: BaseStore, namespace: tuple[str, ...]) -> list[Any]:
     """Every item in a namespace, paging past the default search limit of 10."""
-    out: list[Item] = []
-    offset = 0
-    while True:
-        page = store.search(namespace, limit=_PAGE, offset=offset)
-        if not page:
-            break
-        out.extend(page)
-        offset += len(page)
-        if len(page) < _PAGE:
-            break
-    return out
+    return _paginate(lambda limit, offset: store.search(namespace, limit=limit, offset=offset))
 
 
 def _atomic_write_json(path: Path, data: object) -> None:
