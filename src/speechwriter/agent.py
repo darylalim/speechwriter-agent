@@ -61,6 +61,19 @@ class SpeechwriterAgent:
         """
         return save_store(self.store, self.settings)
 
+    @property
+    def ceiling_label(self) -> str:
+        """The resolved output ceiling, rendered for whichever front end is asking.
+
+        Not ``settings.max_tokens`` — that is only the *override*, and is None whenever the
+        model's own profile is being trusted. Tested against None rather than truthiness so
+        a ceiling of 0 is never reported as "model default" while it is actually in force.
+
+        Lives on the bundle for the same reason ``persist()`` does: there is more than one
+        UI, and a banner that re-derives this by hand is a banner that can quietly lie.
+        """
+        return f"{self.max_tokens:,}" if self.max_tokens is not None else "model default"
+
     def turn_config(self, thread_id: str) -> RunnableConfig:
         """Build the config for one invocation: thread to resume + truncation detection.
 

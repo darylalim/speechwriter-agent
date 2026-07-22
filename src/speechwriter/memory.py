@@ -78,9 +78,8 @@ def save_store(store: BaseStore, settings: Settings) -> int:
     the snapshot.
     """
     seen: dict[tuple[tuple[str, ...], str], object] = {}
-    for namespace in _all_namespaces(store):
-        for item in _all_items(store, namespace):
-            seen[(tuple(item.namespace), item.key)] = item.value
+    for item in all_items(store):
+        seen[(tuple(item.namespace), item.key)] = item.value
 
     records = [
         {"namespace": list(ns), "key": key, "value": value} for (ns, key), value in seen.items()
@@ -89,6 +88,20 @@ def save_store(store: BaseStore, settings: Settings) -> int:
     settings.store_path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_json(settings.store_path, records)
     return len(records)
+
+
+def all_items(store: BaseStore) -> list[Any]:
+    """Every item in every namespace, with pagination exhausted.
+
+    Public because snapshotting is no longer the only exhaustive read: the web UI lists
+    learned voice profiles straight from the live Store. That read has to honor the same
+    invariant ``save_store`` does — a second, hand-rolled walk would quietly stop at the
+    Store's default ``search`` limit of 10 and show a partial memory as if it were whole.
+    """
+    items: list[Any] = []
+    for namespace in _all_namespaces(store):
+        items.extend(_all_items(store, namespace))
+    return items
 
 
 def _paginate(fetch: Callable[[int, int], list[_T]]) -> list[_T]:

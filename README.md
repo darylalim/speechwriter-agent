@@ -71,6 +71,10 @@ Without a Tavily key the agent still works; it writes from its own knowledge and
 
 ## Usage
 
+The agent has two front ends over the **same** bundle — the same graph, the same workspace, the same persistent memory. Use whichever suits the moment.
+
+### Terminal (REPL)
+
 ```bash
 uv run speechwriter          # or:  uv run python -m speechwriter
 ```
@@ -83,6 +87,19 @@ Then just talk to it. Give it as much of the brief as you can — the agent will
 - Finished speeches are saved to `workspace/speeches/` as Markdown.
 - Research notes land in `workspace/research/`.
 - Type `exit` (or `Ctrl-D`) to quit — voice-profile memory is snapshotted on the way out.
+
+### Browser (Streamlit)
+
+```bash
+uv run streamlit run streamlit_app.py
+```
+
+A two-page web app reading the same `.env` — no separate configuration:
+
+- **Write** — commission a speech and watch the agent plan, research, draft, and self-critique in a live activity log; each finished turn is snapshotted immediately (a closed tab runs no shutdown hook, so waiting until exit would usually mean never).
+- **Workspace** — browse saved drafts (with a spoken-length estimate), research notes, and the voice profiles the agent has learned, read straight from the live Store.
+
+It binds to `localhost` only by default; the agent spends your API budget and reads your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
 
 ### Configuration knobs
 
@@ -126,13 +143,17 @@ src/speechwriter/
 ├── prompts.py     Orchestrator + researcher + critic system prompts
 ├── tools.py       Lazy Tavily research tool (degrades gracefully with no key)
 ├── subagents.py   researcher + style-critic SubAgent definitions
-├── memory.py      Persistent Store: JSON snapshot load/save
+├── memory.py      Persistent Store: JSON snapshot load/save + exhaustive read
 ├── agent.py       build_agent() — composes every layer into one graph
-└── cli.py         Rich streaming REPL
+├── cli.py         Rich streaming REPL
+├── workspace.py   UI-free reader: drafts, research notes, voice profiles
+└── webui.py       Streamlit glue: stream a turn, record it, replay it
+streamlit_app.py   Web entry point (router) + app_pages/ (Write, Workspace)
 skills/            On-demand rhetoric library (SKILL.md, progressive disclosure)
 ├── rhetorical-devices/     delivery-and-cadence/
 ├── speech-structures/      audience-and-occasion/
-tests/             Offline tests — build the graph, toggle research, round-trip memory
+tests/             Offline tests — build the graph, toggle research, round-trip memory,
+                   render both pages headlessly (all without the model or network)
 ```
 
 ## Development

@@ -83,16 +83,6 @@ def _run_turn(
     return False
 
 
-def _ceiling_label(bundle: SpeechwriterAgent) -> str:
-    """Render the *resolved* output-token ceiling.
-
-    Not ``settings.max_tokens`` — that is only the override, and is None whenever the
-    model's own profile is being trusted. Tested against None rather than truthiness so a
-    ceiling of 0 is never reported as "model default" while it is actually in force.
-    """
-    return f"{bundle.max_tokens:,}" if bundle.max_tokens is not None else "model default"
-
-
 def _report_truncation(console: Console, bundle: SpeechwriterAgent) -> None:
     """Say out loud when the output-token ceiling clipped this turn.
 
@@ -105,14 +95,14 @@ def _report_truncation(console: Console, bundle: SpeechwriterAgent) -> None:
     console.print(
         f"[yellow]⚠  {count} model response(s) hit the output-token ceiling and were "
         f"cut off.[/] [dim]Output above may be incomplete — raise SPEECHWRITER_MAX_TOKENS "
-        f"(currently {_ceiling_label(bundle)}).[/]"
+        f"(currently {bundle.ceiling_label}).[/]"
     )
 
 
 def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
-    ceiling = _ceiling_label(bundle)
+    ceiling = bundle.ceiling_label
     console.print(
         Panel(
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "

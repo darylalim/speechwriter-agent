@@ -47,6 +47,8 @@ The agent sees a `CompositeBackend` that routes by path prefix. Virtual paths ar
 
 Change a path and you must propagate it through all three, or the agent will be *instructed* to write somewhere the sandbox *denies*.
 
+Likewise `SPEECHES_SUBDIR` / `RESEARCH_SUBDIR` / `WORDS_PER_MINUTE` are single-sourced in `config.py`: `prompts.py` *tells* the agent to file drafts under those folders at that pace, and `workspace.py` *reads* them back to list drafts and estimate spoken length. Re-hardcoding either side yields a browser that silently lists nothing — `test_prompt_points_the_agent_at_the_folder_the_browser_reads` guards the seam.
+
 ### The write sandbox is enforced, not prompted
 
 `_write_sandbox()` returns first-match-wins `FilesystemPermission` rules: allow `write` under workspace + memories, then deny `write` on `/**` as the backstop. Reads are left open so skills and reference material still load. The same rules are applied **twice** — to `create_deep_agent(permissions=...)` *and* to every subagent — because subagents run their own filesystem middleware and inherit nothing.
@@ -78,6 +80,18 @@ Durability is owned by `SpeechwriterAgent.persist()`, **not** the CLI — the CL
 Two correctness rules in `memory.py`, both with regression tests — preserve them:
 - **Exhaust pagination.** `Store.search` and `list_namespaces` default to limits of 10 and 100 and silently truncate. `_paginate()` is the single place this invariant lives.
 - **Never clobber.** An unreadable or wrong-shaped snapshot is renamed `*.corrupt` before starting empty, so a later save can't overwrite recoverable data.
+
+### There are two front ends over one bundle
+
+`cli.py` (Rich REPL) and the Streamlit app (`streamlit_app.py` → `app_pages/write.py` + `app_pages/browse.py`, glued by `webui.py`) are both thin views over the same `SpeechwriterAgent`. This is *why* durability (`persist()`), observability (`turn_config()`), and the resolved-ceiling label (`ceiling_label`) live on the bundle, not in either UI — a fact asserted above for the first two; the web UI is the second consumer that makes it load-bearing rather than hypothetical.
+- **Build once.** `webui.get_bundle()` is `@st.cache_resource`; Streamlit reruns the whole script per interaction, so rebuilding would mint a fresh `InMemoryStore` each time and silently drop every voice profile learned this session.
+- **Persist per turn, not on exit.** A closed browser tab runs no teardown, so `write.py` calls `bundle.persist()` after each turn (the CLI's `finally` has no analog).
+- **A turn is recorded as data (`webui.Turn`), then replayed.** Live render and replay share `_render_event`, so they cannot drift. `_new_events` dedupes on message id because `stream_mode="values"` replays the whole message list every step.
+- The page is `app_pages/browse.py`, deliberately **not** `workspace.py`, so it never collides with the `speechwriter.workspace` module or the `workspace/` data dir.
+
+Two reader gotchas the web UI exposed:
+- **`memory.all_items(store)` is the public exhaustive read** — the web UI lists profiles from the live Store through it, not the JSON snapshot. A hand-rolled `store.search(...)` stops at the default limit of 10 and shows a partial memory as whole.
+- **`workspace.py` strips `---` front matter before rendering or counting.** The agent fences its header block with `---`; in CommonMark a `---` line right after a paragraph makes it a setext H2, so raw `st.markdown` renders the header as one run-on heading and its words inflate the spoken-length estimate. Bracketed cues (`[pause]`) are dropped from the word count too — they are delivered, not spoken.
 
 ## Invariants to preserve
 
@@ -122,6 +136,12 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 - YAML frontmatter with `name` **matching the directory slug** and a non-empty `description`.
 - Body sections: `## Overview`, `## When to Use`, `## Instructions`, `## Pitfalls`.
 - The test hard-codes `len(skill_dirs) == 4` — **adding or removing a skill requires updating that assertion.**
+
+## Web UI (Streamlit)
+
+- Added with `uv add streamlit` (main dep, in `uv.lock`) — not the pip line the Streamlit skill's discovery script prints, which `uv sync` would undo.
+- `.streamlit/config.toml` holds the theme **and** `server.address = "localhost"`: Streamlit otherwise binds all interfaces and prints an External URL, exposing an unauthenticated, budget-spending agent. `.streamlit/secrets.toml` is gitignored; config is read from `.env` via `load_settings()`, never `st.secrets`.
+- `tests/test_webapp.py` renders both pages headlessly with `streamlit.testing.v1.AppTest` — still offline/free. Call `st.cache_resource.clear()` before each `AppTest` run or a cached bundle pins the wrong `SPEECHWRITER_HOME`.
 
 ## Gotchas
 

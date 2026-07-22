@@ -47,6 +47,17 @@ DEFAULT_MODEL = "claude-sonnet-5"
 # capped to this. See `agent._build_model` for the three-tier resolution.
 DEFAULT_MAX_TOKENS = 32000
 
+# How the agent files its output under `workspace_dir`, and the pace it writes for.
+#
+# Both were inline in `prompts.py` while the agent was the only party that cared. They are
+# named here now because a second subsystem depends on them agreeing: `prompts.py`
+# *instructs* the agent to write speeches at this pace into these folders, and
+# `workspace.py` *reads* them back to estimate how long a saved draft runs. Two copies of
+# "speeches" would drift into a browser that silently lists nothing.
+SPEECHES_SUBDIR = "speeches"
+RESEARCH_SUBDIR = "research"
+WORDS_PER_MINUTE = 130
+
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
 _PKG_DIR = Path(__file__).resolve().parent
 
