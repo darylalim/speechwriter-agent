@@ -87,12 +87,15 @@ def _run_turn(
 def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
+    # The resolved ceiling, not settings.max_tokens — that is only the override, and is
+    # None whenever the model's own profile is being trusted.
+    ceiling = f"{bundle.max_tokens:,}" if bundle.max_tokens else "model default"
     console.print(
         Panel(
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "
             f"critiques, and remembers.\n\n"
             f"[dim]model[/]      {s.model}\n"
-            f"[dim]max tokens[/] {s.max_tokens:,}\n"
+            f"[dim]max tokens[/] {ceiling}\n"
             f"[dim]research[/]   {research}\n"
             f"[dim]speeches[/]   {s.workspace_dir / 'speeches'}\n"
             f"[dim]memory[/]     {s.store_path}\n\n"
@@ -155,7 +158,7 @@ def main() -> None:
                     f"[yellow]⚠  {warner.truncated} model response(s) hit the output-token "
                     f"ceiling and were cut off.[/] [dim]Output above may be incomplete — "
                     f"raise SPEECHWRITER_MAX_TOKENS (currently "
-                    f"{bundle.settings.max_tokens}).[/]"
+                    f"{bundle.max_tokens}).[/]"
                 )
             if interrupted:
                 thread_id = f"cli-{uuid.uuid4().hex[:8]}"

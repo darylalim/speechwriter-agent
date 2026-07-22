@@ -118,28 +118,42 @@ def test_bad_int_env_falls_back(monkeypatch, tmp_path):
     assert load_settings().max_research_results == 5  # default, no crash
 
 
-def test_max_tokens_is_explicit_and_overridable(monkeypatch, tmp_path):
+def test_max_tokens_env_is_an_optional_override(monkeypatch, tmp_path):
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
-    assert load_settings().max_tokens == config.DEFAULT_MAX_TOKENS
+    assert load_settings().max_tokens is None  # unset: defer to the model's own profile
 
     monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "8000")
     assert load_settings().max_tokens == 8000
 
     monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "loads")
-    assert load_settings().max_tokens == config.DEFAULT_MAX_TOKENS  # bad value, no crash
+    assert load_settings().max_tokens is None  # bad value, no crash
 
 
-def test_build_model_pins_max_tokens(monkeypatch, tmp_path):
-    # Regression: passing a bare model *string* to create_deep_agent lets init_chat_model
-    # take max_tokens from LangChain's profile table, which silently falls back to 4096 for
-    # an id it cannot profile. Extended thinking bills against that same ceiling, so a
-    # subagent can spend the whole budget thinking and emit no text — which deepagents
-    # forwards as an empty, status="success" task result.
+def test_ceiling_resolution_is_three_tier(monkeypatch, tmp_path):
+    # Regression, both directions. A bare model string lets init_chat_model take max_tokens
+    # from LangChain's profile table, which silently falls back to 4096 for an id it cannot
+    # profile — and extended thinking bills against that same ceiling, so a subagent can
+    # spend the whole budget thinking and emit no text, which deepagents forwards as an
+    # empty status="success" task result. But a blunt constant must not *lower* a model
+    # LangChain does know: capping Opus at 32k would be the same mistake inverted.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "12345")
-    model = _build_model(load_settings())
-    assert getattr(model, "max_tokens", None) == 12345
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+
+    # Tier 2: a profiled model keeps its own, larger ceiling.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-4-8")
+    assert getattr(_build_model(load_settings()), "max_tokens", 0) > config.DEFAULT_MAX_TOKENS
+
+    # Tier 3: an unprofiled id gets our floor, never init_chat_model's 4096.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+    resolved = getattr(_build_model(load_settings()), "max_tokens", None)
+    assert resolved == config.DEFAULT_MAX_TOKENS
+
+    # Tier 1: an explicit override beats both.
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "4242")
+    for model_id in ("claude-opus-4-8", "claude-not-a-real-model-9"):
+        monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
+        assert getattr(_build_model(load_settings()), "max_tokens", None) == 4242
 
 
 def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):

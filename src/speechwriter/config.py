@@ -34,14 +34,17 @@ logger = logging.getLogger(__name__)
 # SPEECHWRITER_MODEL (e.g. "claude-opus-4-8" for the highest-quality drafting).
 DEFAULT_MODEL = "claude-sonnet-5"
 
-# Output-token ceiling, set explicitly rather than inherited.
+# Fallback output-token ceiling — used *only* when the model id has no LangChain profile.
 #
-# `init_chat_model` fills `max_tokens` from LangChain's model-profile table and falls
-# back to 4096 for an id it does not recognise. Extended thinking bills against that
-# same ceiling, so on an unrecognised id a subagent can spend the entire budget
-# thinking and return *no text at all* — which deepagents forwards as an empty,
-# `status="success"` tool result (see `agent._build_model`). Recognised Claude models
-# are profiled at 64k-128k; 32k is a comfortable margin for a critique plus thinking.
+# `init_chat_model` takes `max_tokens` from LangChain's model-profile table and falls back
+# to 4096 for an id it does not recognise. Extended thinking bills against that same
+# ceiling, so on an unrecognised id a subagent can spend the entire budget thinking and
+# return *no text at all* — which deepagents forwards as an empty, `status="success"` tool
+# result. 4096 is far too tight for that; 32k leaves comfortable room for a draft or
+# critique plus thinking.
+#
+# A *profiled* model keeps its own, usually larger, ceiling (64k-128k) rather than being
+# capped to this. See `agent._build_model` for the three-tier resolution.
 DEFAULT_MAX_TOKENS = 32000
 
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
@@ -57,7 +60,8 @@ class Settings:
     memories_vpath: ClassVar[str] = "/memories/"
 
     model: str
-    max_tokens: int
+    # Explicit output-token override, or None to defer to the model's own profile.
+    max_tokens: int | None
     anthropic_api_key: str | None
     tavily_api_key: str | None
     project_root: Path
@@ -99,8 +103,9 @@ def load_settings() -> Settings:
     * ``SPEECHWRITER_MODEL`` — override the model id (default ``claude-sonnet-5``).
     * ``SPEECHWRITER_HOME``  — override the project root the agent operates in.
     * ``SPEECHWRITER_MAX_RESEARCH_RESULTS`` — Tavily results per query (default 5).
-    * ``SPEECHWRITER_MAX_TOKENS`` — output-token ceiling per model call
-      (default 32000). Raise it if drafts or critiques come back truncated.
+    * ``SPEECHWRITER_MAX_TOKENS`` — *override* the output-token ceiling per model call.
+      Left unset, the model's own LangChain profile decides, falling back to
+      ``DEFAULT_MAX_TOKENS`` only for an id that has no profile.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
@@ -121,7 +126,7 @@ def load_settings() -> Settings:
 
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
-        max_tokens=_int_env("SPEECHWRITER_MAX_TOKENS", DEFAULT_MAX_TOKENS),
+        max_tokens=_optional_int_env("SPEECHWRITER_MAX_TOKENS"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         project_root=project_root,
@@ -132,17 +137,28 @@ def load_settings() -> Settings:
     )
 
 
+def _optional_int_env(name: str) -> int | None:
+    """Parse an int from the environment; ``None`` if unset, blank, or unparseable.
+
+    ``None`` means *no opinion* — it leaves the caller free to treat an absent override
+    differently from a supplied one, which is what makes deferring to a model's own
+    profile possible.
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("Ignoring invalid %s=%r.", name, raw)
+        return None
+
+
 def _int_env(name: str, default: int) -> int:
     """Parse an int from the environment, falling back (with a warning) on bad input.
 
     A stray ``SPEECHWRITER_MAX_RESEARCH_RESULTS=ten`` should not crash startup with an
     opaque ``ValueError`` before the CLI can even render.
     """
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Ignoring invalid %s=%r; using default %d.", name, raw, default)
-        return default
+    value = _optional_int_env(name)
+    return default if value is None else value

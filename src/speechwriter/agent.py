@@ -27,7 +27,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
-from speechwriter.config import Settings, load_settings
+from speechwriter.config import DEFAULT_MAX_TOKENS, Settings, load_settings
 from speechwriter.memory import load_store, save_store
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
@@ -42,6 +42,9 @@ class SpeechwriterAgent:
     agent: CompiledStateGraph
     store: BaseStore
     settings: Settings
+    # The ceiling this agent actually resolved to. `settings.max_tokens` is only the
+    # *override* and is usually None, so it can't answer "what is this running with?".
+    max_tokens: int | None
 
     def persist(self) -> int:
         """Snapshot the learned speaker voice profiles to disk; returns the item count.
@@ -85,30 +88,41 @@ def _write_sandbox(settings: Settings) -> list[FilesystemPermission]:
 
 
 def _build_model(settings: Settings) -> BaseChatModel:
-    """Resolve the configured model id, pinning the output-token ceiling explicitly.
+    """Resolve the model id, settling its output-token ceiling in three tiers.
 
-    Passing a bare model *string* to ``create_deep_agent`` lets ``init_chat_model`` take
-    ``max_tokens`` from LangChain's model-profile table — which silently falls back to
-    4096 for an id it does not recognise. Extended thinking bills against that same
-    ceiling, so on an unrecognised id a subagent can spend its entire budget thinking and
-    emit no text at all. deepagents forwards that as an *empty* tool result with
-    ``status="success"`` (it walks back for the last message with text and finds none),
-    so the failure is silent and the orchestrator pays to retry it.
+    1. An explicit ``SPEECHWRITER_MAX_TOKENS`` always wins.
+    2. Otherwise a model LangChain can profile keeps **its own** ceiling — 64k-128k for
+       current Claude models.
+    3. Otherwise :data:`~speechwriter.config.DEFAULT_MAX_TOKENS`, because an id with no
+       profile would silently inherit 4096.
 
-    Pinning the ceiling here makes the budget independent of the profile table, and the
-    warning turns a silently-degraded model id into something visible. Constructing the
-    client performs no network I/O, so ``build_agent`` stays offline.
+    Tier 3 is the one that bites. Extended thinking bills against the same ceiling, so at
+    4096 a subagent can spend its entire budget thinking and emit no text at all —
+    deepagents forwards that as an *empty* tool result with ``status="success"`` (it walks
+    back for the last message with text and finds none), so the failure is silent and the
+    orchestrator pays to retry it.
+
+    Tier 2 exists so that fallback never *lowers* a recognised model. Capping Opus at 32k
+    when its profile says 128k would be the same mistake in the opposite direction:
+    a blunt constant overriding better-informed knowledge.
+
+    Constructing the client performs no network I/O, so ``build_agent`` stays offline.
     """
-    model = init_chat_model(settings.model, max_tokens=settings.max_tokens)
-    if getattr(model, "profile", None) is None:
-        logger.warning(
-            "No LangChain model profile for %r — its limits are being guessed. Pinning "
-            "max_tokens=%d. If output still comes back truncated, raise "
-            "SPEECHWRITER_MAX_TOKENS or upgrade langchain.",
-            settings.model,
-            settings.max_tokens,
-        )
-    return model
+    if settings.max_tokens is not None:
+        return init_chat_model(settings.model, max_tokens=settings.max_tokens)
+
+    model = init_chat_model(settings.model)
+    if getattr(model, "profile", None) is not None:
+        return model
+
+    logger.warning(
+        "No LangChain model profile for %r — it would otherwise inherit a 4096-token "
+        "ceiling, which extended thinking can exhaust before any text is emitted. Using "
+        "max_tokens=%d instead; set SPEECHWRITER_MAX_TOKENS to override.",
+        settings.model,
+        DEFAULT_MAX_TOKENS,
+    )
+    return init_chat_model(settings.model, max_tokens=DEFAULT_MAX_TOKENS)
 
 
 def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
@@ -138,10 +152,12 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         routes={settings.memories_vpath: StoreBackend(store=store, namespace=_memory_namespace)},
     )
 
+    # Built, not named: a bare model string would inherit a 4096-token ceiling for any id
+    # LangChain cannot profile. See `_build_model`.
+    model = _build_model(settings)
+
     agent = create_deep_agent(
-        # Built, not named: a bare model string would inherit a 4096-token ceiling for
-        # any id LangChain cannot profile. See `_build_model`.
-        model=_build_model(settings),
+        model=model,
         # The orchestrator has no direct tools: research is delegated to a subagent so
         # its (potentially noisy) results never crowd the writing context.
         tools=[],
@@ -156,4 +172,9 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         name="speechwriter",
     )
 
-    return SpeechwriterAgent(agent=agent, store=store, settings=settings)
+    return SpeechwriterAgent(
+        agent=agent,
+        store=store,
+        settings=settings,
+        max_tokens=getattr(model, "max_tokens", None),
+    )
