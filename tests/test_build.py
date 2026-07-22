@@ -212,6 +212,22 @@ def test_import_speechwriter_is_lazy():
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_env_example_documents_every_setting():
+    # `.env.example` is the template users copy to `.env`, so a knob added to config.py but
+    # never documented there is invisible to anyone setting the project up. Nothing else
+    # keeps the pair in sync — the README table is maintained separately and has drifted
+    # before. Presence anywhere in the file counts: `.env.example` deliberately ships
+    # optional settings commented out.
+    config_src = (config._PKG_DIR / "config.py").read_text(encoding="utf-8")
+    documented = (config._PKG_DIR.parents[1] / ".env.example").read_text(encoding="utf-8")
+
+    read_by_config = set(re.findall(r"SPEECHWRITER_[A-Z_]+", config_src))
+    assert read_by_config, "expected config.py to reference at least one SPEECHWRITER_* var"
+
+    missing = sorted(name for name in read_by_config if name not in documented)
+    assert not missing, f".env.example does not document: {', '.join(missing)}"
+
+
 def test_all_skills_have_valid_frontmatter():
     skills_dir = config._PKG_DIR.parents[1] / "skills"
     skill_dirs = sorted(p for p in skills_dir.iterdir() if p.is_dir())
