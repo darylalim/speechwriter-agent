@@ -2,7 +2,8 @@
 
 This is the single place that assembles the Deep Agent:
 
-* **model**        — Anthropic Claude (configurable).
+* **model**        — Anthropic Claude (configurable), with an explicit output-token
+                     ceiling rather than one inherited from LangChain's profile table.
 * **system_prompt**— the speechwriting method (see :mod:`speechwriter.prompts`).
 * **subagents**    — ``researcher`` (Tavily) + ``style-critic`` (see :mod:`speechwriter.subagents`).
 * **skills**       — the on-demand rhetoric library under ``/skills``.
@@ -15,10 +16,13 @@ This is the single place that assembles the Deep Agent:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
+from langchain.chat_models import init_chat_model
+from langchain_core.language_models.chat_models import BaseChatModel
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
@@ -27,6 +31,8 @@ from speechwriter.config import Settings, load_settings
 from speechwriter.memory import load_store, save_store
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -78,6 +84,33 @@ def _write_sandbox(settings: Settings) -> list[FilesystemPermission]:
     ]
 
 
+def _build_model(settings: Settings) -> BaseChatModel:
+    """Resolve the configured model id, pinning the output-token ceiling explicitly.
+
+    Passing a bare model *string* to ``create_deep_agent`` lets ``init_chat_model`` take
+    ``max_tokens`` from LangChain's model-profile table — which silently falls back to
+    4096 for an id it does not recognise. Extended thinking bills against that same
+    ceiling, so on an unrecognised id a subagent can spend its entire budget thinking and
+    emit no text at all. deepagents forwards that as an *empty* tool result with
+    ``status="success"`` (it walks back for the last message with text and finds none),
+    so the failure is silent and the orchestrator pays to retry it.
+
+    Pinning the ceiling here makes the budget independent of the profile table, and the
+    warning turns a silently-degraded model id into something visible. Constructing the
+    client performs no network I/O, so ``build_agent`` stays offline.
+    """
+    model = init_chat_model(settings.model, max_tokens=settings.max_tokens)
+    if getattr(model, "profile", None) is None:
+        logger.warning(
+            "No LangChain model profile for %r — its limits are being guessed. Pinning "
+            "max_tokens=%d. If output still comes back truncated, raise "
+            "SPEECHWRITER_MAX_TOKENS or upgrade langchain.",
+            settings.model,
+            settings.max_tokens,
+        )
+    return model
+
+
 def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     """Assemble and compile the speechwriter Deep Agent.
 
@@ -106,7 +139,9 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     )
 
     agent = create_deep_agent(
-        model=settings.model,
+        # Built, not named: a bare model string would inherit a 4096-token ceiling for
+        # any id LangChain cannot profile. See `_build_model`.
+        model=_build_model(settings),
         # The orchestrator has no direct tools: research is delegated to a subagent so
         # its (potentially noisy) results never crowd the writing context.
         tools=[],

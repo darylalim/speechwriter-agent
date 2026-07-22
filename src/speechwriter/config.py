@@ -34,6 +34,16 @@ logger = logging.getLogger(__name__)
 # SPEECHWRITER_MODEL (e.g. "claude-opus-4-8" for the highest-quality drafting).
 DEFAULT_MODEL = "claude-sonnet-5"
 
+# Output-token ceiling, set explicitly rather than inherited.
+#
+# `init_chat_model` fills `max_tokens` from LangChain's model-profile table and falls
+# back to 4096 for an id it does not recognise. Extended thinking bills against that
+# same ceiling, so on an unrecognised id a subagent can spend the entire budget
+# thinking and return *no text at all* — which deepagents forwards as an empty,
+# `status="success"` tool result (see `agent._build_model`). Recognised Claude models
+# are profiled at 64k-128k; 32k is a comfortable margin for a critique plus thinking.
+DEFAULT_MAX_TOKENS = 32000
+
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -47,6 +57,7 @@ class Settings:
     memories_vpath: ClassVar[str] = "/memories/"
 
     model: str
+    max_tokens: int
     anthropic_api_key: str | None
     tavily_api_key: str | None
     project_root: Path
@@ -88,6 +99,8 @@ def load_settings() -> Settings:
     * ``SPEECHWRITER_MODEL`` — override the model id (default ``claude-sonnet-5``).
     * ``SPEECHWRITER_HOME``  — override the project root the agent operates in.
     * ``SPEECHWRITER_MAX_RESEARCH_RESULTS`` — Tavily results per query (default 5).
+    * ``SPEECHWRITER_MAX_TOKENS`` — output-token ceiling per model call
+      (default 32000). Raise it if drafts or critiques come back truncated.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
@@ -108,6 +121,7 @@ def load_settings() -> Settings:
 
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
+        max_tokens=_int_env("SPEECHWRITER_MAX_TOKENS", DEFAULT_MAX_TOKENS),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         project_root=project_root,

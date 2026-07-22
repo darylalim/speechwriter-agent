@@ -26,6 +26,7 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from speechwriter.agent import SpeechwriterAgent, build_agent
+from speechwriter.observability import TruncationWarner
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
 _PREVIEW_LEN = 90
@@ -91,6 +92,7 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "
             f"critiques, and remembers.\n\n"
             f"[dim]model[/]      {s.model}\n"
+            f"[dim]max tokens[/] {s.max_tokens:,}\n"
             f"[dim]research[/]   {research}\n"
             f"[dim]speeches[/]   {s.workspace_dir / 'speeches'}\n"
             f"[dim]memory[/]     {s.store_path}\n\n"
@@ -126,6 +128,9 @@ def main() -> None:
     # turns. Rotated only after an interrupt, so we never resume a half-executed graph.
     thread_id = f"cli-{uuid.uuid4().hex[:8]}"
     seen_ids: set[str] = set()
+    # One warner for the session, zeroed per turn: a truncated draft or critique is
+    # otherwise indistinguishable from a finished one.
+    warner = TruncationWarner()
 
     try:
         while True:
@@ -138,8 +143,20 @@ def main() -> None:
             if user_text.lower() in _EXIT_WORDS:
                 break
             console.print(Rule(style="dim"))
-            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+            warner.reset()
+            config: RunnableConfig = {
+                "configurable": {"thread_id": thread_id},
+                # Propagates into subagent calls too, so a clipped critique is caught.
+                "callbacks": [warner],
+            }
             interrupted = _run_turn(console, bundle, user_text, config, seen_ids)
+            if warner.truncated:
+                console.print(
+                    f"[yellow]⚠  {warner.truncated} model response(s) hit the output-token "
+                    f"ceiling and were cut off.[/] [dim]Output above may be incomplete — "
+                    f"raise SPEECHWRITER_MAX_TOKENS (currently "
+                    f"{bundle.settings.max_tokens}).[/]"
+                )
             if interrupted:
                 thread_id = f"cli-{uuid.uuid4().hex[:8]}"
                 console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")

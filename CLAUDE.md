@@ -19,7 +19,7 @@ uvx ty check                             # type check
 
 **When working with Python here, invoke the relevant Astral skill first** — `/astral:uv` for dependencies and environments, `/astral:ruff` for lint and format, `/astral:ty` for type checking — so the current best practices are followed rather than guessed at. They also encode the right invocation form: `uv run` for anything that must import the project's dependencies (e.g. `pytest`), `uvx` for standalone tools (`ruff`, `ty`).
 
-All three gates are **clean**: `uv run pytest` (11 passed), `uvx ruff check .`, and `uvx ty check` (0 diagnostics). Keep them that way. Prefer typing something precisely over widening it to `Any`; if a suppression is genuinely unavoidable, use a rule-specific `# ty: ignore[rule-name]`, never a blanket `# type: ignore`.
+All three gates are **clean**: `uv run pytest` (15 passed), `uvx ruff check .`, and `uvx ty check` (0 diagnostics). Keep them that way. Prefer typing something precisely over widening it to `Any`; if a suppression is genuinely unavoidable, use a rule-specific `# ty: ignore[rule-name]`, never a blanket `# type: ignore`.
 
 ## Architecture
 
@@ -80,7 +80,8 @@ Two correctness rules in `memory.py`, both with regression tests — preserve th
 ## Invariants to preserve
 
 - **Building the agent must not call the model or the network.** This is what makes the entire test suite free and offline. Anything that would make `build_agent()` hit the wire belongs behind a lazy path.
-- **`import speechwriter` must stay lazy.** `__init__.py` exposes `build_agent` via module `__getattr__` so the heavy `deepagents`/`langchain` stack isn't imported eagerly. `test_import_speechwriter_is_lazy` spawns a subprocess to assert this — don't add a top-level import of `agent.py` to `__init__.py`.
+- **The model's output ceiling is pinned, not inherited.** `build_agent` passes a *constructed* model (`agent.py:_build_model`), never a bare id string. `init_chat_model` takes `max_tokens` from LangChain's model-profile table and silently falls back to **4096** for an id it cannot profile — and `claude-sonnet-5`, the default, is currently unprofiled, while its recognised siblings get 64k–128k. Extended thinking bills against that same ceiling, so an unprofiled id lets a subagent spend its entire budget thinking and emit no text, which deepagents forwards as an *empty* `status="success"` tool result (it walks back for the last message with text and finds none). Two signals guard this, both tested: `_build_model` warns when the id is unprofiled, and `TruncationWarner` (`observability.py`, wired into the CLI per turn) reports any response that actually hits the ceiling. Don't revert to `model=settings.model`.
+- **`import speechwriter` must stay lazy.** `__init__.py` exposes `build_agent` and `TruncationWarner` via module `__getattr__` so the heavy `deepagents`/`langchain` stack isn't imported eagerly. `test_import_speechwriter_is_lazy` spawns a subprocess to assert this — don't add a top-level import of `agent.py` to `__init__.py`.
 - **`load_dotenv` targets `project_root / ".env"` explicitly**, never an upward walk (an ancestor `.env` could leak unrelated keys), and it is called inside `load_settings()` so `import speechwriter` has no side effects. Real shell env wins over `.env`.
 - **The Store namespace is explicit** (`_memory_namespace` → `("speechwriter", "memories")`). deepagents' implicit-namespace mode is deprecated and removed in 0.7; the dependency is pinned `>=0.6.12,<0.8`.
 

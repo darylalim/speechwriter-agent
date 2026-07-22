@@ -89,6 +89,7 @@ Then just talk to it. Give it as much of the brief as you can — the agent will
 | Env var | Default | Purpose |
 |---|---|---|
 | `SPEECHWRITER_MODEL` | `claude-sonnet-5` | Any Claude model id (`claude-opus-4-8` for top quality). |
+| `SPEECHWRITER_MAX_TOKENS` | `32000` | Output-token ceiling per model call. Pinned explicitly — LangChain silently falls back to 4096 for a model id it cannot profile, and extended thinking bills against the same ceiling. Raise it if output comes back truncated. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |

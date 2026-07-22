@@ -8,15 +8,20 @@ save/load round-trip, and every SKILL.md is well-formed — all in CI, for free.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 import sys
+import uuid
 
 import yaml
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatGeneration, LLMResult
 
 from speechwriter import config, memory
-from speechwriter.agent import _write_sandbox, build_agent
+from speechwriter.agent import _build_model, _write_sandbox, build_agent
 from speechwriter.config import load_settings
+from speechwriter.observability import TruncationWarner
 from speechwriter.subagents import build_subagents
 
 
@@ -111,6 +116,61 @@ def test_bad_int_env_falls_back(monkeypatch, tmp_path):
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.setenv("SPEECHWRITER_MAX_RESEARCH_RESULTS", "ten")
     assert load_settings().max_research_results == 5  # default, no crash
+
+
+def test_max_tokens_is_explicit_and_overridable(monkeypatch, tmp_path):
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    assert load_settings().max_tokens == config.DEFAULT_MAX_TOKENS
+
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "8000")
+    assert load_settings().max_tokens == 8000
+
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "loads")
+    assert load_settings().max_tokens == config.DEFAULT_MAX_TOKENS  # bad value, no crash
+
+
+def test_build_model_pins_max_tokens(monkeypatch, tmp_path):
+    # Regression: passing a bare model *string* to create_deep_agent lets init_chat_model
+    # take max_tokens from LangChain's profile table, which silently falls back to 4096 for
+    # an id it cannot profile. Extended thinking bills against that same ceiling, so a
+    # subagent can spend the whole budget thinking and emit no text — which deepagents
+    # forwards as an empty, status="success" task result.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "12345")
+    model = _build_model(load_settings())
+    assert getattr(model, "max_tokens", None) == 12345
+
+
+def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):
+    # A model id LangChain cannot profile must not degrade silently. Uses a fabricated id
+    # so the test keeps meaning once the real ids gain profiles.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+
+    with caplog.at_level(logging.WARNING, logger="speechwriter.agent"):
+        _build_model(load_settings())
+
+    assert "model profile" in caplog.text
+
+
+def test_truncation_warner_counts_ceiling_stops():
+    # A response cut off at the token ceiling is reported only via stop_reason; nothing
+    # raises, so a clipped critique otherwise looks exactly like a finished one.
+    warner = TruncationWarner()
+
+    def response(stop_reason: str) -> LLMResult:
+        message = AIMessage(content="...", response_metadata={"stop_reason": stop_reason})
+        return LLMResult(generations=[[ChatGeneration(message=message)]])
+
+    warner.on_llm_end(response("end_turn"), run_id=uuid.uuid4())
+    assert warner.truncated == 0
+
+    warner.on_llm_end(response("max_tokens"), run_id=uuid.uuid4())
+    assert warner.truncated == 1
+
+    warner.reset()
+    assert warner.truncated == 0
 
 
 def test_write_sandbox_confines_writes(monkeypatch, tmp_path):
