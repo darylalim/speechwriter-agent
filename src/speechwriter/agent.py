@@ -89,13 +89,21 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     store = load_store(settings)
     sandbox = _write_sandbox(settings)
 
-    def backend(runtime: object) -> CompositeBackend:
-        # Longest-prefix routing: /memories/ is intercepted for persistent, cross-session
-        # storage; every other path (drafts, research notes) hits real disk under the repo.
-        return CompositeBackend(
-            default=FilesystemBackend(root_dir=str(settings.project_root), virtual_mode=True),
-            routes={settings.memories_vpath: StoreBackend(runtime, namespace=_memory_namespace)},
-        )
+    # Longest-prefix routing: /memories/ is intercepted for persistent, cross-session
+    # storage; every other path (drafts, research notes) hits real disk under the repo.
+    #
+    # Built once as an instance, not as a `backend(runtime)` factory: deepagents 0.7
+    # removes both the callable-factory form of `backend=` and StoreBackend's `runtime`
+    # argument (which 0.6 already ignores). The store is handed over explicitly rather
+    # than left to `get_store()` so this backend always resolves to the same object
+    # `persist()` snapshots, with or without a graph execution context.
+    #
+    # `file_format` is deliberately left at its default — pinning it to "v1" would make
+    # existing memory snapshots unreadable.
+    backend = CompositeBackend(
+        default=FilesystemBackend(root_dir=str(settings.project_root), virtual_mode=True),
+        routes={settings.memories_vpath: StoreBackend(store=store, namespace=_memory_namespace)},
+    )
 
     agent = create_deep_agent(
         model=settings.model,

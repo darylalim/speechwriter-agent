@@ -39,7 +39,7 @@ The agent sees a `CompositeBackend` that routes by path prefix. Virtual paths ar
 
 `memories_vpath` is a `ClassVar` (`/memories/`); `skills_vpath` and `workspace_vpath` are properties derived from real dirs via `Settings._vpath()`. Three independent consumers depend on them agreeing, and nothing enforces the agreement:
 
-1. **Backend routes** — `agent.py:backend()` routes `memories_vpath` to the Store.
+1. **Backend routes** — the `CompositeBackend` built in `agent.py:build_agent()` routes `memories_vpath` to the Store.
 2. **Sandbox rules** — `agent.py:_write_sandbox()` allows writes only under workspace + memories.
 3. **Prompt text** — `prompts.py` interpolates all three paths into the system prompts.
 
