@@ -15,6 +15,8 @@ uv run pytest                            # full suite — offline, no API key or
 uv run pytest tests/test_build.py::test_write_sandbox_confines_writes   # single test
 uvx ruff check . && uvx ruff format .    # lint + format (line-length 100)
 uvx ty check                             # type check
+printf 'exit\n' | uv run speechwriter    # zero-cost smoke test: builds, banners, persists, exits — no model calls
+printf 'BRIEF\nexit\n' | uv run speechwriter   # drive one real turn non-interactively (costs tokens)
 ```
 
 **When working with Python here, invoke the relevant Astral skill first** — `/astral:uv` for dependencies and environments, `/astral:ruff` for lint and format, `/astral:ty` for type checking — so the current best practices are followed rather than guessed at. They also encode the right invocation form: `uv run` for anything that must import the project's dependencies (e.g. `pytest`), `uvx` for standalone tools (`ruff`, `ty`).
@@ -108,6 +110,8 @@ Design rules to preserve if you touch these:
 
 - **Fail open on missing tooling, closed on real failures.** A missing `uv`/`git`/`jq` exits 0 with a note; only an actual test or lint failure exits 2. A "command not found" must never masquerade as a broken gate.
 - `pytest-gate.sh` honors `stop_hook_active` so it can never re-block a turn it already blocked.
+- **Add an import and its first use in the same edit.** `ruff-ty-gate.sh` runs `ruff check --fix`, which deletes a just-added import as unused (F401) before you have written the code that needs it — silently reverting your edit. Writing the usage first works too, at the cost of one blocking failure.
+- **Mutation-test a new test before trusting it.** Break the code it covers, confirm it fails, restore. Nothing else here would catch a test that passes vacuously.
 
 Note for `invariant-hints.sh`: `README.md`'s routing table hard-codes `/skills/`, `/workspace/`, `/memories/` too, making it a fourth (documentation-level) consumer of the paths beyond the three code subsystems listed above. The virtual paths are also deliberately *asymmetric* — `skills_vpath` and `memories_vpath` carry a trailing slash, `workspace_vpath` does not, because `prompts.py` renders `{workspace_vpath}/speeches/<slug>.md`. Normalizing them for consistency silently yields `/workspace//speeches/`.
 
@@ -125,3 +129,5 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 - `workspace/` and `.speechwriter/` are gitignored runtime output — `load_settings()` creates them on startup, so a missing folder never fails the first draft.
 - The CLI rotates `thread_id` after a `KeyboardInterrupt` so it never resumes a half-executed graph; that intentionally drops prior conversation context.
 - The orchestrator is given **no direct tools** (`tools=[]`). Research is delegated so noisy search results never crowd the writing context. Add new capabilities as subagents unless the orchestrator genuinely needs them inline.
+- `langsmith.utils.get_env_var` is `lru_cache`d, so anything that reads tracing state before `load_settings()` calls `load_dotenv` permanently caches "tracing off". `build_agent()` calls `load_settings()` first — that ordering is what makes `LANGSMITH_TRACING` in `.env` work at all.
+- The agent revises `workspace/speeches/<slug>.md` **in place**; copy it aside first if you want to diff a re-run against the previous draft.
