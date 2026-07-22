@@ -130,6 +130,17 @@ def test_max_tokens_env_is_an_optional_override(monkeypatch, tmp_path):
     assert load_settings().max_tokens is None  # bad value, no crash
 
 
+def test_max_tokens_rejects_out_of_range_values(monkeypatch, tmp_path):
+    # A zero or negative ceiling is accepted by init_chat_model without complaint and only
+    # fails at the first API call, with an opaque provider error far from the typo that
+    # caused it — so it must be rejected at load time, not forwarded to the client.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    for bad in ("0", "-5"):
+        monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", bad)
+        assert load_settings().max_tokens is None, f"{bad} must not reach the model"
+        assert getattr(_build_model(load_settings()), "max_tokens", None) != int(bad)
+
+
 def test_ceiling_resolution_is_three_tier(monkeypatch, tmp_path):
     # Regression, both directions. A bare model string lets init_chat_model take max_tokens
     # from LangChain's profile table, which silently falls back to 4096 for an id it cannot
@@ -187,6 +198,40 @@ def test_truncation_warner_counts_ceiling_stops():
     assert warner.truncated == 0
 
 
+def test_truncation_warner_is_provider_agnostic():
+    # SPEECHWRITER_MODEL is free-form and init_chat_model infers the provider from it, so
+    # matching only Anthropic's `stop_reason` would silently switch detection off for any
+    # other provider — reinstating the exact bug this warner exists to catch.
+    warner = TruncationWarner()
+
+    def response(metadata: dict[str, str]) -> LLMResult:
+        message = AIMessage(content="...", response_metadata=metadata)
+        return LLMResult(generations=[[ChatGeneration(message=message)]])
+
+    warner.on_llm_end(response({"finish_reason": "length"}), run_id=uuid.uuid4())
+    warner.on_llm_end(response({"stop_reason": "MAX_TOKENS"}), run_id=uuid.uuid4())
+    assert warner.truncated == 2  # OpenAI-style, and case-insensitive (Gemini shouts)
+
+    warner.on_llm_end(response({"finish_reason": "stop"}), run_id=uuid.uuid4())
+    assert warner.truncated == 2  # a normal completion must not count
+
+
+def test_bundle_owns_the_truncation_warner(monkeypatch, tmp_path):
+    # Observability belongs to the bundle for the same reason persist() does: a consumer
+    # invoking bundle.agent directly — the path the README documents — must not silently
+    # lose truncation reporting just because the CLI is not involved.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    bundle = build_agent()
+
+    config = bundle.turn_config("thread-1")
+    assert config["configurable"]["thread_id"] == "thread-1"
+
+    callbacks = config["callbacks"]
+    assert isinstance(callbacks, list)  # narrows the RunnableConfig union
+    assert bundle.warner in callbacks
+
+
 def test_write_sandbox_confines_writes(monkeypatch, tmp_path):
     from deepagents.middleware.filesystem import _check_fs_permission
 
@@ -221,10 +266,16 @@ def test_env_example_documents_every_setting():
     config_src = (config._PKG_DIR / "config.py").read_text(encoding="utf-8")
     documented = (config._PKG_DIR.parents[1] / ".env.example").read_text(encoding="utf-8")
 
-    read_by_config = set(re.findall(r"SPEECHWRITER_[A-Z_]+", config_src))
+    # Whole-word matching on both sides, then a set difference. A plain substring test
+    # would report SPEECHWRITER_MAX_TOKENS as documented when `.env.example` mentions only
+    # SPEECHWRITER_MAX_TOKENS_EXTRA — a false pass on exactly the drift this test exists
+    # to catch. (The regex still sees names mentioned only in prose; that errs toward
+    # demanding documentation, which is the safe direction.)
+    names = re.compile(r"\bSPEECHWRITER_[A-Z_]+\b")
+    read_by_config = set(names.findall(config_src))
     assert read_by_config, "expected config.py to reference at least one SPEECHWRITER_* var"
 
-    missing = sorted(name for name in read_by_config if name not in documented)
+    missing = sorted(read_by_config - set(names.findall(documented)))
     assert not missing, f".env.example does not document: {', '.join(missing)}"
 
 

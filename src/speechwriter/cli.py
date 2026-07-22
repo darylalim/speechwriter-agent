@@ -26,7 +26,6 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from speechwriter.agent import SpeechwriterAgent, build_agent
-from speechwriter.observability import TruncationWarner
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
 _PREVIEW_LEN = 90
@@ -84,12 +83,36 @@ def _run_turn(
     return False
 
 
+def _ceiling_label(bundle: SpeechwriterAgent) -> str:
+    """Render the *resolved* output-token ceiling.
+
+    Not ``settings.max_tokens`` — that is only the override, and is None whenever the
+    model's own profile is being trusted. Tested against None rather than truthiness so a
+    ceiling of 0 is never reported as "model default" while it is actually in force.
+    """
+    return f"{bundle.max_tokens:,}" if bundle.max_tokens is not None else "model default"
+
+
+def _report_truncation(console: Console, bundle: SpeechwriterAgent) -> None:
+    """Say out loud when the output-token ceiling clipped this turn.
+
+    Nothing else surfaces it — a truncated draft or critique looks exactly like a finished
+    one. Called from a ``finally`` so a turn that raises still reports what it saw.
+    """
+    count = bundle.warner.truncated
+    if not count:
+        return
+    console.print(
+        f"[yellow]⚠  {count} model response(s) hit the output-token ceiling and were "
+        f"cut off.[/] [dim]Output above may be incomplete — raise SPEECHWRITER_MAX_TOKENS "
+        f"(currently {_ceiling_label(bundle)}).[/]"
+    )
+
+
 def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
-    # The resolved ceiling, not settings.max_tokens — that is only the override, and is
-    # None whenever the model's own profile is being trusted.
-    ceiling = f"{bundle.max_tokens:,}" if bundle.max_tokens else "model default"
+    ceiling = _ceiling_label(bundle)
     console.print(
         Panel(
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "
@@ -131,9 +154,6 @@ def main() -> None:
     # turns. Rotated only after an interrupt, so we never resume a half-executed graph.
     thread_id = f"cli-{uuid.uuid4().hex[:8]}"
     seen_ids: set[str] = set()
-    # One warner for the session, zeroed per turn: a truncated draft or critique is
-    # otherwise indistinguishable from a finished one.
-    warner = TruncationWarner()
 
     try:
         while True:
@@ -146,20 +166,15 @@ def main() -> None:
             if user_text.lower() in _EXIT_WORDS:
                 break
             console.print(Rule(style="dim"))
-            warner.reset()
-            config: RunnableConfig = {
-                "configurable": {"thread_id": thread_id},
-                # Propagates into subagent calls too, so a clipped critique is caught.
-                "callbacks": [warner],
-            }
-            interrupted = _run_turn(console, bundle, user_text, config, seen_ids)
-            if warner.truncated:
-                console.print(
-                    f"[yellow]⚠  {warner.truncated} model response(s) hit the output-token "
-                    f"ceiling and were cut off.[/] [dim]Output above may be incomplete — "
-                    f"raise SPEECHWRITER_MAX_TOKENS (currently "
-                    f"{bundle.max_tokens}).[/]"
-                )
+            bundle.warner.reset()
+            # `turn_config` carries the truncation callback, which propagates into
+            # subagent calls; a hand-built config would report nothing.
+            config: RunnableConfig = bundle.turn_config(thread_id)
+            try:
+                interrupted = _run_turn(console, bundle, user_text, config, seen_ids)
+            finally:
+                # In a `finally` so a turn that raises still reports what it clipped.
+                _report_truncation(console, bundle)
             if interrupted:
                 thread_id = f"cli-{uuid.uuid4().hex[:8]}"
                 console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")

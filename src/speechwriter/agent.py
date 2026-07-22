@@ -17,18 +17,20 @@ This is the single place that assembles the Deep Agent:
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from speechwriter.config import DEFAULT_MAX_TOKENS, Settings, load_settings
 from speechwriter.memory import load_store, save_store
+from speechwriter.observability import TruncationWarner
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
 
@@ -44,7 +46,12 @@ class SpeechwriterAgent:
     settings: Settings
     # The ceiling this agent actually resolved to. `settings.max_tokens` is only the
     # *override* and is usually None, so it can't answer "what is this running with?".
-    max_tokens: int | None
+    # Defaulted so that adding it does not break anyone constructing the bundle directly.
+    max_tokens: int | None = None
+    # Owned by the bundle for the same reason `persist()` is: a consumer invoking
+    # `bundle.agent` directly — the path the README documents — would otherwise get no
+    # truncation signal at all, which is precisely what this warner exists to prevent.
+    warner: TruncationWarner = field(default_factory=TruncationWarner)
 
     def persist(self) -> int:
         """Snapshot the learned speaker voice profiles to disk; returns the item count.
@@ -53,6 +60,15 @@ class SpeechwriterAgent:
         API should call this when finished so cross-session memory is actually saved.
         """
         return save_store(self.store, self.settings)
+
+    def turn_config(self, thread_id: str) -> RunnableConfig:
+        """Build the config for one invocation: thread to resume + truncation detection.
+
+        Prefer this over hand-writing ``{"configurable": {"thread_id": ...}}``. The
+        callback propagates into subagent calls, so a critique clipped at the token
+        ceiling is caught wherever it happens; a hand-built config reports nothing.
+        """
+        return {"configurable": {"thread_id": thread_id}, "callbacks": [self.warner]}
 
 
 def _memory_namespace(_ctx: object) -> tuple[str, ...]:

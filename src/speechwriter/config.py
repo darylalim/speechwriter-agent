@@ -60,8 +60,6 @@ class Settings:
     memories_vpath: ClassVar[str] = "/memories/"
 
     model: str
-    # Explicit output-token override, or None to defer to the model's own profile.
-    max_tokens: int | None
     anthropic_api_key: str | None
     tavily_api_key: str | None
     project_root: Path
@@ -69,6 +67,10 @@ class Settings:
     skills_dir: Path
     store_path: Path
     max_research_results: int
+    # Appended, not inserted: a new field in the middle silently shifts every positional
+    # argument after it, so a caller constructing Settings by position would bind their
+    # API key here. Explicit output-token override; None defers to the model's profile.
+    max_tokens: int | None
 
     # -- derived helpers -------------------------------------------------
 
@@ -137,28 +139,40 @@ def load_settings() -> Settings:
     )
 
 
-def _optional_int_env(name: str) -> int | None:
-    """Parse an int from the environment; ``None`` if unset, blank, or unparseable.
+def _optional_int_env(name: str, *, minimum: int = 1) -> int | None:
+    """Parse an int from the environment; ``None`` if unset, blank, invalid, or too small.
 
     ``None`` means *no opinion* — it leaves the caller free to treat an absent override
     differently from a supplied one, which is what makes deferring to a model's own
     profile possible.
+
+    Out-of-range values are rejected rather than forwarded. Both callers hand the result
+    to a client — an output-token ceiling and a result count — where a zero or negative
+    would not fail at startup but at the first API call, with an opaque provider error
+    far from the typo that caused it.
     """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return None
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        logger.warning("Ignoring invalid %s=%r.", name, raw)
+        logger.warning("Ignoring invalid %s=%r (not an integer).", name, raw)
         return None
+    if value < minimum:
+        logger.warning("Ignoring out-of-range %s=%r (minimum %d).", name, raw, minimum)
+        return None
+    return value
 
 
 def _int_env(name: str, default: int) -> int:
     """Parse an int from the environment, falling back (with a warning) on bad input.
 
     A stray ``SPEECHWRITER_MAX_RESEARCH_RESULTS=ten`` should not crash startup with an
-    opaque ``ValueError`` before the CLI can even render.
+    opaque ``ValueError`` before the CLI can even render — and the operator should be able
+    to see, from the log alone, which value actually took effect.
     """
     value = _optional_int_env(name)
+    if value is None and (os.environ.get(name) or "").strip():
+        logger.warning("Using default %s=%d.", name, default)
     return default if value is None else value

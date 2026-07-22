@@ -103,13 +103,15 @@ The agent is a plain compiled LangGraph graph:
 ```python
 from speechwriter import build_agent
 
-bundle = build_agent()                       # SpeechwriterAgent(agent, store, settings)
-config = {"configurable": {"thread_id": "demo"}}
+bundle = build_agent()          # agent, store, settings, max_tokens, warner
 result = bundle.agent.invoke(
     {"messages": [{"role": "user", "content": "Write a 2-minute retirement toast for Sam."}]},
-    config=config,
+    config=bundle.turn_config("demo"),   # thread id + truncation detection
 )
 print(result["messages"][-1].content)
+
+if bundle.warner.truncated:     # nothing else reports this — a clipped draft or
+    print("raise SPEECHWRITER_MAX_TOKENS")   # critique looks exactly like a finished one
 
 bundle.persist()   # snapshot learned voice profiles so the next run remembers them
 ```
