@@ -38,8 +38,11 @@ with st.sidebar:
         else:
             st.badge("No research", icon=":material/travel_explore:", color="gray")
 
-    st.caption(f"Model — `{settings.model}`")
-    st.caption(f"Output ceiling — {bundle.ceiling_label}")
+    # The two run-config lines grouped as one bordered card, so they read as a single unit
+    # rather than two loose captions floating above the primary action beneath them.
+    with st.container(border=True):
+        st.caption(f"Model — `{settings.model}`")
+        st.caption(f"Output ceiling — {bundle.ceiling_label}")
 
     # The two on-disk locations are diagnostic, not glanceable, and long absolute paths
     # wrap awkwardly in a narrow sidebar — so they live one fold down rather than crowding

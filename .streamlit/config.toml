@@ -54,13 +54,15 @@ textColor = "#657b83"
 codeTextColor = "#586e75"
 borderColor = "#93a1a1"
 
-# Dark mode — Solarized Dark. base03/base02 surfaces, base0 body text, base1 for code so it
-# stays legible against the darker code background.
+# Dark mode — a deepened Solarized Dark. The main reading field drops a step *below* base03
+# to #00161d so long prose sits on a darker surface; base03 (#002b36, the old background)
+# moves up to become the raised widget and code surface. Body text moves up to base1
+# (#93a1a1, brighter than the canonical base0) to keep contrast against the deeper field.
 [theme.dark]
-backgroundColor = "#002b36"
-secondaryBackgroundColor = "#073642"
-codeBackgroundColor = "#073642"
-textColor = "#839496"
+backgroundColor = "#00161d"
+secondaryBackgroundColor = "#002b36"
+codeBackgroundColor = "#002b36"
+textColor = "#93a1a1"
 codeTextColor = "#93a1a1"
 borderColor = "#586e75"
 
@@ -73,7 +75,7 @@ codeBackgroundColor = "#fdf6e3"
 borderColor = "#93a1a1"
 
 [theme.dark.sidebar]
-backgroundColor = "#073642"
-secondaryBackgroundColor = "#002b36"
-codeBackgroundColor = "#002b36"
+backgroundColor = "#002b36"
+secondaryBackgroundColor = "#00161d"
+codeBackgroundColor = "#00161d"
 borderColor = "#586e75"
