@@ -27,15 +27,20 @@ has_key = bool(bundle.settings.anthropic_api_key)
 
 suggested = None
 if not history:
-    st.title("Write a speech")
-    st.caption(
-        "Name the speaker, the audience, the occasion, the goal, and the length — "
-        "I'll ask if something essential is missing, then plan, draft, critique, and revise."
-    )
-    # Rendered only on an empty transcript, so the widget stops existing after the first
-    # turn. Streamlit drops an unrendered widget's state, which is what stops a selected
-    # pill from re-firing the same commission on every later rerun.
-    suggested = st.pills("Try one of these", list(SUGGESTIONS), label_visibility="collapsed")
+    # A centered welcome while the transcript is empty; it collapses back to the ordinary
+    # left-aligned chat column the moment the first turn is recorded and this branch stops
+    # rendering.
+    with st.container(horizontal_alignment="center"):
+        st.title("Write a speech", text_alignment="center")
+        st.caption(
+            "Name the speaker, the audience, the occasion, the goal, and the length — "
+            "I'll ask if something essential is missing, then plan, draft, critique, and revise.",
+            text_alignment="center",
+        )
+        # Rendered only on an empty transcript, so the widget stops existing after the first
+        # turn. Streamlit drops an unrendered widget's state, which is what stops a selected
+        # pill from re-firing the same commission on every later rerun.
+        suggested = st.pills("Try one of these", list(SUGGESTIONS), label_visibility="collapsed")
 
 if not has_key:
     st.error(

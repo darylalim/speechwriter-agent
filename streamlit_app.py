@@ -40,8 +40,13 @@ with st.sidebar:
 
     st.caption(f"Model — `{settings.model}`")
     st.caption(f"Output ceiling — {bundle.ceiling_label}")
-    st.caption(f"Workspace — `{settings.workspace_dir}`")
-    st.caption(f"Memory — `{settings.store_path}`")
+
+    # The two on-disk locations are diagnostic, not glanceable, and long absolute paths
+    # wrap awkwardly in a narrow sidebar — so they live one fold down rather than crowding
+    # the model line and the primary action beneath it.
+    with st.expander("Storage", icon=":material/database:", type="compact"):
+        st.caption(f"Workspace — `{settings.workspace_dir}`")
+        st.caption(f"Memory — `{settings.store_path}`")
 
     st.button(
         "New conversation",

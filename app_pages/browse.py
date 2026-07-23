@@ -29,17 +29,19 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
     if document is None:
         return
 
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.metric("Words", f"{document.words:,}")
+    with st.container(horizontal=True, vertical_alignment="bottom"):
+        st.metric("Words", f"{document.words:,}", border=True, width="content")
         # Only meaningful for something meant to be said out loud; a research brief is not.
         if spoken:
-            st.metric("Spoken length", f"~{document.minutes:.1f} min")
-        st.download_button(
-            "Download",
-            document.text,
-            file_name=document.path.name,
-            icon=":material/download:",
-        )
+            st.metric("Spoken length", f"~{document.minutes:.1f} min", border=True, width="content")
+        # Pushed to the far edge so it reads as an action, not a third stat card.
+        with st.container(horizontal_alignment="right"):
+            st.download_button(
+                "Download",
+                document.text,
+                file_name=document.path.name,
+                icon=":material/download:",
+            )
 
     # Rendered as metadata rather than passed through st.markdown: a `---` fence directly
     # after the header's last line would otherwise turn the whole block into one setext H2.

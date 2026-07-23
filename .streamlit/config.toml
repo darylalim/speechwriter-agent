@@ -5,21 +5,25 @@
 # deliberately (`--server.address 0.0.0.0`) if you actually intend to share it.
 address = "localhost"
 
-# Solarized Light, from Streamlit's bundled theme templates.
+# Solarized, from Ethan Schoonover's palette, split into a light and a dark mode.
 #
-# Chosen because this app's main job is reading long prose: the warm paper background and
-# low-contrast body text are designed for sustained reading rather than dashboard glanceability.
-# Theming lives here rather than in injected CSS, which is Streamlit's documented preference
-# and keeps the page files free of styling concerns.
+# This app's main job is reading long prose, so the theme is tuned for sustained reading
+# rather than dashboard glanceability: warm, low-contrast surfaces and the same muted accent
+# hues in both modes. Defining both [theme.light] and [theme.dark] makes Streamlit follow the
+# viewer's system light/dark preference and adds a System/Light/Dark switch to the settings
+# menu — so a speech reads on warm paper by day and in Solarized Dark at night. (The
+# single-mode [theme] this replaced was locked to light for everyone.)
+#
+# Everything shared between the two modes (typography, radii, the accent palette, chart
+# colors) lives in [theme]; only the surface and text tones that must flip live in the
+# per-mode tables. Theming stays here rather than in injected CSS, which is Streamlit's
+# documented preference and keeps the page files free of styling concerns.
 [theme]
-base = "light"
+# Solarized's accent hues are identical in both modes, so primary, links, the semantic
+# palette and chart colors are shared rather than duplicated.
 primaryColor = "#268bd2"
-backgroundColor = "#fdf6e3"
-secondaryBackgroundColor = "#eee8d5"
-codeBackgroundColor = "#eee8d5"
-textColor = "#657b83"
 linkColor = "#268bd2"
-borderColor = "#93a1a1"
+linkUnderline = false
 showWidgetBorder = true
 showSidebarBorder = true
 baseRadius = "4px"
@@ -27,15 +31,13 @@ buttonRadius = "4px"
 font = "'Source Sans 3':https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap"
 codeFont = "'Source Code Pro':https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500&display=swap"
 codeFontSize = "0.875rem"
-codeTextColor = "#586e75"
 baseFontSize = 14
 baseFontWeight = 400
 headingFontSizes = ["32px", "24px", "20px", "16px", "14px", "12px"]
 headingFontWeights = [600, 600, 600, 600, 600, 600]
-linkUnderline = false
 chartCategoricalColors = ["#268bd2", "#2aa198", "#859900", "#b58900", "#cb4b16", "#dc322f", "#d33682"]
 
-# Solarized color palette
+# Solarized accent palette (same in light and dark).
 blueColor = "#268bd2"
 greenColor = "#859900"
 yellowColor = "#b58900"
@@ -43,8 +45,35 @@ orangeColor = "#cb4b16"
 redColor = "#dc322f"
 violetColor = "#6c71c4"
 
-[theme.sidebar]
+# Light mode — Solarized Light. base3/base2 surfaces, base00 body text.
+[theme.light]
+backgroundColor = "#fdf6e3"
+secondaryBackgroundColor = "#eee8d5"
+codeBackgroundColor = "#eee8d5"
+textColor = "#657b83"
+codeTextColor = "#586e75"
+borderColor = "#93a1a1"
+
+# Dark mode — Solarized Dark. base03/base02 surfaces, base0 body text, base1 for code so it
+# stays legible against the darker code background.
+[theme.dark]
+backgroundColor = "#002b36"
+secondaryBackgroundColor = "#073642"
+codeBackgroundColor = "#073642"
+textColor = "#839496"
+codeTextColor = "#93a1a1"
+borderColor = "#586e75"
+
+# Sidebars invert the two surface tones so the sidebar reads as one layer deeper than the
+# main content in whichever mode is active.
+[theme.light.sidebar]
 backgroundColor = "#eee8d5"
 secondaryBackgroundColor = "#fdf6e3"
 codeBackgroundColor = "#fdf6e3"
 borderColor = "#93a1a1"
+
+[theme.dark.sidebar]
+backgroundColor = "#073642"
+secondaryBackgroundColor = "#002b36"
+codeBackgroundColor = "#002b36"
+borderColor = "#586e75"
