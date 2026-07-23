@@ -164,3 +164,9 @@ uvx ruff check . && uvx ruff format .
 ```
 
 The tests construct the full agent graph *without* calling the model or the network, so they run for free in CI — and they assert the research subagent appears only with a Tavily key, memory survives a save/load round-trip, and every `SKILL.md` is well-formed.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE) — © 2026 Daryl Lim.
