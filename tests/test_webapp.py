@@ -9,6 +9,7 @@ be discovered by a human opening a browser.
 from __future__ import annotations
 
 import os
+import tomllib
 
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -339,3 +340,19 @@ def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
 
     assert not app.exception
     assert any("warm, plainspoken" in block.value for block in app.markdown)
+
+
+def test_streamlit_config_parses_and_offers_both_theme_modes():
+    # AppTest does not parse the project theme config, and pytest-gate.sh's dirty-tree watch
+    # list (src/ tests/ skills/ pyproject.toml uv.lock) omits .streamlit/ — so a TOML typo or
+    # a dropped [theme.dark] table would otherwise reach a human running `streamlit run`,
+    # exactly the manual discovery the rest of this suite exists to pre-empt.
+    data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+
+    # Both mode tables must exist or Streamlit locks to a single mode and the light/dark
+    # toggle silently disappears.
+    assert "light" in data["theme"]
+    assert "dark" in data["theme"]
+    # The security invariant the file's own header comment documents: bind loopback only, so
+    # the budget-spending agent is never put on the network by an "External URL".
+    assert data["server"]["address"] == "localhost"

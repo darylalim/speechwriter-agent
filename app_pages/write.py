@@ -31,6 +31,9 @@ if not history:
     # left-aligned chat column the moment the first turn is recorded and this branch stops
     # rendering.
     with st.container(horizontal_alignment="center"):
+        # The container's horizontal_alignment centers content-width children (the pills), but
+        # the full-width title and caption keep their own text_alignment to center their text
+        # — dropping it left-aligns them, so the two are not redundant.
         st.title("Write a speech", text_alignment="center")
         st.caption(
             "Name the speaker, the audience, the occasion, the goal, and the length — "

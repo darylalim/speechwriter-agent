@@ -64,8 +64,8 @@ textColor = "#839496"
 codeTextColor = "#93a1a1"
 borderColor = "#586e75"
 
-# Sidebars invert the two surface tones so the sidebar reads as one layer deeper than the
-# main content in whichever mode is active.
+# Sidebars swap the two surface tones so the sidebar sits one layer apart from the main
+# content — darker than it in light mode, lighter than it in dark mode.
 [theme.light.sidebar]
 backgroundColor = "#eee8d5"
 secondaryBackgroundColor = "#fdf6e3"
