@@ -42,7 +42,11 @@ _FRONT_MATTER = re.compile(r"\A---[ \t]*\n(?P<block>.*?)\n---[ \t]*(?:\n|\Z)", r
 # The delivery-and-cadence skill asks for a marked-up script, so these are expected, not
 # stray — and counting them would print a word count that contradicts the one the draft
 # states in its own header, on the same screen.
-_STAGE_DIRECTION = re.compile(r"\[[^\[\]]*\]")
+#
+# The trailing `(?!\()` spares a Markdown link: in `[our report](url)` the `]` is followed
+# by `(`, so the label is *not* stripped and its words still count (they are spoken). A cue
+# like `[pause]` is not followed by `(`, so it is removed as intended.
+_STAGE_DIRECTION = re.compile(r"\[[^\[\]]*\](?!\()")
 
 
 @dataclass(frozen=True)
@@ -124,14 +128,24 @@ def load_documents(directory: Path) -> list[Document]:
     return sorted(documents, key=lambda doc: doc.modified, reverse=True)
 
 
+def speeches_dir(settings: Settings) -> Path:
+    """Real directory the agent saves speech drafts under."""
+    return settings.workspace_dir / SPEECHES_SUBDIR
+
+
+def research_dir(settings: Settings) -> Path:
+    """Real directory the agent saves research briefs under."""
+    return settings.workspace_dir / RESEARCH_SUBDIR
+
+
 def speeches(settings: Settings) -> list[Document]:
     """Saved speech drafts, newest first."""
-    return load_documents(settings.workspace_dir / SPEECHES_SUBDIR)
+    return load_documents(speeches_dir(settings))
 
 
 def research_notes(settings: Settings) -> list[Document]:
     """Saved research briefs, newest first."""
-    return load_documents(settings.workspace_dir / RESEARCH_SUBDIR)
+    return load_documents(research_dir(settings))
 
 
 def memories(store: BaseStore) -> list[MemoryEntry]:

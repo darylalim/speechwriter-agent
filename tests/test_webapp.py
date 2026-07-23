@@ -266,3 +266,76 @@ def test_both_pages_render(monkeypatch, tmp_path):
     app.switch_page("app_pages/browse.py").run()
     assert not app.exception
     assert any("ana-toast" in str(option) for option in app.selectbox[0].options)
+
+
+def test_markdown_link_label_counts_as_spoken_words(monkeypatch, tmp_path):
+    # The stage-direction strip must not eat a Markdown link's label: `[our report](url)` is
+    # spoken, `[pause]` is not. Regression for the `(?!\\()` lookahead on _STAGE_DIRECTION;
+    # without it the whole `[our report]` is deleted and only the bare URL is counted.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    _write(
+        settings.workspace_dir / config.SPEECHES_SUBDIR / "linked.md",
+        "[our report](http://x.com)",
+        mtime=1_000_000,
+    )
+    # Two real words ("our report") survive; strip the label and it collapses to one.
+    assert workspace.speeches(settings)[0].words == 2
+
+
+def test_a_cancelled_turn_rotates_the_thread(monkeypatch):
+    # A stop mid-turn leaves _PENDING set (the BaseException sails past run_turn's except),
+    # so the next turn must rotate to a fresh thread and never resume a half-executed graph.
+    state = {"turn_in_flight": True, "thread_id": "web-dirty", "seen_message_ids": {"m1"}}
+    monkeypatch.setattr(webui.st, "session_state", state)
+
+    webui._rotate_if_interrupted()
+
+    assert state["thread_id"] != "web-dirty"  # rotated to a fresh thread
+    assert state["seen_message_ids"] == set()  # scoped to the abandoned thread, so dropped
+    assert state["turn_in_flight"] is False
+
+
+def test_a_completed_turn_keeps_its_thread(monkeypatch):
+    # The mirror case: a turn that finished cleanly must NOT rotate, or every turn would
+    # start a new thread and the conversation could never build across turns.
+    state = {"turn_in_flight": False, "thread_id": "web-keep", "seen_message_ids": {"m1"}}
+    monkeypatch.setattr(webui.st, "session_state", state)
+
+    webui._rotate_if_interrupted()
+
+    assert state["thread_id"] == "web-keep"
+    assert state["seen_message_ids"] == {"m1"}
+
+
+def test_document_reader_reflects_a_newly_written_draft(monkeypatch, tmp_path):
+    # The cached listing must invalidate when the folder changes, or a draft the agent just
+    # saved would never appear. The name+mtime signature is what forces the re-read.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_data.clear()
+    settings = load_settings()
+    speeches = workspace.speeches_dir(settings)
+
+    _write(speeches / "first.md", "one", mtime=1_000_000)
+    assert [doc.slug for doc in webui.documents(speeches)] == ["first"]
+
+    _write(speeches / "second.md", "two", mtime=2_000_000)
+    assert [doc.slug for doc in webui.documents(speeches)] == ["second", "first"]
+
+
+def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
+    # The browse page's Memory branch (an expander per profile) was never driven by a test,
+    # so a crash there would only surface when a human opened the page.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    bundle = webui.get_bundle()
+    bundle.store.put(("speechwriter", "memories"), "mayor.md", {"content": "warm, plainspoken"})
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+    app.switch_page("app_pages/browse.py").run()
+    app.segmented_control[0].set_value("Memory").run()
+
+    assert not app.exception
+    assert any("warm, plainspoken" in block.value for block in app.markdown)

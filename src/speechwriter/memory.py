@@ -29,7 +29,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeVar
 
-from langgraph.store.base import BaseStore
+from langgraph.store.base import BaseStore, Item
 from langgraph.store.memory import InMemoryStore
 
 from speechwriter.config import Settings
@@ -90,15 +90,18 @@ def save_store(store: BaseStore, settings: Settings) -> int:
     return len(records)
 
 
-def all_items(store: BaseStore) -> list[Any]:
+def all_items(store: BaseStore) -> list[Item]:
     """Every item in every namespace, with pagination exhausted.
 
     Public because snapshotting is no longer the only exhaustive read: the web UI lists
     learned voice profiles straight from the live Store. That read has to honor the same
     invariant ``save_store`` does — a second, hand-rolled walk would quietly stop at the
     Store's default ``search`` limit of 10 and show a partial memory as if it were whole.
+
+    Typed ``list[Item]`` (not ``list[Any]``) so callers reading ``.namespace``/``.key``/
+    ``.value`` are type-checked; ``search`` yields ``SearchItem``, a subclass, at runtime.
     """
-    items: list[Any] = []
+    items: list[Item] = []
     for namespace in _all_namespaces(store):
         items.extend(_all_items(store, namespace))
     return items

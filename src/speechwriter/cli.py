@@ -14,11 +14,9 @@ as Markdown. This keeps the transcript readable without needing to know node nam
 
 from __future__ import annotations
 
-import json
 import uuid
 from typing import Any
 
-from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from rich.console import Console
 from rich.markdown import Markdown
@@ -26,38 +24,37 @@ from rich.panel import Panel
 from rich.rule import Rule
 
 from speechwriter.agent import SpeechwriterAgent, build_agent
+from speechwriter.transcript import clip, iter_events
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
 _PREVIEW_LEN = 90
 
 
 def _truncate(text: str, length: int = _PREVIEW_LEN) -> str:
-    text = " ".join(text.split())
-    return text if len(text) <= length else text[: length - 1] + "…"
+    return clip(text, length)
 
 
 def _render_message(console: Console, message: Any) -> None:
-    """Render a single new message: tool calls, tool results, or assistant prose."""
-    if isinstance(message, AIMessage):
-        # Tool calls first — these are the agent's actions (plan, research, write, delegate).
-        for call in message.tool_calls:
-            name = call.get("name", "tool")
-            preview = _truncate(json.dumps(call.get("args", {}), ensure_ascii=False, default=str))
-            console.print(f"  [cyan]⚙  {name}[/]  [dim]{preview}[/]")
-        # Then any prose the agent emitted.
-        text = message.text.strip()
-        if text:
+    """Render a single new message: tool calls, tool results, or assistant prose.
+
+    Shares the message→event decode with the web UI via ``iter_events``; only the Rich
+    formatting (dim one-liners, a bordered Markdown panel) is the CLI's own.
+    """
+    for event in iter_events(message):
+        if event.kind == "prose":
             console.print(
                 Panel(
-                    Markdown(text),
+                    Markdown(event.text),
                     title="[bold]speechwriter[/]",
                     border_style="green",
                     padding=(1, 2),
                 )
             )
-    elif isinstance(message, ToolMessage):
-        mark = "[red]✗[/]" if message.status == "error" else "[green]✓[/]"
-        console.print(f"  {mark} [dim]{message.name or 'tool'}: {_truncate(message.text)}[/]")
+        elif event.kind == "call":
+            console.print(f"  [cyan]⚙  {event.name}[/]  [dim]{_truncate(event.text)}[/]")
+        else:
+            mark = "[green]✓[/]" if event.ok else "[red]✗[/]"
+            console.print(f"  {mark} [dim]{event.name}: {_truncate(event.text)}[/]")
 
 
 def _run_turn(

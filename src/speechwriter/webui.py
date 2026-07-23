@@ -3,7 +3,8 @@
 The terminal UI already lives inside this package; the browser UI belongs beside it for the
 same reason. Both are thin by design: they own rendering and session bookkeeping, and defer
 durability (``bundle.persist()``) and observability (``bundle.turn_config()``) to the bundle
-that owns them.
+that owns them. The message→event decode and the preview-clip they both need live in
+:mod:`speechwriter.transcript`, so the two front ends cannot drift on *what* a message means.
 
 Streamlit's execution model changes two things versus the CLI's ``while True`` loop:
 
@@ -19,22 +20,24 @@ Streamlit's execution model changes two things versus the CLI's ``while True`` l
 
 from __future__ import annotations
 
-import json
 import uuid
-from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from pathlib import Path
 
 import streamlit as st
-from langchain_core.messages import AIMessage, ToolMessage
 from streamlit.delta_generator import DeltaGenerator
 
+from speechwriter import workspace
 from speechwriter.agent import SpeechwriterAgent, build_agent
+from speechwriter.transcript import Event, clip, iter_events
 
 # Session-state keys. Named constants because two page scripts read them.
 _TRANSCRIPT = "transcript"
 _SEEN = "seen_message_ids"
 _THREAD = "thread_id"
+# Set while a turn is streaming, cleared once it finishes. If it is still set at the start of
+# the *next* turn, the previous one was cancelled mid-flight (see `_rotate_if_interrupted`).
+_PENDING = "turn_in_flight"
 
 _PREVIEW_LEN = 110
 
@@ -42,16 +45,6 @@ _PREVIEW_LEN = 110
 _CALL_ICON = ":blue[:material/bolt:]"
 _OK_ICON = ":green[:material/check_circle:]"
 _ERROR_ICON = ":red[:material/error:]"
-
-
-@dataclass
-class Event:
-    """One renderable thing the agent did: a tool call, its result, or prose."""
-
-    kind: Literal["call", "result", "prose"]
-    text: str
-    name: str = ""
-    ok: bool = True
 
 
 @dataclass
@@ -82,10 +75,41 @@ def get_bundle() -> SpeechwriterAgent:
     return build_agent()
 
 
+@st.cache_data(show_spinner=False)
+def _parse_documents(
+    directory: str, signature: tuple[tuple[str, float], ...]
+) -> list[workspace.Document]:
+    """Read and front-matter-parse every draft in ``directory`` (cached).
+
+    ``signature`` — each file's name and mtime — is a cache-key-only argument: it makes the
+    expensive read+parse re-run only when the directory's contents actually change, never on
+    a plain rerun. It is intentionally unused in the body; the cheap stat that produced it
+    already ran in :func:`documents`.
+    """
+    return workspace.load_documents(Path(directory))
+
+
+def documents(directory: Path) -> list[workspace.Document]:
+    """Cached listing of a workspace subdirectory, newest first.
+
+    The glob+stat that builds the cache signature is cheap and runs every rerun; the full
+    file reads and front-matter parsing behind it run only when a draft is added, removed, or
+    rewritten. Without this, every rerun on the Workspace page — picking a different draft,
+    switching views — re-read and re-parsed every file in the folder just to show one.
+    """
+    signature = (
+        tuple(sorted((path.name, path.stat().st_mtime) for path in directory.glob("*.md")))
+        if directory.is_dir()
+        else ()
+    )
+    return _parse_documents(str(directory), signature)
+
+
 def init_session() -> None:
     """Ensure this browser session has a transcript, a seen-set, and its own thread."""
     st.session_state.setdefault(_TRANSCRIPT, [])
     st.session_state.setdefault(_SEEN, set())
+    st.session_state.setdefault(_PENDING, False)
     # Guarded rather than `setdefault(...)` so the id is not re-minted on every rerun just
     # to be thrown away — and so it is obvious that the thread does *not* rotate per run.
     if _THREAD not in st.session_state:
@@ -111,6 +135,7 @@ def reset_conversation() -> None:
     """
     st.session_state[_TRANSCRIPT] = []
     st.session_state[_SEEN] = set()
+    st.session_state[_PENDING] = False
     st.session_state[_THREAD] = _new_thread_id()
 
 
@@ -124,8 +149,13 @@ def run_turn(bundle: SpeechwriterAgent, prompt: str) -> Turn:
     the turn failed and leave the rest of the app usable, not replace the page with a
     traceback and lose the transcript.
     """
+    _rotate_if_interrupted()
     turn = Turn(prompt=prompt)
     bundle.warner.reset()
+    # Mark the turn in-flight *before* streaming. A user clicking the stop button raises a
+    # BaseException that sails past the `except Exception` below, so this flag is the only
+    # trace a cancelled turn leaves — `_rotate_if_interrupted` reads it on the next turn.
+    st.session_state[_PENDING] = True
     seen: set[str] = st.session_state[_SEEN]
 
     status = st.status("Working…", expanded=True)
@@ -149,6 +179,10 @@ def run_turn(bundle: SpeechwriterAgent, prompt: str) -> Turn:
     else:
         status.update(label=_activity_label(turn.events), state="complete", expanded=False)
 
+    # The turn finished (cleanly or with a caught error); it is no longer in-flight. Only a
+    # stop leaves _PENDING set, and only that triggers a thread rotation next turn — matching
+    # the CLI, which rotates on interrupt but not on ordinary errors.
+    st.session_state[_PENDING] = False
     # Read after the run either way: a turn that raised still clipped whatever it clipped.
     turn.truncated = bundle.warner.truncated
     _render_footnotes(turn, bundle, prose)
@@ -176,35 +210,41 @@ def _new_thread_id() -> str:
     return f"web-{uuid.uuid4().hex[:8]}"
 
 
-def _new_events(message: Any, seen: set[str]) -> Iterator[Event]:
-    """Yield events for a message not yet rendered, recording it as seen.
+def _rotate_if_interrupted() -> None:
+    """Recover the thread if the previous turn was cancelled with the stop button.
+
+    ``submit_mode="stop"`` raises a ``BaseException`` that propagates past ``run_turn``'s
+    ``except Exception``, so a cancelled turn never records, never persists, and never
+    rotates — leaving the LangGraph thread mid-execution. Run before the next turn: if the
+    previous one is still flagged in-flight, rotate to a fresh thread so we never resume a
+    half-executed graph, the web analog of the CLI's post-interrupt rotation. The visible
+    transcript is display data and stays; only the dropped graph context differs, and the
+    seen-set is scoped to the abandoned thread so it goes too.
+    """
+    if st.session_state.get(_PENDING):
+        st.session_state[_THREAD] = _new_thread_id()
+        st.session_state[_SEEN] = set()
+        st.session_state[_PENDING] = False
+
+
+def _new_events(message: object, seen: set[str]) -> list[Event]:
+    """Decode a not-yet-seen message into events, recording it as seen.
 
     ``stream_mode="values"`` replays the *entire* message list on every step, and the
-    checkpointer carries earlier turns forward, so without this filter each rerun of the
-    graph would re-emit the whole conversation.
+    checkpointer carries earlier turns forward, so without this filter each step would
+    re-emit the whole conversation.
     """
-    identifier = getattr(message, "id", None) or str(id(message))
+    identifier = getattr(message, "id", None)
+    if identifier is None:
+        # Graph state always assigns message ids, so this is defensive. Key off type +
+        # content rather than str(id(message)): a raw object id can be recycled by CPython
+        # after GC and cause a *different* later message to be skipped, whereas a content
+        # key at worst coalesces two byte-identical messages — harmless in the activity log.
+        identifier = f"{type(message).__name__}:{getattr(message, 'content', '')!r}"
     if identifier in seen:
-        return
+        return []
     seen.add(identifier)
-
-    # Only these two kinds produce output. Anything else in the list — the user's own
-    # prompt, a system message — falls through and yields nothing, which is why there is
-    # no explicit skip for them.
-    if isinstance(message, AIMessage):
-        for call in message.tool_calls:
-            arguments = json.dumps(call.get("args", {}), ensure_ascii=False, default=str)
-            yield Event(kind="call", name=call.get("name", "tool"), text=_preview(arguments))
-        text = message.text.strip()
-        if text:
-            yield Event(kind="prose", text=text)
-    elif isinstance(message, ToolMessage):
-        yield Event(
-            kind="result",
-            name=message.name or "tool",
-            text=_preview(message.text),
-            ok=message.status != "error",
-        )
+    return list(iter_events(message))
 
 
 def _render_event(event: Event, status: DeltaGenerator, prose: DeltaGenerator) -> None:
@@ -217,7 +257,7 @@ def _render_event(event: Event, status: DeltaGenerator, prose: DeltaGenerator) -
         icon = _CALL_ICON
     else:
         icon = _OK_ICON if event.ok else _ERROR_ICON
-    status.markdown(f"{icon} **{event.name}** `{event.text}`")
+    status.markdown(f"{icon} **{event.name}** `{_preview(event.text)}`")
 
 
 def _render_footnotes(turn: Turn, bundle: SpeechwriterAgent, prose: DeltaGenerator) -> None:
@@ -239,11 +279,10 @@ def _activity_label(events: list[Event]) -> str:
 
 
 def _preview(text: str, length: int = _PREVIEW_LEN) -> str:
-    """Collapse whitespace and clip, neutralising the one char that breaks inline code.
+    """Clip a raw event string for the activity log, neutralising inline-code breakout.
 
-    Tool arguments and results are arbitrary text — JSON, file contents, a critique. Left as
-    Markdown, a stray backtick or asterisk would reflow the activity log, so previews render
-    as inline code and the character that could escape that wrapper is replaced.
+    Tool arguments and results are arbitrary text — JSON, file contents, a critique. Rendered
+    inside a `` ` `` span, a stray backtick would end the span and let the rest reflow as
+    Markdown, so the one character that can escape the wrapper is replaced after clipping.
     """
-    collapsed = " ".join(text.split()).replace("`", "'")
-    return collapsed if len(collapsed) <= length else collapsed[: length - 1] + "…"
+    return clip(text, length).replace("`", "'")

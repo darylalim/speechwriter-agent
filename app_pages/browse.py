@@ -11,7 +11,7 @@ Named `browse.py`, not `workspace.py`, so it is never confused with the
 import streamlit as st
 
 from speechwriter import workspace
-from speechwriter.webui import get_bundle
+from speechwriter.webui import documents, get_bundle
 
 bundle = get_bundle()
 settings = bundle.settings
@@ -66,7 +66,7 @@ view = st.segmented_control(
 
 if view == "Research":
     document_browser(
-        workspace.research_notes(settings),
+        documents(workspace.research_dir(settings)),
         spoken=False,
         empty="No research notes yet. They appear here when the researcher subagent runs.",
     )
@@ -88,7 +88,7 @@ elif view == "Memory":
 
 else:
     document_browser(
-        workspace.speeches(settings),
+        documents(workspace.speeches_dir(settings)),
         spoken=True,
         empty="No speeches yet. Commission one on the Write page.",
     )
