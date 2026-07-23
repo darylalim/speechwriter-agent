@@ -75,7 +75,13 @@ def get_bundle() -> SpeechwriterAgent:
     return build_agent()
 
 
-@st.cache_data(show_spinner=False)
+# `max_entries` bounds the cache: the key includes each file's mtime, and the agent revises a
+# draft in place, so every revision mints a *new* entry holding the full parsed text of the
+# folder — with no bound, those dead snapshots accumulate for the life of the process. The
+# live working set is tiny (one entry per directory, currently two), so this is a generous
+# safety ceiling, not a tuning knob; eviction only ever discards a signature the file has
+# already moved past, never the current one we re-read on a miss.
+@st.cache_data(show_spinner=False, max_entries=32)
 def _parse_documents(
     directory: str, signature: tuple[tuple[str, float], ...]
 ) -> list[workspace.Document]:
