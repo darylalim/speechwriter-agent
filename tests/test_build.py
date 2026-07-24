@@ -15,6 +15,7 @@ import sys
 import uuid
 
 import yaml
+from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
@@ -177,6 +178,34 @@ def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):
         _build_model(load_settings())
 
     assert "model profile" in caplog.text
+
+
+def test_payload_omits_parameters_current_models_reject(monkeypatch, tmp_path):
+    # temperature/top_p/top_k are rejected outright (400) on claude-opus-5, claude-sonnet-5,
+    # and claude-opus-4-8. `build_agent()` never touches the wire — that is what makes this
+    # suite free — so nothing else here would notice a langchain-anthropic bump that began
+    # sending one by default; instead every real turn would fail, far from the upgrade that
+    # caused it. `_get_request_payload` builds the dict offline, so the seam is assertable for
+    # free. It is private, like the other LangChain/deepagents internals this file reaches
+    # into: a rename breaks this test loudly, which is the failure mode we want.
+    rejected = {"temperature", "top_p", "top_k"}
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+
+    for model_id in (config.DEFAULT_MODEL, "claude-opus-5", "claude-opus-4-8"):
+        monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
+        # Every ceiling branch, since a stray default could be injected on either call:
+        # None exercises the profile/floor path, the override exercises tier 1.
+        for override in (None, "128000"):
+            if override is None:
+                monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+            else:
+                monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", override)
+            model = _build_model(load_settings())
+            # Narrows `BaseChatModel` for the type checker, and pins the client type while
+            # we are here: `settings.model` is free-form, so that is worth asserting too.
+            assert isinstance(model, ChatAnthropic)
+            payload = model._get_request_payload([])
+            assert rejected.isdisjoint(payload), f"{model_id} (override={override}): {payload}"
 
 
 def test_truncation_warner_counts_ceiling_stops():
