@@ -45,7 +45,14 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      # Pinned to an exact version while checkout floats on @v7, and the asymmetry is
+      # forced, not stylistic: astral-sh/setup-uv stopped publishing floating major tags
+      # after v7, so `@v9` resolves to nothing at all ("Unable to resolve action ...
+      # unable to find version `v9`"). Only exact tags exist for v8/v9. Verify the tag
+      # exists before bumping — `gh api repos/astral-sh/setup-uv/git/ref/tags/<tag>` —
+      # since the newest *release* name is not proof a usable ref exists. v9.0.0's sole
+      # breaking change is `prune-cache` defaulting to false, which this workflow never sets.
+      - uses: astral-sh/setup-uv@v9.0.0
 
       # Deliberately outside the matrix, and with no `uv sync`: ruff needs none of the
       # project's dependencies, and `target-version = "py311"` in pyproject.toml fixes
@@ -73,7 +80,7 @@ jobs:
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v9.0.0
         with:
           # Sets UV_PYTHON, so every uv invocation below agrees on the interpreter.
           python-version: ${{ matrix.python-version }}
