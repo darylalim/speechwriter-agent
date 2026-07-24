@@ -33,6 +33,14 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.format]
+# Ruff 0.16 formats Python code blocks inside Markdown too, which makes the formatter the
+# only part of the toolchain that reaches into docs: `ruff check` skips Markdown entirely
+# ("No Python files found"), and hooks/ruff-ty-gate.sh filters to *.py/*.pyi. Left on, a
+# bare `uvx ruff format .` — the command CLAUDE.md documents — silently rewrites the
+# hand-typeset code fences in README.md. Keep ruff's scope in this project = Python.
+exclude = ["*.md"]
+
 [tool.ty.environment]
 # Point the type checker at the project virtualenv so third-party imports resolve.
 python = "./.venv"

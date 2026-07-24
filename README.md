@@ -161,9 +161,12 @@ tests/             Offline tests — build the graph, toggle research, round-tri
 ```bash
 uv run pytest                # offline: no API key or network needed
 uvx ruff check . && uvx ruff format .
+uvx ty check
 ```
 
 The tests construct the full agent graph *without* calling the model or the network, so they run for free in CI — and they assert the research subagent appears only with a Tavily key, memory survives a save/load round-trip, and every `SKILL.md` is well-formed.
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs all three gates on every push to `main` and every PR: `uv sync --locked` (so a `pyproject.toml` edit with a stale lockfile can't land), then `pytest` and `ty check` across Python 3.11/3.12/3.13, plus `ruff check` once. **No API key is configured in the workflow** — that's deliberate, and it turns "building the agent never touches the network" from a claim in the docs into something CI would fail on.
 
 ---
 

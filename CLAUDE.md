@@ -106,7 +106,12 @@ Two reader gotchas the web UI exposed:
 
 ## Automation (`.claude/`)
 
-There is no CI, no pre-commit, and no git hooks here — the checked-in `.claude/` config is the only thing enforcing the gates and invariants above. Three hooks, wired in `.claude/settings.json`:
+The gates and invariants above are enforced in **two layers**, and the split is the point. There is no pre-commit and no git hooks.
+
+1. **`.claude/` hooks — the inner loop.** Sub-second, fire on Claude Code's own events, and speak *to the model*: an exit-2 stderr lands in context so the diagnostic is fixed while the edit's intent is still live. They see the uncommitted tree, but only for edits Claude Code itself made.
+2. **`.github/workflows/ci.yml` — the branch defense.** Runs the same three gates on push to `main` and on every PR, in a clean clone with no `.env`, matrixed over Python 3.11/3.12/3.13. It covers what hooks structurally cannot: hand edits, contributors not using Claude Code, and fresh-environment-only breakage (the transitive `yaml` import and the private `deepagents` symbol noted under Gotchas). It also *enforces* the offline invariant — no API key is set anywhere in the workflow, so the day `build_agent()` starts needing the wire, CI fails instead of quietly billing.
+
+Don't collapse the layers: CI is authoritative but arrives minutes later with no channel to the model, and the hooks are fast and in-context but trivially bypassed by editing a file outside Claude Code. Three hooks, wired in `.claude/settings.json`:
 
 | Hook | Event | Behavior |
 |---|---|---|
@@ -149,6 +154,7 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 ## Gotchas
 
 - `tests/test_build.py` imports two things that aren't declared dependencies or public API: `yaml` (pyyaml arrives transitively via langchain) and `deepagents.middleware.filesystem._check_fs_permission` (private). Either can break on a dependency bump; the sandbox test is the likely casualty.
+- **`[tool.ruff.format] exclude = ["*.md"]` is load-bearing — don't drop it.** Ruff 0.16 formats Python code blocks inside `.md`, which would make the formatter the only part of the toolchain that reaches into docs: `ruff check` skips Markdown entirely (`No Python files found`), and `hooks/ruff-ty-gate.sh` filters to `*.py`/`*.pyi`. Without the exclude, the documented `uvx ruff format .` silently rewrites the hand-typeset fences in `README.md`, so an unrelated commit picks up a docs diff. With it, the formatter sees 18 Python files and `.` is safe for the hook, CI, and the command line alike.
 - `workspace/` and `.speechwriter/` are gitignored runtime output — `load_settings()` creates them on startup, so a missing folder never fails the first draft.
 - The CLI rotates `thread_id` after a `KeyboardInterrupt` so it never resumes a half-executed graph; that intentionally drops prior conversation context.
 - The orchestrator is given **no direct tools** (`tools=[]`). Research is delegated so noisy search results never crowd the writing context. Add new capabilities as subagents unless the orchestrator genuinely needs them inline.

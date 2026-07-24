@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Stop-hook test gate for speechwriter-agent.
 #
-# There is no CI and no pre-commit here, and CLAUDE.md requires `uv run pytest` to stay
-# clean. The suite is fully offline (build_agent() never calls the model or the network)
-# and runs in ~1.2s, so gating the end of a turn on it is cheap.
+# CLAUDE.md requires `uv run pytest` to stay clean. CI (.github/workflows/ci.yml) runs it
+# too, matrixed over 3.11-3.13, but only after a push. The suite is fully offline
+# (build_agent() never calls the model or the network) and runs in ~1.2s, so gating the end
+# of a turn on it is cheap and keeps the failure from becoming a commit in the first place.
 #
 # Scope note: this fires when the WORKING TREE is dirty under the watched paths, not when
 # "this turn" touched them -- a Stop hook has no reliable per-turn diff. Once there are
@@ -58,6 +59,6 @@ case "$dirty" in
 esac
 
 # Cap the feedback: a collection error dumps every traceback into context.
-printf '`uv run pytest` is failing. CLAUDE.md requires this gate to stay clean, and nothing else (no CI, no pre-commit) checks it. Fix the failures, then stop.%s\n\n%s\n' \
+printf '`uv run pytest` is failing. CLAUDE.md requires this gate to stay clean, and CI will fail on it the moment this is pushed. Fix the failures now, then stop.%s\n\n%s\n' \
   "$dep_hint" "$(printf '%s\n' "$out" | tail -c 4000)" >&2
 exit 2

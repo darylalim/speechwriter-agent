@@ -2,8 +2,10 @@
 # PostToolUse(Edit|Write) gate: keeps `uvx ruff check .` and `uvx ty check` green on every
 # Python edit. Exit 2 shows stderr to Claude so it can fix the diagnostics inline.
 #
-# CLAUDE.md declares all three gates clean and says "Keep them that way", but there is no
-# CI, no pre-commit, and no git hooks here. Measured cost: ruff ~0.18s + ty ~0.30s.
+# CLAUDE.md declares all three gates clean and says "Keep them that way". CI
+# (.github/workflows/ci.yml) enforces the same three, but only once a commit is pushed and
+# with no way to talk back to the model. This catches the identical diagnostics while the
+# edit is still in context. Measured cost: ruff ~0.18s + ty ~0.30s.
 set -uo pipefail
 
 payload=$(cat)
