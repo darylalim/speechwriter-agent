@@ -106,12 +106,14 @@ Two reader gotchas the web UI exposed:
 
 ## Automation (`.claude/`)
 
-The gates and invariants above are enforced in **two layers**, and the split is the point. There is no pre-commit and no git hooks.
+The gates and invariants above are guarded by **two layers**, and the split is the point. There is no pre-commit and no git hooks.
 
 1. **`.claude/` hooks — the inner loop.** Sub-second, fire on Claude Code's own events, and speak *to the model*: an exit-2 stderr lands in context so the diagnostic is fixed while the edit's intent is still live. They see the uncommitted tree, but only for edits Claude Code itself made.
-2. **`.github/workflows/ci.yml` — the branch defense.** Runs the same three gates on push to `main` and on every PR, in a clean clone with no `.env`, matrixed over Python 3.11/3.12/3.13. It covers what hooks structurally cannot: hand edits, contributors not using Claude Code, and fresh-environment-only breakage (the transitive `yaml` import and the private `deepagents` symbol noted under Gotchas). It also *enforces* the offline invariant — no API key is set anywhere in the workflow, so the day `build_agent()` starts needing the wire, CI fails instead of quietly billing.
+2. **`.github/workflows/ci.yml` — the independent check.** Runs the same three gates on push to `main` and on every PR, in a clean clone with no `.env`, matrixed over Python 3.11/3.12/3.13 (~25s for the whole run). It covers what hooks structurally cannot: hand edits, contributors not using Claude Code, and fresh-environment-only breakage (the transitive `yaml` import and the private `deepagents` symbol noted under Gotchas). It also exercises the offline invariant — no API key is set anywhere in the workflow, so the day `build_agent()` starts needing the wire, CI goes red instead of quietly billing.
 
-Don't collapse the layers: CI is authoritative but arrives minutes later with no channel to the model, and the hooks are fast and in-context but trivially bypassed by editing a file outside Claude Code. Three hooks, wired in `.claude/settings.json`:
+   **It reports; it does not block.** No branch protection rule requires these checks, so a red run is advisory — a merge or a push to `main` still lands. Making it a real gate is a repo-settings change, not a file: require the four checks (`ruff check` and `pytest + ty (py3.11|3.12|3.13)`) on `main`. Until then, don't describe CI as if it enforces anything.
+
+Neither layer subsumes the other. The hooks are fast and land *in the model's context*, but only for edits Claude Code made and are bypassed by editing a file any other way. CI sees every commit in a clean environment, but out of band and with no channel back to the model — and, today, without the authority to stop anything. Three hooks, wired in `.claude/settings.json`:
 
 | Hook | Event | Behavior |
 |---|---|---|

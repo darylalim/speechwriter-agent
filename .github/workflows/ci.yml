@@ -1,7 +1,11 @@
 name: CI
 
-# Enforces the three gates CLAUDE.md declares must stay clean — `uv run pytest`,
+# Runs the three gates CLAUDE.md declares must stay clean — `uv run pytest`,
 # `uvx ruff check .`, and `uvx ty check` — on every commit, from anyone.
+#
+# These report status only. No branch protection rule requires them, so a red run does
+# not block a merge or a push to main; requiring the four checks on `main` in repo
+# settings is what would turn this into an actual gate.
 #
 # This complements `.claude/hooks/`, it does not replace it. Those hooks fire on Claude
 # Code's Edit|Write and Stop events, so they are fast (~0.5s) and speak directly to the
@@ -98,8 +102,8 @@ jobs:
 
       # No ANTHROPIC_API_KEY or TAVILY_API_KEY is set anywhere in this workflow, and a
       # fresh checkout has no .env. That absence is the feature: CLAUDE.md's "building
-      # the agent must not call the model or the network" invariant is *enforced* here,
-      # so if it ever regresses these jobs fail instead of quietly starting to bill.
+      # the agent must not call the model or the network" invariant is *checked* here,
+      # so if it ever regresses these jobs go red instead of quietly starting to bill.
       # It also pins the no-Tavily branch — research disabled, `[VERIFY]` prompt variant.
       - name: uv run pytest
         run: uv run pytest -q
