@@ -31,7 +31,9 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 # The workhorse model. Sonnet 5 is a strong writer at sensible cost; override with
-# SPEECHWRITER_MODEL (e.g. "claude-opus-4-8" for the highest-quality drafting).
+# SPEECHWRITER_MODEL (e.g. "claude-opus-5" for the highest-quality drafting — set
+# SPEECHWRITER_MAX_TOKENS=128000 alongside it, because LangChain has no profile for that id
+# yet, so tier 3 below would cap its real 128k ceiling at DEFAULT_MAX_TOKENS).
 DEFAULT_MODEL = "claude-sonnet-5"
 
 # Fallback output-token ceiling — used *only* when the model id has no LangChain profile.
