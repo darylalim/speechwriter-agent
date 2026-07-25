@@ -48,4 +48,10 @@ python = "./.venv"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+    # tests/test_build.py imports yaml to parse SKILL.md frontmatter. It arrives
+    # transitively via langchain, so the suite passed without declaring it -- and
+    # `uv sync --locked` in CI reproduces that same tree, so CI could not catch the
+    # omission either. The day langchain drops pyyaml, the break would surface on the
+    # next `uv lock` as a ModuleNotFoundError in an apparently unrelated test file.
+    "pyyaml>=6.0",
 ]
