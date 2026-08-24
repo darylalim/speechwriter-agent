@@ -37,15 +37,20 @@ The agent sees a `CompositeBackend` that routes by path prefix. Virtual paths ar
 /memories/   → StoreBackend        intercepted before disk; never a real folder
 ```
 
-### Paths are single-sourced in `config.Settings` — and three subsystems must agree
+### Paths are single-sourced in `config.Settings` — and four consumers must agree
 
-`memories_vpath` is a `ClassVar` (`/memories/`); `skills_vpath` and `workspace_vpath` are properties derived from real dirs via `Settings._vpath()`. Three independent consumers depend on them agreeing, and nothing enforces the agreement:
+`memories_vpath` is a `ClassVar` (`/memories/`); `skills_vpath` and `workspace_vpath` are properties derived from real dirs via `Settings._vpath()`. Four independent consumers depend on them agreeing:
 
-1. **Backend routes** — the `CompositeBackend` built in `agent.py:build_agent()` routes `memories_vpath` to the Store.
-2. **Sandbox rules** — `agent.py:_write_sandbox()` allows writes only under workspace + memories.
-3. **Prompt text** — `prompts.py` interpolates all three paths into the system prompts.
+1. **Backend routes** — `agent.py:_build_backend()` routes `memories_vpath` to the Store. *(`test_backend_routes_memories_to_the_store_and_everything_else_to_disk`)*
+2. **Sandbox rules** — `agent.py:_write_sandbox()` allows writes only under workspace + memories. *(`test_write_sandbox_confines_writes`)*
+3. **Prompt text** — `prompts.py` interpolates all three paths into the system prompts. *(`test_every_virtual_path_reaches_the_prompts`)*
+4. **README's routing table** — documentation, and the first thing a reader meets. *(`test_readme_routing_table_matches_the_configured_paths`)*
 
-Change a path and you must propagate it through all three, or the agent will be *instructed* to write somewhere the sandbox *denies*.
+Change a path and you must propagate it through all four, or the agent will be *instructed* to write somewhere the sandbox *denies*.
+
+This used to be enforced by nothing but an advisory Claude Code hook that restated the rule on a `config.py` edit. It is now four tests, which is strictly stronger: they run in CI and for contributors not using Claude Code, and they *block*. Two things they encode deliberately. The backend consumer is tested through `_build_backend()` — extracted from `build_agent()` for exactly this reason, since a route buried in a local cannot be asserted against without compiling the graph — and it asserts the **behaviour** (a `/memories/` write reaches the Store and never becomes a real folder), not just the route key, because that is the property the design exists for. And a *consistent* rename must keep passing: the prompt interpolates from `Settings`, so only hard-coded drift should fail. That is why README, which spells the paths out as prose, is the consumer that catches a rename.
+
+The trailing-slash asymmetry is deliberate and load-bearing: `skills_vpath` and `memories_vpath` carry a trailing slash, `workspace_vpath` does not, because `prompts.py` renders `{workspace_vpath}/speeches/<slug>.md`. Normalizing them for tidiness silently yields `/workspace//speeches/` — which is why the prompt test asserts no rendered prompt contains `//`.
 
 Likewise `SPEECHES_SUBDIR` / `RESEARCH_SUBDIR` / `WORDS_PER_MINUTE` are single-sourced in `config.py`: `prompts.py` *tells* the agent to file drafts under those folders at that pace, and `workspace.py` *reads* them back to list drafts and estimate spoken length. Re-hardcoding either side yields a browser that silently lists nothing — `test_prompt_points_the_agent_at_the_folder_the_browser_reads` guards the seam.
 
@@ -114,31 +119,34 @@ The gates and invariants above are guarded by **two layers**, and the split is t
 
    **It reports; it does not block.** No branch protection rule requires these checks, so a red run is advisory — a merge or a push to `main` still lands. Making it a real gate is a repo-settings change, not a file: require the four checks (`ruff check` and `pytest + ty (py3.11|3.12|3.13)`) on `main`. Until then, don't describe CI as if it enforces anything.
 
-Neither layer subsumes the other. The hooks are fast and land *in the model's context*, but only for edits Claude Code made and are bypassed by editing a file any other way. CI sees every commit in a clean environment, but out of band and with no channel back to the model — and, today, without the authority to stop anything. Three hooks, wired in `.claude/settings.json`:
+Neither layer subsumes the other. The hooks are fast and land *in the model's context*, but only for edits Claude Code made and are bypassed by editing a file any other way. CI sees every commit in a clean environment, but out of band and with no channel back to the model — and, today, without the authority to stop anything. Three hooks, wired in `.claude/settings.json` — **all three blocking**; there is no advisory hook, by design (see below):
 
 | Hook | Event | Behavior |
 |---|---|---|
-| `hooks/ruff-ty-gate.sh` | `PostToolUse` on `Edit\|Write` | Runs `uvx ruff format` + `ruff check --fix` on the edited `.py`, then re-checks with `ruff check` and `ty check`. **Exit 2** on remaining diagnostics. ~0.6s. |
-| `hooks/invariant-hints.sh` | `PostToolUse` on `Edit\|Write` | **Advisory only.** On a `skills/` edit, compares the directory count against the hard-coded assertion in `tests/test_build.py` and reports drift. On a `config.py` edit, restates the path-agreement invariant. |
-| `hooks/pytest-gate.sh` | `Stop` | Runs `uv run pytest` if the working tree is dirty under `src/ tests/ skills/ pyproject.toml uv.lock`. **Exit 2** on failure. |
+| `hooks/env-guard.sh` | `PreToolUse` on `Bash` | Blocks any Bash command referencing a `.env*` file or `secrets.toml`. **Exit 2** to deny. Measured 0.03s. |
+| `hooks/ruff-ty-gate.sh` | `PostToolUse` on `Edit\|Write` | Runs `uvx ruff format` + `ruff check --fix` on the edited `.py`, then re-checks with `ruff check` and `ty check`. **Exit 2** on remaining diagnostics. Measured 0.66s. |
+| `hooks/pytest-gate.sh` | `Stop` | Runs `uv run pytest` if the working tree is dirty under `src/ tests/ skills/ pyproject.toml uv.lock`. **Exit 2** on failure. Measured 0.02s clean / 3.0s dirty. |
 
 Design rules to preserve if you touch these:
 
-- **Blocking vs advisory is deliberate.** Lint and type failures are objectively wrong and mechanically fixable, so those hooks exit 2. "You added a skill" is a fork in the road, not an error — `invariant-hints.sh` only emits `additionalContext` on stdout and always exits 0. Blocking on advisory signal is how a hook gets deleted.
-- **The Stop gate must stay cheap in the common case.** It short-circuits on `git status --porcelain` in ~20ms and only then pays the ~1.2s suite. `--untracked-files=all` is load-bearing: `git diff` sees only *tracked* files, so a brand-new `skills/<slug>/SKILL.md` — exactly what trips the count assertion — would slip past untested.
+- **A hook must catch something no test can.** This is the rule that shrank the set. An advisory `invariant-hints.sh` used to restate the path invariant on a `config.py` edit and the skill-count assertion on a `skills/` edit — but the skill branch duplicated a gate that already *blocks* (`pytest-gate.sh` watches `skills` with `--untracked-files=all` precisely so a new `SKILL.md` trips `len(skill_dirs) == 4`), and the path branch duplicated the CLAUDE.md section above, which is already in the model's context at session start. Both were replaced by tests. **Before adding an advisory hook, check whether it is a test you have not written yet** — a hint is a suggestion that only fires for edits Claude Code made; a test blocks, runs in CI, and works for everyone.
+- **The Stop gate must stay cheap in the common case.** It short-circuits on `git status --porcelain` in ~20ms and only then pays the ~3s suite (measured; `pytest` itself is ~2.5s and `uv` startup the rest). It fires whenever the tree is dirty under the watched paths, not when *this turn* touched them — a Stop hook has no reliable per-turn diff — so once `src/` has uncommitted work every turn pays it. At ~3s that is the intended trade. `--untracked-files=all` is load-bearing: `git diff` sees only *tracked* files, so a brand-new `skills/<slug>/SKILL.md` — exactly what trips the count assertion — would slip past untested.
 - **Path matching lives in the scripts, not in settings.json.** The hook `if:` field is real, but its patterns are working-directory-relative and the leading-slash form is underspecified; `if: "Edit(/skills/**)"` can silently match nothing. Filtering inside the script is explicit and testable — each script parses `tool_input.file_path` from stdin and can be exercised directly:
 
   ```bash
-  echo '{"tool_input":{"file_path":"'$PWD'/src/speechwriter/config.py"}}' | .claude/hooks/invariant-hints.sh
+  echo '{"tool_input":{"file_path":"'$PWD'/src/speechwriter/agent.py"}}' | .claude/hooks/ruff-ty-gate.sh; echo $?
   echo '{"stop_hook_active":false}' | .claude/hooks/pytest-gate.sh; echo $?
+  echo '{"tool_input":{"command":"cat .env"}}' | .claude/hooks/env-guard.sh; echo $?   # want 2
   ```
 
-- **Fail open on missing tooling, closed on real failures.** A missing `uv`/`git`/`jq` exits 0 with a note; only an actual test or lint failure exits 2. A "command not found" must never masquerade as a broken gate.
+- **Missing tooling is non-blocking but *visible* — exit 1, not 0.** A missing `uv`/`jq`/`python3` must never masquerade as a lint or test failure, so it never exits 2. But it must not exit 0 either: stderr on exit 0 is swallowed, so a gate that has quietly stopped running looks exactly like a gate that is passing. Exit 1 is non-blocking *and* surfaces the note. Both quality gates follow this.
+- **`env-guard.sh` inverts that rule, deliberately.** It is the one hook guarding credentials rather than code quality, so it **fails closed**: no `python3`, or an unparseable payload, and it denies the command. A credential guard that silently switches itself off when a parser is missing is worse than no guard, because you believe you have one. Its scope mirrors the tool-level `Read(./.env.*)` deny rule exactly — `.env.example` included, though it is committed and secret-free — so the two cannot disagree; narrowing it is one line.
+- **`permissions.deny` is tool-scoped, and Bash routes around it.** `Read(./.env)` stops the `Read` tool and nothing else; `cat .env` was never covered by any rule, and auto mode makes reading files via `cat`/`sed`/`grep` the *default* path. That gap is what `env-guard.sh` exists to close — remember it whenever you add a `deny` entry expecting it to be airtight.
 - `pytest-gate.sh` honors `stop_hook_active` so it can never re-block a turn it already blocked.
 - **Add an import and its first use in the same edit.** `ruff-ty-gate.sh` runs `ruff check --fix`, which deletes a just-added import as unused (F401) before you have written the code that needs it — silently reverting your edit. Writing the usage first works too, at the cost of one blocking failure.
 - **Mutation-test a new test before trusting it.** Break the code it covers, confirm it fails, restore. Nothing else here would catch a test that passes vacuously.
 
-Note for `invariant-hints.sh`: `README.md`'s routing table hard-codes `/skills/`, `/workspace/`, `/memories/` too, making it a fourth (documentation-level) consumer of the paths beyond the three code subsystems listed above. The virtual paths are also deliberately *asymmetric* — `skills_vpath` and `memories_vpath` carry a trailing slash, `workspace_vpath` does not, because `prompts.py` renders `{workspace_vpath}/speeches/<slug>.md`. Normalizing them for consistency silently yields `/workspace//speeches/`.
+Writing a `.env` value is therefore a **user action, not a Claude action**: ask the user to make the edit, then verify indirectly (assert a variable is non-empty, run the offline suite) without printing anything.
 
 ## Skills
 
@@ -147,6 +155,7 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 - YAML frontmatter with `name` **matching the directory slug** and a non-empty `description`.
 - Body sections: `## Overview`, `## When to Use`, `## Instructions`, `## Pitfalls`.
 - The test hard-codes `len(skill_dirs) == 4` — **adding or removing a skill requires updating that assertion.**
+- `test_orchestrator_prompt_names_every_skill` additionally requires each slug to appear in the parenthetical list in step 4 of `orchestrator_prompt()`. Progressive disclosure cuts both ways: the agent only reads a `SKILL.md` if it knows the skill exists, so a skill absent from that list is dead weight on disk. Slugs are matched in their prose form (`delivery-and-cadence` → "delivery & cadence"); if a new skill does not fit that shape, name it in the prompt however reads best and widen the normalisation in the test.
 
 ## Web UI (Streamlit)
 
