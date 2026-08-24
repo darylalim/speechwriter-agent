@@ -40,10 +40,13 @@ dirty=$(git status --porcelain --untracked-files=all -- "${watched[@]}" 2>/dev/n
 [ -n "$dirty" ] || exit 0
 
 # Exiting 2 because uv is missing would block the turn with a "command not found"
-# masquerading as a test failure.
+# masquerading as a test failure. Exit 1 rather than 0: both are non-blocking, but only
+# exit 1 surfaces the note -- a stderr line on exit 0 is swallowed, so a gate that has
+# quietly stopped running looks exactly like a gate that is passing. Same discipline as
+# ruff-ty-gate.sh, which exits 1 for missing jq/python3/uvx.
 if ! command -v uv >/dev/null 2>&1; then
-  printf 'pytest gate skipped: uv is not on PATH.\n' >&2
-  exit 0
+  printf 'pytest gate skipped: uv is not on PATH, so the suite did not run.\n' >&2
+  exit 1
 fi
 
 out=$(uv run pytest -q 2>&1)
