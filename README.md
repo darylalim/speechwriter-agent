@@ -1,12 +1,11 @@
 # Speechwriter Agent
 
-A speechwriter built with **[Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)** (LangChain + LangGraph). You describe the speaker, audience, occasion, and goal; the agent plans the work, researches facts, drafts a speech written *for the ear*, critiques its own draft, revises, and **remembers how each speaker sounds** across sessions.
+A speechwriter built with **[Deep Agents](https://docs.langchain.com/oss/python/deepagents/overview)** (LangChain + LangGraph). You describe the speaker, audience, occasion, and goal; the agent researches facts, drafts a speech written *for the ear*, critiques its own draft, revises, and **remembers how each speaker sounds** across sessions.
 
 ```
 you › Write a 4-minute wedding toast. Speaker: David, best man. Audience: 80 guests,
       mixed ages. Couple: Ana & Priya, met hiking. Warm, a little funny, no clichés.
 
-  ⚙  write_todos       [{"content":"Intake + recall David's voice","status":"in_progress"}, …]
   ⚙  read_file         {"file_path":"/skills/audience-and-occasion/SKILL.md","limit":1000}
   ⚙  task              {"subagent_type":"style-critic","description":"Critique toast draft"}
   ✓  task: Verdict 8/10. Tighten the open; the hiking callback lands. …
@@ -20,11 +19,11 @@ you › Write a 4-minute wedding toast. Speaker: David, best man. Audience: 80 g
 
 ## Why Deep Agents?
 
-A speech is a **long-horizon** task: intake → research → outline → draft → critique → revise. That maps cleanly onto what the Deep Agents harness provides out of the box, so this project mostly *configures* capabilities rather than implementing them:
+A speech is a **long-horizon** task: intake → research → outline → draft → critique → revise. That maps cleanly onto what the Deep Agents harness provides, so this project mostly *configures* capabilities rather than implementing them:
 
 | Speechwriting need | Deep Agents primitive | Where it lives |
 |---|---|---|
-| Break the commission into stages | `write_todos` planning (built in) | automatic |
+| Break the commission into stages | The staged operating rhythm in the system prompt — *prompted, not tooled* | [`prompts.py`](src/speechwriter/prompts.py) |
 | Keep draft versions & research notes | Filesystem tools + `FilesystemBackend` | [`agent.py`](src/speechwriter/agent.py) |
 | Look up facts without polluting the writing context | `researcher` **subagent** (Tavily) | [`subagents.py`](src/speechwriter/subagents.py) |
 | A hard editorial pass | `style-critic` **subagent** | [`subagents.py`](src/speechwriter/subagents.py) |

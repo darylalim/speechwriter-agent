@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A speechwriter agent built on **Deep Agents** (`deepagents` on LangChain/LangGraph). The project mostly *configures* the harness rather than implementing agent machinery: planning (`write_todos`), filesystem tools, subagent delegation, and skills all come from `create_deep_agent`. The code supplies the model, the prompts, the backend routing, the permission sandbox, and durable memory.
+A speechwriter agent built on **Deep Agents** (`deepagents` on LangChain/LangGraph). The project mostly *configures* the harness rather than implementing agent machinery: filesystem tools, subagent delegation, and skills all come from `create_deep_agent`. The code supplies the model, the prompts, the backend routing, the permission sandbox, and durable memory.
 
 ## Commands
 
@@ -160,5 +160,6 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 - `workspace/` and `.speechwriter/` are gitignored runtime output — `load_settings()` creates them on startup, so a missing folder never fails the first draft.
 - The CLI rotates `thread_id` after a `KeyboardInterrupt` so it never resumes a half-executed graph; that intentionally drops prior conversation context.
 - The orchestrator is given **no direct tools** (`tools=[]`). Research is delegated so noisy search results never crowd the writing context. Add new capabilities as subagents unless the orchestrator genuinely needs them inline.
+- **There is no planning tool, and that is not an oversight.** `create_deep_agent` binds exactly `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, `task` — no `write_todos`. deepagents 0.6 had no `TodoListMiddleware` at all; 0.7 installs it only for the OpenAI-Codex harness profile. The staged rhythm lives in `prompts.py` instead. If you ever want the tool, it is `create_deep_agent(middleware=[TodoListMiddleware(system_prompt="")])` from `langchain.agents.middleware` (the empty `system_prompt` trims LangChain's default prose, which otherwise duplicates the tool's own schema description) — but do not re-add a *claim* that planning is automatic without binding it, or the system prompt goes back to advertising a tool the model cannot call.
 - `langsmith.utils.get_env_var` is `lru_cache`d, so anything that reads tracing state before `load_settings()` calls `load_dotenv` permanently caches "tracing off". `build_agent()` calls `load_settings()` first — that ordering is what makes `LANGSMITH_TRACING` in `.env` work at all.
 - The agent revises `workspace/speeches/<slug>.md` **in place**; copy it aside first if you want to diff a re-run against the previous draft.

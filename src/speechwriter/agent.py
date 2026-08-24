@@ -10,7 +10,7 @@ This is the single place that assembles the Deep Agent:
 * **backend**      — a ``CompositeBackend`` routing ``/memories/`` to a persistent
                      ``StoreBackend`` and everything else to real disk via ``FilesystemBackend``.
 * **store**        — a JSON-snapshotted ``InMemoryStore`` for durable voice profiles.
-* **checkpointer** — ``MemorySaver``, required so planning (``write_todos``) and any
+* **checkpointer** — ``MemorySaver``, required so multi-turn conversation state and any
                      human-in-the-loop interrupts have somewhere to persist per thread.
 """
 
