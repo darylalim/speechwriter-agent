@@ -16,10 +16,11 @@ import uuid
 
 import yaml
 from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
-from langchain_core.outputs import ChatGeneration, LLMResult
+from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
 
-from speechwriter import config, memory
+from speechwriter import config, memory, prompts
 from speechwriter.agent import _build_model, _write_sandbox, build_agent
 from speechwriter.config import load_settings
 from speechwriter.observability import TruncationWarner
@@ -326,3 +327,107 @@ def test_all_skills_have_valid_frontmatter():
         body = text[match.end() :]
         for section in required_sections:
             assert section in body, f"{d.name} is missing '{section}'"
+
+
+# Backticked tokens shaped like an identifier: lowercase, no slash, dot, angle bracket or
+# space — so virtual paths (`/memories/`), filename placeholders (`<slug>.md`) and markers
+# (`[VERIFY]`) fall out, and only tool- and subagent-shaped names survive.
+_BACKTICKED_IDENT = re.compile(r"`([a-z][a-z0-9_-]*)`")
+
+# Backticked identifiers in the prompts that are deliberately NOT capabilities. Empty today,
+# and that is the point: a new backticked word forces a conscious choice — bind the tool, or
+# declare the word prose. Silence is exactly what let `write_todos` sit in the orchestrator
+# prompt from the day it was written.
+_NON_TOOL_BACKTICKS: frozenset[str] = frozenset()
+
+
+def _model_bound_tools(monkeypatch, settings) -> set[str]:
+    """Tool names the orchestrator's model is actually offered, captured without the wire.
+
+    `bind_tools` fires when the graph *steps*, not when it is built, so this runs a single
+    turn against a stub that records the tool list and then ends the turn. Nothing reaches
+    the network, so the offline invariant holds.
+
+    The compiled graph's own `nodes["tools"].tools_by_name` would be cheaper and needs no
+    stub, but it is a superset: it carries `execute`, which middleware strips before the
+    model ever sees it. Asserting against that list would let a prompt advertise a tool the
+    model cannot call — precisely the bug this guards.
+    """
+    captured: set[str] = set()
+
+    class _Recorder(BaseChatModel):
+        @property
+        def _llm_type(self) -> str:
+            return "recorder"
+
+        def bind_tools(self, tools, **kwargs):
+            for tool in tools:
+                name = getattr(tool, "name", None)
+                captured.add(name if name else tool["name"])
+            return self
+
+        def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+            # No tool calls, so the turn ends after this one step.
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
+
+    monkeypatch.setattr("speechwriter.agent._build_model", lambda _s: _Recorder())
+    bundle = build_agent(settings)
+    bundle.agent.invoke(
+        {"messages": [{"role": "user", "content": "hello"}]},
+        config={"configurable": {"thread_id": "tool-surface"}},
+    )
+    assert captured, "capture stub never ran — bind_tools was not called"
+    return captured
+
+
+def test_prompts_only_advertise_tools_the_model_can_call(monkeypatch, tmp_path):
+    # The orchestrator prompt spent its whole life telling the model to use its "planning
+    # tool (`write_todos`)" — a tool `create_deep_agent` has never bound. Nothing caught it:
+    # `ty` checks Python and not prose, `ruff` checks syntax, and no test compared the
+    # rendered prompt against the tool surface. This is the prompt<->tools twin of
+    # test_prompt_points_the_agent_at_the_folder_the_browser_reads, which guards
+    # prompt<->workspace for the same reason: two sources of truth, nothing enforcing them.
+    #
+    # A miss here is invisible at runtime too. The model is told it has a capability, then
+    # either emits a call that comes back an error or silently drops the instruction — and
+    # `status="success"` on the surrounding turn either way.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-dummy")  # both subagents present
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+
+    subagents = build_subagents(settings)
+    # Everything a prompt may legitimately name: tools bound to the orchestrator, the
+    # subagents reachable via `task`, and each subagent's own explicit tools. Subagents run
+    # the same filesystem middleware, so the orchestrator's file tools cover them too.
+    vocabulary = (
+        _model_bound_tools(monkeypatch, settings)
+        | {sa["name"] for sa in subagents}
+        | {tool.name for sa in subagents for tool in sa.get("tools", [])}
+        | _NON_TOOL_BACKTICKS
+    )
+    assert "task" in vocabulary, f"expected the delegation tool in {sorted(vocabulary)}"
+
+    advertised: set[str] = set()
+    for label, text in (
+        ("orchestrator", prompts.orchestrator_prompt(settings)),
+        ("researcher", prompts.researcher_prompt(settings)),
+        ("style-critic", prompts.critic_prompt(settings)),
+    ):
+        named = set(_BACKTICKED_IDENT.findall(text))
+        advertised |= named
+        unknown = sorted(named - vocabulary)
+        assert not unknown, (
+            f"{label} prompt advertises {unknown}, which is neither a bound tool, a "
+            f"subagent, nor listed in _NON_TOOL_BACKTICKS — bind it, rename it, or "
+            f"declare it prose."
+        )
+
+    # Anti-vacuity canary. Every assertion above is satisfied by an empty match set, so a
+    # broken pattern or a prompt rewrite that drops backticks would turn this test green
+    # while checking nothing. The orchestrator names its delegation tool, so `task` is the
+    # one identifier that must survive extraction.
+    assert "task" in advertised, (
+        f"extracted {sorted(advertised)} from the prompts — expected `task`. The pattern "
+        f"has stopped matching, so this test is no longer checking anything."
+    )
