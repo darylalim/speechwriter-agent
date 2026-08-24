@@ -116,6 +116,32 @@ def _write_sandbox(settings: Settings) -> list[FilesystemPermission]:
     ]
 
 
+def _build_backend(settings: Settings, store: BaseStore) -> CompositeBackend:
+    """Route the agent's single filesystem: ``/memories/`` to the Store, the rest to disk.
+
+    Longest-prefix routing: ``/memories/`` is intercepted for persistent, cross-session
+    storage; every other path (drafts, research notes) hits real disk under the repo.
+
+    Built once as an instance, not as a ``backend(runtime)`` factory: deepagents 0.7
+    removes both the callable-factory form of ``backend=`` and StoreBackend's ``runtime``
+    argument (which 0.6 already ignores). The store is handed over explicitly rather than
+    left to ``get_store()`` so this backend always resolves to the same object
+    ``persist()`` snapshots, with or without a graph execution context.
+
+    ``file_format`` is deliberately left at its default — pinning it to ``"v1"`` would
+    make existing memory snapshots unreadable.
+
+    Extracted from :func:`build_agent` for the same reason :func:`_write_sandbox` is a
+    separate function: this is one of the consumers that must agree with
+    :class:`~speechwriter.config.Settings` about the virtual paths, and a route buried in
+    a local variable cannot be asserted against without building the whole graph.
+    """
+    return CompositeBackend(
+        default=FilesystemBackend(root_dir=str(settings.project_root), virtual_mode=True),
+        routes={settings.memories_vpath: StoreBackend(store=store, namespace=_memory_namespace)},
+    )
+
+
 def _build_model(settings: Settings) -> BaseChatModel:
     """Resolve the model id, settling its output-token ceiling in three tiers.
 
@@ -165,21 +191,7 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     store = load_store(settings)
     sandbox = _write_sandbox(settings)
 
-    # Longest-prefix routing: /memories/ is intercepted for persistent, cross-session
-    # storage; every other path (drafts, research notes) hits real disk under the repo.
-    #
-    # Built once as an instance, not as a `backend(runtime)` factory: deepagents 0.7
-    # removes both the callable-factory form of `backend=` and StoreBackend's `runtime`
-    # argument (which 0.6 already ignores). The store is handed over explicitly rather
-    # than left to `get_store()` so this backend always resolves to the same object
-    # `persist()` snapshots, with or without a graph execution context.
-    #
-    # `file_format` is deliberately left at its default — pinning it to "v1" would make
-    # existing memory snapshots unreadable.
-    backend = CompositeBackend(
-        default=FilesystemBackend(root_dir=str(settings.project_root), virtual_mode=True),
-        routes={settings.memories_vpath: StoreBackend(store=store, namespace=_memory_namespace)},
-    )
+    backend = _build_backend(settings, store)
 
     # Built, not named: a bare model string would inherit a 4096-token ceiling for any id
     # LangChain cannot profile. See `_build_model`.

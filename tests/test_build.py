@@ -21,7 +21,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
 
 from speechwriter import config, memory, prompts
-from speechwriter.agent import _build_model, _write_sandbox, build_agent
+from speechwriter.agent import _build_backend, _build_model, _write_sandbox, build_agent
 from speechwriter.config import load_settings
 from speechwriter.observability import TruncationWarner
 from speechwriter.subagents import build_subagents
@@ -431,3 +431,121 @@ def test_prompts_only_advertise_tools_the_model_can_call(monkeypatch, tmp_path):
         f"extracted {sorted(advertised)} from the prompts — expected `task`. The pattern "
         f"has stopped matching, so this test is no longer checking anything."
     )
+
+
+# --- The path-agreement invariant -------------------------------------------------------
+#
+# `config.Settings` is the single source for the three virtual paths, and four consumers
+# must agree with it: the backend routes, the write sandbox, the prompt text, and README's
+# routing table. Nothing structural enforced that agreement, so it lived as an advisory
+# Claude Code hook that restated CLAUDE.md at edit time. A hint is a suggestion; these are
+# a gate, and unlike the hook they also run in CI and for contributors not using Claude
+# Code. `test_write_sandbox_confines_writes` already covers the sandbox consumer.
+
+
+def test_backend_routes_memories_to_the_store_and_everything_else_to_disk(monkeypatch, tmp_path):
+    # Consumer 1 of the path invariant. The route lives in `_build_backend`, and the whole
+    # point of `/memories/` is that it is intercepted *before* disk — so this asserts the
+    # behaviour, not just the route key. A route that drifted from `settings.memories_vpath`
+    # would silently fall through to the default FilesystemBackend and start writing voice
+    # profiles into a real `memories/` folder that no snapshot ever persists.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    store = memory.load_store(settings)
+    backend = _build_backend(settings, store)
+
+    assert set(backend.routes) == {settings.memories_vpath}, (
+        f"backend routes {sorted(backend.routes)} but Settings says "
+        f"{settings.memories_vpath!r} — propagate the path change into agent.py."
+    )
+
+    backend.write(f"{settings.memories_vpath}mayor.md", "prefers short sentences")
+    backend.write(f"{settings.workspace_vpath}/{config.SPEECHES_SUBDIR}/toast.md", "# Toast")
+
+    # Intercepted: it reached the Store and never became a real directory.
+    assert [item.key for item in memory.all_items(store)] == ["/mayor.md"]
+    assert not (settings.project_root / "memories").exists(), (
+        "/memories/ fell through to the FilesystemBackend and hit real disk"
+    )
+    # Not intercepted: drafts are real files the user can open.
+    draft = settings.workspace_dir / config.SPEECHES_SUBDIR / "toast.md"
+    assert draft.read_text(encoding="utf-8") == "# Toast"
+
+
+def test_every_virtual_path_reaches_the_prompts(monkeypatch, tmp_path):
+    # Consumer 3. `test_prompt_points_the_agent_at_the_folder_the_browser_reads` covers the
+    # workspace path because the browser reads it back; the other two had no such second
+    # reader, so a renamed skills or memories directory would leave the agent instructed to
+    # read and write somewhere that no longer exists — and the sandbox would deny the write.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    rendered = {
+        "orchestrator": prompts.orchestrator_prompt(settings),
+        "researcher": prompts.researcher_prompt(settings),
+        "style-critic": prompts.critic_prompt(settings),
+    }
+    orchestrator = rendered["orchestrator"]
+
+    for label, vpath in (
+        ("memories", settings.memories_vpath),
+        ("skills", settings.skills_vpath),
+        ("workspace", settings.workspace_vpath),
+    ):
+        assert vpath in orchestrator, (
+            f"the orchestrator prompt never names {label}_vpath ({vpath!r}); config.py is "
+            f"the single source, so a path change must be propagated into prompts.py."
+        )
+
+    # The trailing-slash asymmetry is deliberate, and normalising it for tidiness is the
+    # documented way to break this: prompts.py renders `{workspace_vpath}/speeches/`, so a
+    # trailing slash on workspace_vpath silently yields `/workspace//speeches/`.
+    assert settings.memories_vpath.endswith("/")
+    assert settings.skills_vpath.endswith("/")
+    assert not settings.workspace_vpath.endswith("/"), (
+        "workspace_vpath must not carry a trailing slash — prompts.py appends its own."
+    )
+    for label, text in rendered.items():
+        assert "//" not in text, f"{label} prompt contains a doubled slash: {text!r}"
+
+
+def test_readme_routing_table_matches_the_configured_paths(monkeypatch, tmp_path):
+    # Consumer 4, and the one nothing else could ever catch: README's routing table
+    # hard-codes all three virtual paths as prose. It is the first thing a reader meets, so
+    # a stale table misdescribes the central design decision of the project.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    readme = (config._PKG_DIR.parents[1] / "README.md").read_text(encoding="utf-8")
+
+    for label, vpath in (
+        ("memories", settings.memories_vpath),
+        ("skills", settings.skills_vpath),
+        ("workspace", settings.workspace_vpath),
+    ):
+        assert vpath in readme, (
+            f"README.md's routing table does not mention {label}_vpath ({vpath!r}) — it is "
+            f"an undeclared fourth consumer of config.Settings and has gone stale."
+        )
+
+
+def test_orchestrator_prompt_names_every_skill():
+    # Not a path consumer, but the same class of drift and the other half of what the
+    # advisory hook used to say. Skills are progressive-disclosure: the agent only reads a
+    # SKILL.md if it knows the skill exists, and step 4 of the operating rhythm is the only
+    # place the library is enumerated. A skill absent from that list is dead weight on disk.
+    #
+    # Slugs are matched in their prose form, which is the convention the prompt already
+    # uses: `delivery-and-cadence` is written "delivery & cadence". If a new skill does not
+    # fit that shape, name it in the prompt however reads best and widen this normalisation.
+    skill_dirs = sorted(
+        p.name for p in (config._PKG_DIR.parents[1] / "skills").iterdir() if p.is_dir()
+    )
+    assert skill_dirs, "no skills found — this test would otherwise pass vacuously"
+
+    text = prompts.orchestrator_prompt(load_settings())
+    for slug in skill_dirs:
+        label = slug.replace("-and-", " & ").replace("-", " ")
+        assert label in text, (
+            f"skills/{slug}/ exists but the orchestrator prompt never mentions {label!r}, "
+            f"so the agent will never know to load it. Add it to the parenthetical list in "
+            f"step 4 of orchestrator_prompt()."
+        )
