@@ -5,24 +5,28 @@
 # deliberately (`--server.address 0.0.0.0`) if you actually intend to share it.
 address = "localhost"
 
-# Solarized, from Ethan Schoonover's palette, split into a light and a dark mode.
+# One Light by day, One Dark Pro by night — Atom's sibling palettes, kept as a pair so the
+# mode switch changes the light in the room rather than the identity of the app.
 #
-# This app's main job is reading long prose, so the theme is tuned for sustained reading
-# rather than dashboard glanceability: warm, low-contrast surfaces and the same muted accent
-# hues in both modes. Defining both [theme.light] and [theme.dark] makes Streamlit follow the
-# viewer's system light/dark preference and adds a System/Light/Dark switch to the settings
-# menu — so a speech reads on warm paper by day and in Solarized Dark at night. (The
-# single-mode [theme] this replaced was locked to light for everyone.)
+# This app's main job is reading long prose, so both modes are tuned for sustained reading
+# rather than dashboard glanceability. The two body-text contrasts are deliberately *not*
+# equal: 10.86:1 in light, 6.57:1 in dark. Dark mode wants the lower number — light text on a
+# dark field halates, and carrying light mode's ratio across is exactly what makes most
+# shipped dark themes (13-17:1) tiring over a four-minute speech. This pair replaced Solarized
+# Light + a deepened Solarized Dark; the light half of that had 4.13:1 body text, under WCAG AA.
 #
-# Everything shared between the two modes (typography, radii, the accent palette, chart
-# colors) lives in [theme]; only the surface and text tones that must flip live in the
-# per-mode tables. Theming stays here rather than in injected CSS, which is Streamlit's
-# documented preference and keeps the page files free of styling concerns.
+# Defining both [theme.light] and [theme.dark] makes Streamlit follow the viewer's system
+# preference and adds a System/Light/Dark switch to the settings menu; a single-mode [theme]
+# locks every viewer to one mode.
+#
+# Only what is genuinely mode-independent lives in [theme]: typography, radii, border flags.
+# The two palettes give the same hue different values (blue is #4078f2 by day, #61afef by
+# night), so accents and chart colors live in the per-mode tables even though Streamlit would
+# accept them here — sharing one accent set across two palettes is what left the old config's
+# primary at 3.80:1 on dark surfaces it was never picked against. Theming stays in this file
+# rather than in injected CSS, which is Streamlit's documented preference and keeps the page
+# files free of styling concerns.
 [theme]
-# Solarized's accent hues are identical in both modes, so primary, links, the semantic
-# palette and chart colors are shared rather than duplicated.
-primaryColor = "#268bd2"
-linkColor = "#268bd2"
 linkUnderline = false
 showWidgetBorder = true
 showSidebarBorder = true
@@ -35,47 +39,59 @@ baseFontSize = 14
 baseFontWeight = 400
 headingFontSizes = ["32px", "24px", "20px", "16px", "14px", "12px"]
 headingFontWeights = [600, 600, 600, 600, 600, 600]
-chartCategoricalColors = ["#268bd2", "#2aa198", "#859900", "#b58900", "#cb4b16", "#dc322f", "#d33682"]
 
-# Solarized accent palette (same in light and dark).
-blueColor = "#268bd2"
-greenColor = "#859900"
-yellowColor = "#b58900"
-orangeColor = "#cb4b16"
-redColor = "#dc322f"
-violetColor = "#6c71c4"
-
-# Light mode — Solarized Light. base3/base2 surfaces, base00 body text.
+# Light mode — One Light (atom/one-light-syntax). Body #383a42 on #fafafa is 10.86:1.
 [theme.light]
-backgroundColor = "#fdf6e3"
-secondaryBackgroundColor = "#eee8d5"
-codeBackgroundColor = "#eee8d5"
-textColor = "#657b83"
-codeTextColor = "#586e75"
-borderColor = "#93a1a1"
+backgroundColor = "#fafafa"
+secondaryBackgroundColor = "#eaeaeb"
+codeBackgroundColor = "#f0f0f1"
+textColor = "#383a42"
+codeTextColor = "#383a42"
+borderColor = "#c6c6c8"
 
-# Dark mode — a deepened Solarized Dark. The main reading field drops a step *below* base03
-# to #00161d so long prose sits on a darker surface; base03 (#002b36, the old background)
-# moves up to become the raised widget and code surface. Body text moves up to base1
-# (#93a1a1, brighter than the canonical base0) to keep contrast against the deeper field.
+primaryColor = "#4078f2"
+linkColor = "#4078f2"
+blueColor = "#4078f2"
+greenColor = "#50a14f"
+yellowColor = "#c18401"
+orangeColor = "#986801"
+redColor = "#e45649"
+violetColor = "#a626a4"
+chartCategoricalColors = ["#4078f2", "#50a14f", "#a626a4", "#e45649", "#c18401", "#0184bc", "#986801"]
+
+# Dark mode — One Dark Pro (the Atom/VS Code palette). Body #abb2bf on #282c34 is 6.57:1.
+# Same hue order as light, different values: each accent is the one One Dark picked against
+# its own field, which is why every one clears 4.38:1 here rather than scraping 3:1.
 [theme.dark]
-backgroundColor = "#00161d"
-secondaryBackgroundColor = "#002b36"
-codeBackgroundColor = "#002b36"
-textColor = "#93a1a1"
-codeTextColor = "#93a1a1"
-borderColor = "#586e75"
+backgroundColor = "#282c34"
+secondaryBackgroundColor = "#21252b"
+codeBackgroundColor = "#1e2127"
+textColor = "#abb2bf"
+codeTextColor = "#abb2bf"
+borderColor = "#3e4451"
 
-# Sidebars swap the two surface tones so the sidebar sits one layer apart from the main
-# content — darker than it in light mode, lighter than it in dark mode.
+primaryColor = "#61afef"
+linkColor = "#61afef"
+blueColor = "#61afef"
+greenColor = "#98c379"
+yellowColor = "#e5c07b"
+orangeColor = "#d19a66"
+redColor = "#e06c75"
+violetColor = "#c678dd"
+chartCategoricalColors = ["#61afef", "#98c379", "#c678dd", "#e06c75", "#e5c07b", "#56b6c2", "#d19a66"]
+
+# The reading field is the lightest surface in both modes, and secondaryBackgroundColor steps
+# away from it — so the chat bubbles, containers and expanders this app leans on read as
+# panels and the prose stays the most prominent thing on screen. Sidebars take that same step,
+# sitting one layer off the main content in both modes.
 [theme.light.sidebar]
-backgroundColor = "#eee8d5"
-secondaryBackgroundColor = "#fdf6e3"
-codeBackgroundColor = "#fdf6e3"
-borderColor = "#93a1a1"
+backgroundColor = "#eaeaeb"
+secondaryBackgroundColor = "#fafafa"
+codeBackgroundColor = "#f0f0f1"
+borderColor = "#c6c6c8"
 
 [theme.dark.sidebar]
-backgroundColor = "#002b36"
-secondaryBackgroundColor = "#00161d"
-codeBackgroundColor = "#00161d"
-borderColor = "#586e75"
+backgroundColor = "#21252b"
+secondaryBackgroundColor = "#282c34"
+codeBackgroundColor = "#1e2127"
+borderColor = "#3e4451"
