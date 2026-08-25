@@ -133,7 +133,7 @@ Neither layer subsumes the other. The hooks are fast and land *in the model's co
 |---|---|---|
 | `hooks/env-guard.sh` | `PreToolUse` on `Bash` | Blocks any Bash command referencing a `.env*` file or `secrets.toml`. **Exit 2** to deny. Measured 0.03s. |
 | `hooks/ruff-ty-gate.sh` | `PostToolUse` on `Edit\|Write` | Runs `uvx ruff format` + `ruff check --fix` on the edited `.py`, then re-checks with `ruff check` and `ty check`. **Exit 2** on remaining diagnostics. Measured 0.66s. |
-| `hooks/pytest-gate.sh` | `Stop` | Runs `uv run pytest` if the working tree is dirty under `src/ tests/ skills/ pyproject.toml uv.lock`. **Exit 2** on failure. Measured 0.02s clean / 3.0s dirty. |
+| `hooks/pytest-gate.sh` | `Stop` | Runs `uv run pytest` if the working tree is dirty under `src/ tests/ skills/ .streamlit/ pyproject.toml uv.lock`. **Exit 2** on failure. Measured 0.02s clean / 3.0s dirty. |
 
 Design rules to preserve if you touch these:
 

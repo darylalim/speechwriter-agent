@@ -35,7 +35,13 @@ command -v git >/dev/null 2>&1 || exit 0
 # Paths the suite covers. `git status --porcelain` is required: `git diff` sees only
 # TRACKED files, so a new tests/test_*.py or a new skills/<slug>/SKILL.md -- exactly what
 # trips the hard-coded `len(skill_dirs) == 4` assertion -- would slip past untested.
-watched=(src tests skills pyproject.toml uv.lock)
+#
+# .streamlit is watched because test_streamlit_config_parses_and_offers_both_theme_modes
+# reads config.toml off disk: a TOML typo or a dropped [theme.dark] table is caught by the
+# suite but by nothing else in the inner loop, since that file is not Python and so never
+# reaches ruff-ty-gate.sh. Ignored files stay invisible here -- --untracked-files=all lists
+# untracked but not ignored paths -- so a local, gitignored secrets file never pins the gate on.
+watched=(src tests skills .streamlit pyproject.toml uv.lock)
 dirty=$(git status --porcelain --untracked-files=all -- "${watched[@]}" 2>/dev/null)
 [ -n "$dirty" ] || exit 0
 

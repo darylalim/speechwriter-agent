@@ -368,10 +368,12 @@ def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
 
 
 def test_streamlit_config_parses_and_offers_both_theme_modes():
-    # AppTest does not parse the project theme config, and pytest-gate.sh's dirty-tree watch
-    # list (src/ tests/ skills/ pyproject.toml uv.lock) omits .streamlit/ — so a TOML typo or
-    # a dropped [theme.dark] table would otherwise reach a human running `streamlit run`,
-    # exactly the manual discovery the rest of this suite exists to pre-empt.
+    # AppTest does not parse the project theme config, so a TOML typo or a dropped
+    # [theme.dark] table would otherwise reach a human running `streamlit run` — exactly the
+    # manual discovery the rest of this suite exists to pre-empt. This is the only check that
+    # reads .streamlit/config.toml at all: it is not Python, so ruff-ty-gate.sh never sees it.
+    # pytest-gate.sh watches .streamlit/ for that reason, which is what puts this assertion in
+    # the inner loop rather than only in CI.
     data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
 
     # Both mode tables must exist or Streamlit locks to a single mode and the light/dark
