@@ -57,7 +57,7 @@ status=$?
 dep_hint=""
 case "$dirty" in
   *pyproject.toml* | *uv.lock*)
-    dep_hint=$'\n\nA dependency file is among the changes, so check the two known-fragile imports in tests/test_build.py first: `yaml` (pyyaml is not a declared dependency -- it arrives transitively via langchain) and `deepagents.middleware.filesystem._check_fs_permission` (a private API). deepagents is pinned >=0.6.12,<0.8 because implicit Store namespaces were removed in 0.7. test_build.py imports speechwriter.agent at module scope, so a deepagents API break surfaces as a collection error across all tests, not a single failure.'
+    dep_hint=$'\n\nA dependency file is among the changes, so check the three private third-party symbols tests/test_build.py reaches into first: `deepagents.middleware.filesystem._check_fs_permission`, `agent.nodes["tools"].bound.tools_by_name`, and `ChatAnthropic._get_request_payload`. deepagents is pinned >=0.6.12,<0.8 because implicit Store namespaces were removed in 0.7. test_build.py imports speechwriter.agent at module scope, so a deepagents API break surfaces as a collection error across all tests, not a single failure.'
     ;;
 esac
 

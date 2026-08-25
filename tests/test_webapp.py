@@ -9,6 +9,7 @@ be discovered by a human opening a browser.
 from __future__ import annotations
 
 import os
+import re
 import tomllib
 
 import streamlit as st
@@ -18,7 +19,7 @@ from streamlit.testing.v1 import AppTest
 
 from speechwriter import config, webui, workspace
 from speechwriter.config import load_settings
-from speechwriter.prompts import orchestrator_prompt
+from speechwriter.prompts import orchestrator_prompt, researcher_prompt
 
 _REPO_ROOT = config._PKG_DIR.parents[1]
 
@@ -53,9 +54,22 @@ def test_missing_workspace_dir_reads_as_empty(monkeypatch, tmp_path):
 
 
 def test_spoken_length_uses_the_pace_the_prompt_prescribes(monkeypatch, tmp_path):
+    # Both halves of the pace seam, not the reader's own constant twice over: the prompt
+    # *tells* the agent a pace and `Document.minutes` *estimates* at one. Parsing the
+    # rendered prompt is what makes re-typing "~150 words per minute" into prompts.py fail
+    # here, rather than silently disagreeing with every duration the browser prints.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     settings = load_settings()
-    words = config.WORDS_PER_MINUTE * 3
+
+    prescribed = re.search(r"~(\d+) words per minute", orchestrator_prompt(settings))
+    assert prescribed, "the orchestrator prompt no longer states a pace in words per minute"
+    pace = int(prescribed.group(1))
+    assert pace == config.WORDS_PER_MINUTE, (
+        f"the prompt prescribes {pace} wpm but the browser estimates at "
+        f"{config.WORDS_PER_MINUTE} — interpolate WORDS_PER_MINUTE, do not re-type it"
+    )
+
+    words = pace * 3
     _write(
         settings.workspace_dir / config.SPEECHES_SUBDIR / "toast.md",
         " ".join(["word"] * words),
@@ -126,20 +140,31 @@ def test_document_without_front_matter_is_left_alone(monkeypatch, tmp_path):
     assert document.body == "Just prose, no header."
 
 
-def test_prompt_points_the_agent_at_the_folder_the_browser_reads(monkeypatch, tmp_path):
-    # The cross-subsystem check that matters now that a reader exists: the prompt *tells*
-    # the agent where to save drafts, and `workspace.speeches()` reads a real directory.
-    # This derives the virtual path from that real directory, so re-hardcoding either side
-    # fails here rather than silently producing a browser that lists nothing.
+def test_prompts_point_the_agent_at_the_folders_the_browser_reads(monkeypatch, tmp_path):
+    # The cross-subsystem check that matters now that a reader exists: the prompts *tell*
+    # the agent where to save, and the browse page reads real directories back. Each case
+    # derives the virtual path from the reader function the page actually calls, so
+    # re-hardcoding either side fails here rather than silently producing a browser that
+    # lists nothing. Research needs its own case: `browse.py` lists `research_dir()` just
+    # as it lists `speeches_dir()`, and the researcher subagent — which writes there — is
+    # steered by a prompt of its own that the orchestrator's wording cannot vouch for.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     settings = load_settings()
 
-    read_dir = settings.workspace_dir / config.SPEECHES_SUBDIR
-    as_the_agent_sees_it = "/" + read_dir.relative_to(settings.project_root).as_posix()
+    cases = (
+        ("speeches", workspace.speeches_dir(settings), "orchestrator", orchestrator_prompt),
+        ("research", workspace.research_dir(settings), "orchestrator", orchestrator_prompt),
+        ("research", workspace.research_dir(settings), "researcher", researcher_prompt),
+    )
 
-    # The trailing slash is load-bearing: without it this passes on a prompt that says
-    # `/workspace/speeches-drafts/`, which is exactly the drift being guarded against.
-    assert f"{as_the_agent_sees_it}/" in orchestrator_prompt(settings)
+    for label, read_dir, prompt_name, render in cases:
+        as_the_agent_sees_it = "/" + read_dir.relative_to(settings.project_root).as_posix()
+        # The trailing slash is load-bearing: without it this passes on a prompt that says
+        # `/workspace/speeches-drafts/`, which is exactly the drift being guarded against.
+        assert f"{as_the_agent_sees_it}/" in render(settings), (
+            f"the {prompt_name} prompt does not name {as_the_agent_sees_it}/ — "
+            f"the {label} browser reads {read_dir}"
+        )
 
 
 def test_memory_entries_render_known_and_unknown_payloads():
