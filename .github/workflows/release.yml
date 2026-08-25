@@ -65,7 +65,6 @@ jobs:
         with:
           python-version: "3.11"
           enable-cache: true
-          cache-python: true
           cache-suffix: py3.11
 
       # ci.yml runs the full matrix on this same commit, but nothing orders the two

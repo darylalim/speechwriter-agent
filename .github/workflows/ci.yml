@@ -50,7 +50,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-          cache-python: true
           cache-suffix: py${{ matrix.python-version }}
 
       - run: uv sync --locked
