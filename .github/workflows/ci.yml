@@ -1,44 +1,21 @@
 name: CI
 
-# Runs the three gates CLAUDE.md declares must stay clean — `uv run pytest`,
-# `uvx ruff check .`, and `uvx ty check` — on every commit, from anyone.
-#
-# These report status only. No branch protection rule requires them, so a red run does
-# not block a merge or a push to main; requiring the four checks on `main` in repo
-# settings is what would turn this into an actual gate.
-#
-# This complements `.claude/hooks/`, it does not replace it. Those hooks fire on Claude
-# Code's Edit|Write and Stop events, so they are fast (~0.5s) and speak directly to the
-# model, but they are blind to three things: a hand edit made outside Claude Code, a
-# contributor not using it, and anything that only breaks in a clean environment (this
-# repo's `tests/test_build.py` imports `yaml`, which arrives only transitively via
-# langchain, and a private deepagents symbol). Hooks shorten the inner loop; CI defends
-# the branch.
+# The three gates CLAUDE.md requires to stay clean: ruff check, pytest, ty check.
+# Why this exists alongside .claude/hooks/ is documented in CLAUDE.md § Automation.
 
 on:
-  # `push` is scoped to main and `pull_request` covers everything else, so a PR branch
-  # gets exactly one run rather than a duplicated push + pull_request pair.
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
 
-# Least privilege: nothing here writes to the repo, comments on a PR, or publishes.
 permissions:
   contents: read
 
-# Supersede in-flight runs for the same branch or PR. main is exempt so every commit on
-# the default branch keeps a complete verdict of its own.
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
-
 env:
-  # Pinned, unlike the bare `uvx ruff` / `uvx ty` that .claude/hooks and CLAUDE.md use
-  # locally. Unpinned, `uvx` resolves the newest release at run time, so an Astral
-  # release could redden a PR that changed nothing — and ty is pre-1.0, so its
-  # diagnostics move fastest of all. The trade is that these can drift behind the local
-  # hooks; bump both together when upgrading on purpose.
+  # Pinned, unlike the bare `uvx ruff` / `uvx ty` in .claude/hooks — unpinned, uvx
+  # resolves the newest release at run time, so an Astral release could redden a PR that
+  # changed nothing. ty is pre-1.0 and moves fastest; bump both together, on purpose.
   RUFF_VERSION: "0.16.0"
   TY_VERSION: "0.0.63"
 
@@ -49,68 +26,40 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      # Pinned to an exact version while checkout floats on @v7, and the asymmetry is
-      # forced, not stylistic: astral-sh/setup-uv stopped publishing floating major tags
-      # after v7, so `@v9` resolves to nothing at all ("Unable to resolve action ...
-      # unable to find version `v9`"). Only exact tags exist for v8/v9. Verify the tag
-      # exists before bumping — `gh api repos/astral-sh/setup-uv/git/ref/tags/<tag>` —
-      # since the newest *release* name is not proof a usable ref exists. v9.0.0's sole
-      # breaking change is `prune-cache` defaulting to false, which this workflow never sets.
+      # Exact tag, not `@v9`: setup-uv stopped publishing floating major tags after v7,
+      # so `@v9` resolves to nothing. Confirm a tag exists before bumping.
       - uses: astral-sh/setup-uv@v9.0.0
 
-      # Deliberately outside the matrix, and with no `uv sync`: ruff needs none of the
-      # project's dependencies, and `target-version = "py311"` in pyproject.toml fixes
-      # its syntax target, so this verdict is identical on every interpreter. Running it
-      # three times would buy three copies of one answer.
-      #
-      # `ruff format --check` is intentionally absent. Ruff 0.16 also formats Python code
-      # blocks inside Markdown, and it wants to collapse the aligned inline comments in
-      # README.md's usage example — a docs-style opinion, not a code defect. The
-      # PostToolUse hook only ever formats *.py, so nothing is regressing here.
-      - name: ruff check
-        run: uvx ruff@"$RUFF_VERSION" check --output-format=github .
+      # Outside the matrix and with no `uv sync`: ruff needs no project deps, and
+      # target-version = "py311" fixes its syntax target, so the verdict is identical on
+      # every interpreter. `ruff format --check` is omitted deliberately — Ruff 0.16 also
+      # formats Python inside Markdown and would churn README.md's aligned fences.
+      - run: uvx ruff@"$RUFF_VERSION" check --output-format=github .
 
   test:
     name: pytest + ty (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
-      # Report every version. Bailing on the first failure hides whether a break is
-      # version-specific, which is the main thing this matrix exists to tell us.
       fail-fast: false
       matrix:
-        # pyproject.toml declares requires-python = ">=3.11"; test the floor, the
-        # ceiling, and the middle. Local development runs on whatever `uv sync` picked.
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v9.0.0
         with:
-          # Sets UV_PYTHON, so every uv invocation below agrees on the interpreter.
           python-version: ${{ matrix.python-version }}
           enable-cache: true
           cache-python: true
-          # Built wheels differ per interpreter, so the three jobs must not contend for
-          # a single cache key.
           cache-suffix: py${{ matrix.python-version }}
 
-      # `--locked` fails rather than silently re-resolving, so a pyproject.toml edit
-      # whose uv.lock was never regenerated cannot reach main. It also creates ./.venv,
-      # which the ty step depends on below.
-      - name: uv sync --locked
-        run: uv sync --locked
+      - run: uv sync --locked
 
-      # No ANTHROPIC_API_KEY or TAVILY_API_KEY is set anywhere in this workflow, and a
-      # fresh checkout has no .env. That absence is the feature: CLAUDE.md's "building
-      # the agent must not call the model or the network" invariant is *checked* here,
-      # so if it ever regresses these jobs go red instead of quietly starting to bill.
-      # It also pins the no-Tavily branch — research disabled, `[VERIFY]` prompt variant.
-      - name: uv run pytest
-        run: uv run pytest -q
+      # Never add ANTHROPIC_API_KEY or TAVILY_API_KEY here. Their absence is what checks
+      # CLAUDE.md's "building the agent must not call the model or the network"
+      # invariant, and it pins the no-Tavily `[VERIFY]` prompt branch.
+      - run: uv run pytest -q
 
-      # After sync, and inside the matrix, because [tool.ty.environment] in
-      # pyproject.toml points ty at ./.venv: it resolves third-party imports from the
-      # synced environment and infers its target version from that interpreter. So type
-      # checking follows the matrix for free — no --python-version flag needed.
-      - name: uvx ty check
-        run: uvx ty@"$TY_VERSION" check
+      # After sync and inside the matrix: [tool.ty.environment] points ty at ./.venv, so
+      # it resolves imports and infers its target version from the synced interpreter.
+      - run: uvx ty@"$TY_VERSION" check
