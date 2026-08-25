@@ -183,6 +183,39 @@ def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):
     assert "model profile" in caplog.text
 
 
+def test_default_model_still_resolves_through_tier_two(monkeypatch, tmp_path):
+    # A tripwire on someone else's data, deliberately. `test_ceiling_resolution_is_three_tier`
+    # proves tier 2 works, but it proves it through `claude-opus-4-8` — so the day LangChain
+    # stops profiling DEFAULT_MODEL, every other assertion in this file still passes while the
+    # default configuration quietly drops to the 32k floor. Nothing would surface it: falling
+    # back is *correct* behaviour, just four times smaller, and `ceiling_label` is the only
+    # place it shows.
+    #
+    # This is the one assertion here about a third-party table rather than about our own code,
+    # which is the point: that table is the input the whole ceiling story rests on, it moves on
+    # langchain-anthropic's schedule rather than ours, and it has already moved once — the id
+    # was unprofiled when the three tiers were designed, which is why the notes describing them
+    # went stale. A failure is not a bug. It is a prompt to re-read the ceiling notes in
+    # CLAUDE.md and config.py, and to decide whether to pin SPEECHWRITER_MAX_TOKENS.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+
+    model = _build_model(load_settings())
+
+    assert getattr(model, "profile", None) is not None, (
+        f"LangChain no longer profiles {config.DEFAULT_MODEL}, so the default configuration "
+        f"now resolves through tier 3 to the {config.DEFAULT_MAX_TOKENS}-token floor."
+    )
+    # Not implied by the line above: a profile *below* the floor would keep tier 2 and leave
+    # the default running under the ceiling an unprofiled id would have been given.
+    resolved = getattr(model, "max_tokens", 0)
+    assert resolved > config.DEFAULT_MAX_TOKENS, (
+        f"{config.DEFAULT_MODEL} profiles at {resolved}, at or below the "
+        f"{config.DEFAULT_MAX_TOKENS} floor — re-check the figure CLAUDE.md quotes."
+    )
+
+
 def test_payload_omits_parameters_current_models_reject(monkeypatch, tmp_path):
     # temperature/top_p/top_k are rejected outright (400) on claude-opus-5, claude-sonnet-5,
     # and claude-opus-4-8. `build_agent()` never touches the wire — that is what makes this
