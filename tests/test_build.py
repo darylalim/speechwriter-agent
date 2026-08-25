@@ -12,6 +12,7 @@ import logging
 import re
 import subprocess
 import sys
+import tomllib
 import uuid
 
 import yaml
@@ -20,6 +21,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
 
+import speechwriter
 from speechwriter import config, memory, prompts
 from speechwriter.agent import _build_backend, _build_model, _write_sandbox, build_agent
 from speechwriter.config import load_settings
@@ -549,3 +551,25 @@ def test_orchestrator_prompt_names_every_skill():
             f"so the agent will never know to load it. Add it to the parenthetical list in "
             f"step 4 of orchestrator_prompt()."
         )
+
+
+def test_package_version_matches_pyproject():
+    # The version is two independent literals — `[project] version` in pyproject.toml and
+    # `__version__` in src/speechwriter/__init__.py — and nothing structural ties them:
+    # hatchling builds from the first, `import speechwriter` reports the second.
+    #
+    # .github/workflows/release.yml watches the pyproject one and tags + publishes a GitHub
+    # Release unattended the moment it changes, so a half-done bump would ship a release
+    # whose installed package still reports the previous version. This test is what makes
+    # running that workflow without a human safe: it runs inside the release job, before
+    # anything is tagged, and a mismatch stops the release rather than publishing it.
+    root = config._PKG_DIR.parents[1]
+    declared = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["project"][
+        "version"
+    ]
+
+    assert declared == speechwriter.__version__, (
+        f"pyproject.toml declares version {declared!r} but speechwriter.__version__ is "
+        f"{speechwriter.__version__!r}. Bump both together — release.yml would otherwise tag "
+        f"v{declared} for a build that reports {speechwriter.__version__!r}."
+    )

@@ -110,14 +110,14 @@ Two reader gotchas the web UI exposed:
 - **The Store namespace is explicit** (`_memory_namespace` → `("speechwriter", "memories")`). deepagents' implicit-namespace mode is deprecated and removed in 0.7; the dependency is pinned `>=0.6.12,<0.8`.
 - **The prompts may only name capabilities that actually exist.** `prompts.py` told the model to use its "planning tool (`write_todos`)" from the day it was written, and `create_deep_agent` has never bound one. Nothing structural could see it — `ty` checks Python and not prose, `ruff` checks syntax — so `test_prompts_only_advertise_tools_the_model_can_call` compares the rendered prompts against the tool surface: every backticked lowercase identifier must be a bound tool, a subagent reachable via `task`, or an explicit entry in `_NON_TOOL_BACKTICKS`. That allowlist is empty **on purpose** — a new backticked word should force a choice (bind the tool, or declare the word prose), not pass silently. Two details are load-bearing if you refactor it. The vocabulary is captured from what is bound to the **model**, not from the compiled graph's ToolNode (`agent.nodes["tools"].bound.tools_by_name`): the latter is a superset carrying `execute`, which middleware strips before the model sees it, so asserting against it would permit precisely the bug. And `bind_tools` fires when the graph *steps*, not when it is built, so the capture runs one turn against a recording stub — no network, so the offline invariant above still holds. The trailing `assert "task" in advertised` is an anti-vacuity canary: every other assertion is satisfied by an empty match set, so a pattern that stops matching would turn the test green while checking nothing. **When it fails, the fix is usually the prompt, not the test** — a new tool or subagent widens the vocabulary automatically, a new backticked prose word does not.
 
-## Automation (`.claude/`)
+## Automation (`.claude/` and `.github/`)
 
 The gates and invariants above are guarded by **two layers**, and the split is the point. There is no pre-commit and no git hooks.
 
 1. **`.claude/` hooks — the inner loop.** Sub-second, fire on Claude Code's own events, and speak *to the model*: an exit-2 stderr lands in context so the diagnostic is fixed while the edit's intent is still live. They see the uncommitted tree, but only for edits Claude Code itself made.
 2. **`.github/workflows/ci.yml` — the independent check.** Runs the same three gates on push to `main` and on every PR, in a clean clone with no `.env`, matrixed over Python 3.11/3.12/3.13 (~25s for the whole run). It covers what hooks structurally cannot: hand edits, contributors not using Claude Code, and fresh-environment-only breakage (the transitive `yaml` import and the private `deepagents` symbol noted under Gotchas). It also exercises the offline invariant — no API key is set anywhere in the workflow, so the day `build_agent()` starts needing the wire, CI goes red instead of quietly billing.
 
-   **It reports; it does not block.** No branch protection rule requires these checks, so a red run is advisory — a merge or a push to `main` still lands. Making it a real gate is a repo-settings change, not a file: require the four checks (`ruff check` and `pytest + ty (py3.11|3.12|3.13)`) on `main`. Until then, don't describe CI as if it enforces anything.
+   **It reports; it does not block.** No branch protection rule requires these checks, so a red run is advisory — a merge or a push to `main` still lands. Making it a real gate is a repo-settings change, not a file: require the four checks (`ruff check` and `pytest + ty (py3.11|3.12|3.13)`) on `main`. Until then, don't describe CI as if it enforces anything. (The one exception is `release.yml` below, whose gate re-run does block a publish.)
 
 Neither layer subsumes the other. The hooks are fast and land *in the model's context*, but only for edits Claude Code made and are bypassed by editing a file any other way. CI sees every commit in a clean environment, but out of band and with no channel back to the model — and, today, without the authority to stop anything. Three hooks, wired in `.claude/settings.json` — **all three blocking**; there is no advisory hook, by design (see below):
 
@@ -147,6 +147,37 @@ Design rules to preserve if you touch these:
 - **Mutation-test a new test before trusting it.** Break the code it covers, confirm it fails, restore. Nothing else here would catch a test that passes vacuously.
 
 Writing a `.env` value is therefore a **user action, not a Claude action**: ask the user to make the edit, then verify indirectly (assert a variable is non-empty, run the offline suite) without printing anything.
+
+### Releases are automatic, and the version lives in two files
+
+`.github/workflows/release.yml` tags and publishes a GitHub Release, unattended, when
+`[project] version` in `pyproject.toml` changes on `main`. There is no draft step — it goes live.
+
+That is only safe because of three guards, each load-bearing:
+
+- **The trigger is `paths: ["pyproject.toml"]`, which also fires on every `uv add`.** So a
+  `check` job reads the version and stops unless `v$VERSION` is a tag that does not exist yet; a
+  dependency bump lands as `check ✓ / release ⊘ skipped`, not a spurious release. That job
+  deliberately runs no `uv sync` and never sets up uv — the no-op is the common path and should
+  cost seconds. It reads the version with `tomllib` on the runner's own `python3` (ubuntu-24.04
+  ships 3.12), and every failure mode there is loud: a missing key or a bad parse fails the step
+  rather than tagging something wrong.
+- **The `release` job re-runs all three gates before tagging.** `ci.yml` runs the full matrix on
+  the same commit, but nothing orders the two workflows, so this re-checks on the 3.11 floor
+  rather than tagging a commit whose verdict has not landed. **This is the only place in the repo
+  where a failing gate actually stops something** — the counterpoint to "it reports; it does not
+  block" above.
+- **The version is two independent literals** — `[project] version` in `pyproject.toml` and
+  `__version__` in `src/speechwriter/__init__.py`. Nothing structural ties them: hatchling builds
+  from the first, `import speechwriter` reports the second.
+  `test_package_version_matches_pyproject` is what makes an unattended release safe, precisely
+  because it runs inside that gate re-run — a half-done bump fails the job instead of publishing a
+  release whose installed package still reports the old version. **Bump both, in one commit.**
+
+Two mechanics worth not re-deriving. `gh release create` creates the tag itself at
+`--target $GITHUB_SHA`, so there is no `git tag`/`git push` step and no bot git identity to
+configure. And `permissions` is asymmetric on purpose: `release.yml` needs `contents: write` for
+that call, `ci.yml` stays `contents: read`.
 
 ## Skills
 
