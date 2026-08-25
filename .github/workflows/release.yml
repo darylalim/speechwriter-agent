@@ -46,7 +46,7 @@ jobs:
           version=$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
-            echo "v$version is already tagged — pyproject.toml changed but the version did not."
+            echo "v$version is already tagged — nothing to release."
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
             echo "Releasing v$version."
