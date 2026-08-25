@@ -104,8 +104,8 @@ It binds to `localhost` only by default; the agent spends your API budget and re
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SPEECHWRITER_MODEL` | `claude-sonnet-5` | Any Claude model id (`claude-opus-5` for top quality — set `SPEECHWRITER_MAX_TOKENS=128000` alongside it, since LangChain has no profile for it yet and it would otherwise be capped at 32000). |
-| `SPEECHWRITER_MAX_TOKENS` | model's own profile | Overrides the output-token ceiling. Unset, a model LangChain can profile keeps its own ceiling (64k–128k); an id it *cannot* profile would silently inherit 4096, so it gets 32000 instead plus a warning. Extended thinking bills against the same ceiling, which is why 4096 is not enough. |
+| `SPEECHWRITER_MODEL` | `claude-sonnet-5` | Any Claude model id — `claude-opus-5` for top quality, with no ceiling override needed alongside it (LangChain profiles it at its real 128k). |
+| `SPEECHWRITER_MAX_TOKENS` | model's own profile | Overrides the output-token ceiling. Unset, a model LangChain can profile keeps its own ceiling — as of the pinned `langchain-anthropic` every shipped Claude id is profiled at 64k–128k, so the default resolves to **128000**. An id it *cannot* profile (a typo, or one newer than the pin) would silently inherit 4096, so it gets 32000 instead plus a warning. Extended thinking bills against the same ceiling, which is why 4096 is not enough. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |
