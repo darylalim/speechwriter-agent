@@ -674,11 +674,11 @@ def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
         cache_clear()
 
 
-def test_tool_pins_agree_across_ci_release_and_the_hook():
-    # ruff and ty versions are three independent literals — ci.yml, release.yml and
-    # .claude/hooks/ruff-ty-gate.sh — and nothing structural ties them. The same shape as
-    # test_package_version_matches_pyproject, and guarded the same way, because the two failure
-    # modes are both silent.
+def test_tool_pins_agree_wherever_they_are_declared():
+    # ruff and ty versions are four independent literals — ci.yml, release.yml,
+    # .claude/hooks/ruff-ty-gate.sh, and the commands CLAUDE.md tells a human to type — and
+    # nothing structural ties them. The same shape as test_package_version_matches_pyproject,
+    # and guarded the same way, because the failure modes are all silent.
     #
     # Hook drifting from CI: a type-checker suppression comment is *required* by a checker that
     # cannot resolve a symbol and *rejected* as an unused-ignore by one that can, so a hook and a
@@ -694,26 +694,41 @@ def test_tool_pins_agree_across_ci_release_and_the_hook():
         ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
         ".claude/hooks/ruff-ty-gate.sh",
+        "CLAUDE.md",
     )
-    # Matches the YAML form (`RUFF_VERSION: "0.16.0"`) and the shell form
-    # (`RUFF_VERSION="0.16.0"`) alike, while skipping every `uvx ruff@"$RUFF_VERSION"` use site.
-    pattern = re.compile(r'\b(RUFF|TY)_VERSION\b\s*[:=]\s*"?([0-9][0-9A-Za-z.\-]*)"?')
+    # Two spellings, which is what lets a docs file be a site at all. The named form covers the
+    # YAML (`TY_VERSION: "0.0.63"`) and shell (`TY_VERSION="0.0.63"`) declarations; the
+    # invocation form covers the commands CLAUDE.md tells a human to type (`uvx ty@0.0.63`).
+    # Neither matches `uvx ruff@"$RUFF_VERSION"` — the version must start with a digit — so the
+    # hook's use sites are read from its declaration, not from themselves.
+    named = re.compile(r'\b(RUFF|TY)_VERSION\b\s*[:=]\s*"?([0-9][0-9A-Za-z.\-]*)"?')
+    invoked = re.compile(r"\buvx\s+(ruff|ty)@\"?([0-9][0-9A-Za-z.\-]*)\"?")
 
     found = {}
     for rel in sites:
-        pins = dict(pattern.findall((root / rel).read_text(encoding="utf-8")))
+        text = (root / rel).read_text(encoding="utf-8")
+        pins = {}
+        for tool, version in named.findall(text) + [
+            (t.upper(), v) for t, v in invoked.findall(text)
+        ]:
+            pins.setdefault(tool, set()).add(version)
+
         # Anti-vacuity: every assertion below is satisfied by an empty match set, so a site that
         # stopped pinning — or a pattern that stopped matching — would turn this green while
         # checking nothing.
         assert set(pins) == {"RUFF", "TY"}, (
-            f"{rel} declares pins for {sorted(pins) or 'nothing'}; expected both RUFF_VERSION "
-            f"and TY_VERSION. An unpinned site can disagree with the others in ways no source "
-            f"state satisfies."
+            f"{rel} pins {sorted(pins) or 'nothing'}; expected both ruff and ty. An unpinned "
+            f"site can disagree with the others in ways no source state satisfies."
         )
-        found[rel] = pins
+        for tool, versions in pins.items():
+            assert len(versions) == 1, (
+                f"{rel} names {tool} at {sorted(versions)} — it disagrees with itself, so at "
+                f"least one mention was missed when the pin was bumped."
+            )
+        found[rel] = {tool: next(iter(versions)) for tool, versions in pins.items()}
 
     for tool in ("RUFF", "TY"):
         declared = {rel: pins[tool] for rel, pins in found.items()}
         assert len(set(declared.values())) == 1, (
-            f"{tool}_VERSION disagrees across sites: {declared}. Bump all three together."
+            f"{tool} pin disagrees across sites: {declared}. Bump all four together."
         )

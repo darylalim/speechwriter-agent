@@ -59,7 +59,7 @@ command -v uvx >/dev/null 2>&1 || {
 # as an unused-ignore by one that can, so a floating local checker plus a pinned CI admits
 # source states that satisfy neither. That is what a304a89 fixed. Pinning here costs the
 # early warning of an Astral release, which CI's own bump is the better place to absorb.
-# test_tool_pins_agree_across_ci_release_and_the_hook keeps these three sites in step.
+# test_tool_pins_agree_wherever_they_are_declared keeps all four sites in step.
 RUFF_VERSION="0.16.0"
 TY_VERSION="0.0.63"
 
