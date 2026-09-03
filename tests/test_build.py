@@ -621,11 +621,17 @@ def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
     # hazard by importing something that touches langsmith at module scope.
     from langsmith.utils import get_env_var
 
-    # `@overload` stubs on get_env_var shadow the lru_cache wrapper, so cache_clear is invisible
-    # to a type checker but present at runtime. Bound once here, and deliberately *not* guarded
-    # with getattr: if langsmith ever drops the cache this test should fail loudly, since that
-    # cache is its entire subject. config.py takes the tolerant path for the same attribute.
-    cache_clear = get_env_var.cache_clear  # ty: ignore[unresolved-attribute]
+    # `@overload` stubs on get_env_var shadow the lru_cache wrapper, so whether a type checker
+    # can see cache_clear depends on the checker's version: ty 0.0.78 reports
+    # unresolved-attribute, while ty 0.0.63 — the pin in ci.yml — resolves it and then flags the
+    # suppression itself as an unused ignore. A direct access needs a `ty: ignore` that is
+    # correct under exactly one of them; going through getattr needs none and agrees with both.
+    # The assert keeps the loud failure a bare attribute access would have given, and says more.
+    cache_clear = getattr(get_env_var, "cache_clear", None)
+    assert cache_clear is not None, (
+        "langsmith.utils.get_env_var no longer exposes cache_clear, so the call in "
+        "load_settings() is now a silent no-op and tracing config can go missing again."
+    )
 
     home = tmp_path / "home"
     home.mkdir()
