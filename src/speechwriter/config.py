@@ -131,6 +131,26 @@ def load_settings() -> Settings:
     # import) so `import speechwriter` has no side effects; real shell env wins.
     load_dotenv(project_root / ".env")
 
+    # langsmith memoises env reads in an `lru_cache` on `get_env_var`, so the *first* read of
+    # LANGSMITH_TRACING is the one that sticks for the life of the process. Anything that reads
+    # tracing state before the line above — a module-level `Client()`, a `tracing_is_enabled()`
+    # at import — permanently caches "off" for a value that only exists in the dotenv, with no
+    # error to notice. Clearing the cache here makes the read *order* irrelevant for every entry
+    # point (CLI, Streamlit, library consumers) instead of leaving an unwritten rule that only
+    # `build_agent()` happens to satisfy. Imported inside the function so `import speechwriter`
+    # keeps its lazy import surface.
+    # `get_env_var` carries `@overload` stubs that shadow the `lru_cache` wrapper, so
+    # `cache_clear` is invisible to a type checker but present at runtime. `getattr` states that
+    # precisely, and doubles as the fallback for a langsmith that stops caching.
+    try:
+        from langsmith.utils import get_env_var
+    except ImportError:  # pragma: no cover - langsmith ships with langchain-core
+        pass
+    else:
+        cache_clear = getattr(get_env_var, "cache_clear", None)
+        if cache_clear is not None:
+            cache_clear()
+
     workspace_dir = project_root / "workspace"
     skills_dir = project_root / "skills"
     store_path = project_root / ".speechwriter" / "memory-store.json"

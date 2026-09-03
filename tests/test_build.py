@@ -606,3 +606,63 @@ def test_package_version_matches_pyproject():
         f"{speechwriter.__version__!r}. Bump both together — release.yml would otherwise tag "
         f"v{declared} for a build that reports {speechwriter.__version__!r}."
     )
+
+
+def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
+    # langsmith memoises env reads in an `lru_cache` on `get_env_var`, so the first read of
+    # LANGSMITH_TRACING sticks for the life of the process. A value that exists only in the
+    # dotenv is therefore invisible to anything that read tracing state earlier — permanently,
+    # and with nothing raised. Tracing simply never happens while every setting still looks
+    # correct, which is indistinguishable from a LangSmith project whose traces aged out.
+    #
+    # `load_settings()` clears that cache right after `load_dotenv`, which is what makes the
+    # read *order* irrelevant. That placement is the point: the CLI, the Streamlit app and any
+    # library consumer all route through `load_settings()`, so none of them can reintroduce the
+    # hazard by importing something that touches langsmith at module scope.
+    from langsmith.utils import get_env_var
+
+    # `@overload` stubs on get_env_var shadow the lru_cache wrapper, so cache_clear is invisible
+    # to a type checker but present at runtime. Bound once here, and deliberately *not* guarded
+    # with getattr: if langsmith ever drops the cache this test should fail loudly, since that
+    # cache is its entire subject. config.py takes the tolerant path for the same attribute.
+    cache_clear = get_env_var.cache_clear  # ty: ignore[unresolved-attribute]
+
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".env").write_text("LANGSMITH_TRACING=true\n", encoding="utf-8")
+
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(home))
+    # Recorded so monkeypatch's undo also removes whatever load_dotenv sets below; real shell
+    # env wins over the dotenv, so an inherited value would otherwise decide this test.
+    for var in ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2"):
+        monkeypatch.delenv(var, raising=False)
+
+    try:
+        # Canary: the caching hazard is still live, so the cache_clear() is still load-bearing.
+        # Asserted against `get_env_var` itself rather than through `tracing_is_enabled()`,
+        # which returns early on three context-var paths before it ever consults the cache — a
+        # future default there would let this test pass while exercising nothing.
+        cache_clear()
+        assert get_env_var("TRACING", default="") == ""
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        assert get_env_var("TRACING", default="") == "", (
+            "langsmith no longer caches get_env_var, so the cache_clear() in load_settings() "
+            "guards nothing. Re-read the comment there and decide whether to drop it — this is "
+            "an assertion about a dependency's behaviour, not a bug to fix here."
+        )
+        monkeypatch.delenv("LANGSMITH_TRACING")
+
+        # The invariant: a read that lands before the dotenv must not outlive load_settings().
+        cache_clear()
+        assert get_env_var("TRACING", default="") == ""  # poisoned, exactly as an early import
+        load_settings()
+
+        assert get_env_var("TRACING", default="") == "true", (
+            "load_settings() left a stale 'tracing off' cached even though the dotenv sets "
+            "LANGSMITH_TRACING=true. Its cache_clear() after load_dotenv is what repairs an "
+            "early read — without it every turn runs untraced and the LangSmith project stays "
+            "silently empty."
+        )
+    finally:
+        # Never leak this test's env into the cache the rest of the suite reads.
+        cache_clear()
