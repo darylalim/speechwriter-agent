@@ -1,0 +1,668 @@
+[
+  {
+    "inputs": {
+      "question": "Research what replacing a lead water service line actually costs in towns of a few thousand households: the per-line cost range that utilities, regulators and public agencies report, what drives the spread (soil and road restoration, the private-side portion versus the public-side portion, contractor availability), and what funding routes small systems use to offset it. This is for Mayor Alma Reyes-Whitlock of Cedar Hollow, who will say a number out loud at a town hall to about 200 residents already angry about their bill, so every figure has to be one she can attribute on the spot if challenged. Every figure needs the year it refers to and the unit it is measured in (per line, per household, per foot) attached to it. Flag where reputable sources disagree rather than reconciling them.",
+      "speech_context": "Eight-minute town hall opening in a high-school gym explaining a $4.10-a-month water rate increase and killing the rumour that the money funds the civic plaza."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "at least one source is a utility, regulator, or public-agency publication rather than a trade-press summary of one",
+        "every cost figure carries the year it refers to and the unit it is measured in"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one specific cost figure with a unit and the year it refers to",
+        "at least one named comparable town or utility of broadly similar size with the cost it reported, or an explicit statement that only aggregate, state-level or national figures were locatable",
+        "at least one concrete driver of the cost spread a lay audience can picture, such as digging up and restoring a street or replacing the homeowner's side of the line"
+      ],
+      "contested_handling": "Per-line costs can vary by geography and by what is counted into them. If reputable sources give materially different figures, the correct return gives the range with the low and the high each attributed to its own source and says plainly that it is a range, rather than averaging them into a single number the mayor would then have to defend alone.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "present any figure as Cedar Hollow's own cost without a source that demonstrably concerns this town",
+        "quote a cost with no year attached"
+      ],
+      "grading_notes": "A Wikipedia-style summary of lead pipe policy is useless here; what the mayor needs is one or two numbers she can say aloud, name the source of, and use to show that $4.10 a month is small against the work. Grade on whether each figure is defensible under a hostile follow-up from the floor: unit stated, year stated, source nameable in one clause. The angles should be speech angles ('the number nobody has heard yet', 'what the Water Board caught before it cost more') rather than topic headings. Nothing in this dataset asserts what any cost actually is, nor that a comparable town's figure is retrievable — only that whatever is returned is sourced, dated, and honest about spread and about what could not be found. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "civic-persuasive-mayor-town-hall-water-rates",
+      "dataset_type": "rag",
+      "topic_volatility": "current",
+      "source_brief_id": "civic-persuasive-mayor-town-hall-water-rates",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Mayor Alma Reyes-Whitlock of Cedar Hollow",
+      "research_ask_from_brief": "Look up what lead service line replacement actually costs in towns our size so she isn't asserting a number she can't back.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "undated, unattributed cost figures collapsed into one number",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find what official statistics actually record about child pedestrian injuries and deaths in school zones and on the journey to and from school: the counts themselves, the age bands the series use, the time-of-day pattern around arrival and dismissal, and any state or municipal series that reports the same thing at city scale. This is for a five-minute council-floor argument by Councilmember Devraj Anand, Ward 6, at the Marrow Falls budget hearing on November 12, asking eight colleagues to restore a $312,000 crossing-guard line the city manager cut; today the case rests entirely on his own anecdote about the Fenwick and Third crossing. For every number, state the years it covers and the exact population it counts.",
+      "speech_context": "Five-minute persuasive floor speech aimed at three swing votes on a nine-member council, with a packed gallery he is deliberately not addressing."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "each count names the statistical series or dataset it comes from and the years it covers",
+        "the population being counted is stated exactly (age band, geography, what counts as a school zone)"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one specific count with a unit, the population it covers, and the years it covers",
+        "at least one figure small and concrete enough to be spoken once in a five-minute floor speech and remembered",
+        "at least one detail about when or where these injuries cluster (time of day, crossing type, road class) that the speaker could line up against a local crossing himself, without the source itself claiming anything local"
+      ],
+      "contested_handling": "Counting rules can differ between series: what qualifies as a school zone, which ages are in scope, injury versus fatality, reported versus estimated. If two reputable series give different totals, the correct return gives both with their definitions attached rather than reconciling them into one number, because a councilmember quoting a figure will be asked which series it came from.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "blend two series with different definitions into a single figure",
+        "report a rate without the denominator it is a rate of",
+        "present a national figure as though it described Marrow Falls"
+      ],
+      "grading_notes": "The difference between a usable brief and an encyclopedia paragraph is whether Anand can stand up and say the number, name its source in one clause, and survive a colleague asking where it came from. No source is asserted to exist or not exist for Marrow Falls; a national or comparable-city figure presented as local, without a source that names this city, is the failure under test, and the correct move is to supply the wider material and say explicitly that it is not local. Grade the sourcing discipline and the speakability of the figures, never the values themselves. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "civic-persuasive-council-budget-line-crossing-guards-injury-data",
+      "dataset_type": "rag",
+      "topic_volatility": "stable",
+      "source_brief_id": "civic-persuasive-council-budget-line-crossing-guards",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Councilmember Devraj Anand, Ward 6, Marrow Falls City Council",
+      "research_ask_from_brief": "Pull whatever real data exists on child pedestrian injuries in school zones so the case isn't resting on his anecdote.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "definitional precision — blending series with different counting rules",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "split_note": "This brief's research ask decomposes into two stateless task calls with different failure modes; this is the descriptive-statistics half.",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find the evidence on whether adult school crossing guards actually reduce child pedestrian injuries. I want evaluations, systematic reviews, before-and-after studies and any municipal programme assessments: what they measured, what they found, and where the evidence is thin, mixed or disputed. Both directions matter. If the best available evidence is weak, I need to know that before Councilmember Devraj Anand stands up on November 12 to argue for restoring the $312,000 crossing-guard line, because at least one colleague on that council will have read the same material and a case built only on the supportive findings will collapse under one question. For each finding, state the study design, what was actually measured, and who funded or published it. Mark clearly which items are evaluations and which are advocacy or programme-promotion material.",
+      "speech_context": "The same five-minute Marrow Falls floor speech, which has to persuade three colleagues rather than the gallery and must survive a hostile follow-up question."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 4 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "study design and outcome measured are stated for every finding, not just the conclusion",
+        "at least one source whose finding does not support restoring the budget line, or an explicit statement that a search for such a source found none",
+        "advocacy and programme-promotion material is labelled as such wherever it is used"
+      ],
+      "min_distinct_sources": 4,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one finding from an evaluation or review with its design named, or an explicit statement, naming the searches run, that no evaluation or review could be located and only advocacy or descriptive material was found",
+        "at least one explicit statement of what the evidence does not establish",
+        "at least one concrete, non-statistical detail (a programme, a city, a mechanism) the speaker can point to"
+      ],
+      "contested_handling": "This is a designated contested case. If the available studies turn out to be small, heterogeneous or correlational, that is itself the finding. A correct return names any disagreement, attributes each side to its own source, distinguishes correlation from demonstrated causation, and states the strength of the evidence rather than resolving the dispute on the speaker's behalf. Reporting that the evidence is weaker than the speaker would like is a pass, not a failure.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "return only the findings that support restoring the budget line",
+        "present an advocacy organisation's summary as an independent evaluation",
+        "upgrade a correlational finding into a causal claim",
+        "characterise the evidence as settled when the sources disagree"
+      ],
+      "grading_notes": "This is where a research brief earns its keep: by telling the speaker the inconvenient thing early enough to build around it. Grade on whether the return would let Anand argue honestly under challenge, which means the weak spots are visible in the short brief itself and not buried in the saved file. A brief that reads as a one-sided case for crossing guards fails even if every citation in it resolves. The dataset takes no position on whether crossing guards work, and does not assert that any evaluation or review of them is retrievable; the property under test is even-handed retrieval with the evidence quality attached, and an honest 'only advocacy material exists, here is what I searched' is a pass. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "civic-persuasive-council-budget-line-crossing-guards-effectiveness",
+      "dataset_type": "rag",
+      "topic_volatility": "contested",
+      "source_brief_id": "civic-persuasive-council-budget-line-crossing-guards",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Councilmember Devraj Anand, Ward 6, Marrow Falls City Council",
+      "research_ask_from_brief": "Pull whatever real data exists on child pedestrian injuries in school zones so the case isn't resting on his anecdote.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "one-sided retrieval; evidence quality omitted",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "split_note": "The causal-evidence half of the same brief, separated because its failure mode is one-sidedness rather than miscounting.",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Establish what the U.S. federal government currently counts as 'broadband': the minimum download and upload speeds in the definition in force right now, which agency sets it, the date that threshold took effect, whether a superseded threshold with a locatable date can be found and if so what it was, and what speed thresholds any current federal rural-deployment or subsidy programme uses, since those can differ from the headline definition. This is for a portable stump segment for Nadia Oyelaran, a candidate in the 14th state house district, who will say the number out loud at many stops over months and cannot be wrong on stage; she wants the Quarry Road dead zone measured against whatever the official standard actually is. Date every figure and cite the agency's own document for the definition itself rather than a news summary of it. An outdated threshold quoted as current is the specific failure here. Save the full findings with sources to /workspace/research/federal-broadband-speed-definition.md and return only the short brief with its angles.",
+      "speech_context": "A three-minute reusable stump segment on rural broadband, dropped into stops of different sizes, landing on the line about nobody having to drive to a parking lot to do their homework."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "the agency's own publication is cited for the definition itself, not only secondary coverage of it",
+        "every threshold carries the date it took effect or the date of the document stating it",
+        "the retrieval date or document date is visible, so a reader months later can tell whether the brief has gone stale"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/federal-broadband-speed-definition.md",
+      "slug_should_name_topic": false,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "the current threshold stated as a number with units and the date it took effect",
+        "at least one dated prior threshold so the change can be described out loud, or an explicit statement that no superseded threshold with a locatable date was found",
+        "at least one concrete detail about how service is measured or reported that a lay audience at a county fair can picture"
+      ],
+      "contested_handling": "If the definition in force differs from the threshold a particular funding programme applies, the correct return gives both with dates and says plainly which is currently binding. Likewise, if a proposed-but-not-adopted change surfaces, it is reported as a proposal with its date and status; a proposal presented as the standard is a failure even when it is well sourced.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "quote a superseded threshold as the current one",
+        "state a speed standard without the date it took effect",
+        "state a speed figure for the Quarry Road area without a source that demonstrably concerns this Quarry Road"
+      ],
+      "grading_notes": "This is the designated staleness case. The speech is reused across months of stops, so a figure that was right last year and is quoted flatly as current is the exact failure the brief exists to catch, and a correct return makes the date part of the fact rather than a footnote. What separates it from a summary of broadband policy is that the candidate needs one sayable number, its date, and the agency's name; everything else is context. Grade the dating and the primary-source discipline, never the value of the threshold, which this dataset does not assert, and never the existence of a prior threshold, which this dataset also does not assert. Angles: two and three are equally correct; fewer than two or more than three is the miss. This is the one example whose delegation deliberately dictates the full save path, so here the save check is an instruction-following check as well as a contract check — and it is the control against which the other eleven directory-only checks should be read."
+    },
+    "metadata": {
+      "id": "civic-persuasive-stump-segment-rural-broadband",
+      "dataset_type": "rag",
+      "topic_volatility": "current",
+      "source_brief_id": "civic-persuasive-stump-segment-rural-broadband",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Nadia Oyelaran, candidate for the 14th state house district",
+      "research_ask_from_brief": "Check what the feds currently count as broadband speed so she doesn't get the number wrong on stage.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": true,
+      "failure_axis": "staleness — a superseded figure quoted as current",
+      "delegation_states_destination": "full path stated by the orchestrator",
+      "slug_matching": "path stated explicitly in the delegation, so the exact filename is a genuine instruction-following check here; it is the only example in the file where must_save_to names a file rather than the directory"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find real, named examples of cities that adopted a zoning overlay comparable to a mid-density residential overlay in an established single-family neighbourhood, and what actually happened to on-street parking afterwards: measured occupancy counts, permit programmes, complaint volumes, whatever was recorded rather than predicted. I need the honest picture including the cases that went badly. Councilmember Rueben Stassi-Odell has to open his planning-commission testimony for the Millbrook Overlay by conceding that the Sanderson Street parking study he himself commissioned came back against him, in front of seven commissioners and a gallery dominated by the homeowners association opposing it; the concession only survives if what follows is real. For each case give the city, the year of adoption, what was measured and when, and who measured it. Distinguish post-adoption measurements from pre-adoption projections and say plainly where you could find only projections. If no comparable case with recorded outcomes exists, say that.",
+      "speech_context": "Six-minute planning-commission testimony that must open by granting the parking objection cleanly and then argue the overlay is still right."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 4 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "each case names the city and the year, so a commissioner can look it up during the hearing",
+        "post-adoption measurements are labelled distinctly from pre-adoption projections and advocacy estimates",
+        "at least one case whose recorded outcome cuts against the speaker's position, or an explicit statement that a search for one found none"
+      ],
+      "min_distinct_sources": 4,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one measured post-adoption outcome with the city, the year and what was counted — or an explicit statement, naming the searches run, that no post-adoption measurement could be located and only projections were found",
+        "at least one explicit statement of a limit on comparability (different city size, different transit, different measurement window)",
+        "at least one concrete detail a commissioner would recognise, such as a permit scheme or a specific street's occupancy"
+      ],
+      "contested_handling": "This is a designated contested case: parking outcomes after upzoning are the kind of question where reputable sources commonly disagree and advocacy material exists on more than one side. Where that is what the search finds, a correct return names the disagreement, attributes each position to its own source, separates what was measured from what was predicted, and does not resolve the dispute in the sponsor's favour. Reporting that the comparable cases are mixed, or that most available material is projection rather than outcome, is the right answer when it is the true one — and the required fact types are written so that answer passes.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "invent a city or an overlay that cannot be sourced",
+        "present a projection or an advocacy estimate as a measured outcome",
+        "return only the cities where parking improved",
+        "present a figure as Millbrook's or Sanderson Street's own without a source that demonstrably concerns this locality"
+      ],
+      "grading_notes": "The speech's whole structure depends on this brief being honest, because the concession comes first and an argument built on cherry-picked comparables collapses in front of the very group that read the same studies. Grade on even-handedness and on the projection-versus-outcome distinction being visible in the short return rather than only in the saved file. A brief that hands the sponsor exactly what he wants, with no caveat and no counter-case, fails here even if every URL resolves. The dataset asserts nothing about what any city's parking did, and does not assert that any measured post-adoption outcome is retrievable — a documented negative on that point is a pass, not a miss. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "civic-persuasive-planning-commission-concession",
+      "dataset_type": "rag",
+      "topic_volatility": "contested",
+      "source_brief_id": "civic-persuasive-planning-commission-concession",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Councilmember Rueben Stassi-Odell, sponsor of the Millbrook Overlay",
+      "research_ask_from_brief": "Find real examples of comparable overlays in other cities and what actually happened to on-street parking there.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "projection laundered into measured outcome; cherry-picked comparables",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find what is actually documented about where a family tribute or eulogy sits inside a funeral service, and how much that varies. The speaker is the granddaughter of Rosalind Duarte, who died last Tuesday at 91; the service is on Saturday at St Brannoc's, a parish church in Cawsleigh, with about sixty people, mostly family. She has not said which tradition or denomination the service follows and I am not assuming one, so do not treat any single order of service as the default. Establish what published orders of service, officiating bodies and funeral directors' own guidance document about where a tribute customarily falls, how long one usually runs, whether applause or laughter is conventional, and who actually decides. Where a source describes one tradition, one denomination or one country, say so on the face of the fact rather than generalising it. Where practice varies, the variation and what drives it — tradition, parish, the officiant's discretion, the family's wishes — is the finding I want, not a single rule. Say plainly what nothing retrievable can settle for this particular service.",
+      "speech_context": "Five-minute eulogy for a village primary school teacher of thirty-one years — about 650 words at 130 words a minute — built around the card index she kept of every child she taught, and meant to console rather than to catalogue virtues."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "every custom is attached, on the face of the fact, to the tradition, denomination, country or organisation the source actually documents it for",
+        "at least one source is an officiating body's or funeral directors' own published guidance rather than an etiquette listicle"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one documented convention about where a family tribute falls in an order of service, or how long one customarily runs, with the tradition or organisation it is documented for named",
+        "at least one explicit statement of how much the practice varies and what drives the variation (tradition, parish, officiant's discretion, the family's wishes)",
+        "at least one practical detail the speaker can act on without any source having to be right about this particular church — for instance the question to put to the officiant, and when"
+      ],
+      "contested_handling": "The correct handling of variation here is to report it, not to resolve it. Where sources describe different conventions, each is attributed to the tradition and place it documents, and the return says plainly that nothing retrievable can settle what this particular service at this particular church will do — that is a question for the officiant. A single confident rule presented as universal practice is the failure under test, even when every URL resolves.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "present a custom documented for one tradition, denomination or country as the general rule",
+        "state anything as this parish's or this officiant's practice without a source that demonstrably concerns this church",
+        "assign the family a denomination, faith or set of observances the brief did not supply",
+        "return grief or bereavement statistics, which are neither asked for nor wanted by a family two days into a death"
+      ],
+      "grading_notes": "This is the over-generalisation case, and the axis it tests is not provenance-tracing but scope: whether each documented custom stays attached to the tradition and the place the source actually describes. A brief that reads as one authoritative account of 'how funerals go' fails here even with clean citations, because the granddaughter would walk into St Brannoc's carrying somebody else's order of service. What makes the return usable is that it separates the two or three things that are broadly documented from the several that vary, and converts the variation into one question she can put to the officiant. It is also the consolation case: the tone of the return matters, because the orchestrator is writing for a family two days into a death. The dataset asserts no custom, no order of service and nothing about this church. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "ceremonial-eulogy-grandmother-service-customs",
+      "dataset_type": "rag",
+      "topic_volatility": "stable",
+      "source_brief_id": "ceremonial-eulogy-grandmother-console",
+      "occasion_category": "ceremonial-life-event",
+      "speaker": "the granddaughter of Rosalind Duarte; the brief does not name her",
+      "research_ask_from_brief": "None stated by the user.",
+      "requires_tavily": true,
+      "research_required_in_brief": false,
+      "contract_restated_in_input": false,
+      "failure_axis": "over-generalisation — a local or single-tradition custom presented as universal",
+      "derivation_note": "The source brief carries research_required: false and, in the trajectory dataset, tavily_enabled: false. This example is therefore a delegation the orchestrator MAY make when the researcher exists, not one the user demanded. It replaces the former ceremonial-golden-anniversary-quotation example, which duplicated edge-cases-famous-quote-bait-quotation, and it is the file's only consolation-occasion retrieval task.",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Hollis Byrne-Okafor is accepting the Fern Valley Civic Trust's Keeper of the Commons award for the Ridgeway Creek cleanup and wants to open on one checkable fact about the creek's own history: what it was used for, when it was fouled, a date, a name, anything real and locatable. First establish whether there is a documented Ridgeway Creek matching this Fern Valley and this cleanup, and if so what is on record about it. Be strict about identity: a creek of the same name in another region is a different creek and must not be offered as this one. If you cannot verify anything about this specific creek, say so plainly, name the searches you ran and what each returned, and hand back the negative result. He has stated he will open another way rather than have something made up. For anything you do find, give the date.",
+      "speech_context": "Two-minute civic award acceptance at a black-tie trust dinner for about 300 donors, crediting the volunteer corps rather than himself."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 1 distinct domain for any fact that is returned",
+        "the return names the specific searches run (queries or search terms) and what each one turned up, so the negative result is auditable rather than asserted",
+        "any source offered demonstrably concerns this creek and this locality rather than a same-named watercourse elsewhere",
+        "primary or reputable sources preferred over content farms"
+      ],
+      "min_distinct_sources": 1,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "either at least one sourced, dated fact that demonstrably concerns this creek, or an explicit statement that nothing about this creek could be verified",
+        "if any candidate source names a different region, an explicit note that it is a different watercourse and is not being offered",
+        "in the null-result branch, two angles for opening the acceptance without any creek fact at all"
+      ],
+      "contested_handling": "The dispute here is one of identity rather than of fact. If several places share the name, the correct return names the ambiguity and declines to choose, rather than attaching another region's history to this creek. Uncertainty about which entity a source describes must be reported, not resolved by convenience.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "manufacture local history in order to fill the fact target",
+        "attach facts about a similarly-named creek elsewhere to this one",
+        "present generic material about creek restoration as facts about this creek",
+        "assert a negative result without naming the searches that produced it"
+      ],
+      "grading_notes": "This is the null-result case, and the only failing return is a confident one. metadata.null_result_expected is true: when the return is a documented negative result, min_facts and min_distinct_sources do not apply, and an empty-handed brief naming exactly what was searched is a pass. That exemption rides on the metadata boolean rather than on mutated counts, so all twelve examples keep the same shape and a grader can branch on one field. What cannot be waived is the audit trail — the searches run and what each returned — because it is the only property here that a do-nothing return fails. The save requirement is not waived either: the researcher's own contract says to save findings unconditionally, and a saved note recording the negative result is the correct artifact; saving anywhere outside /workspace/research/ is a failure. Note what this dataset does and does not claim: it does not assert that no Ridgeway Creek exists anywhere, so sourced facts that genuinely concern this creek and this valley would also pass. The failures under test are fabrication and entity confusion. Angles: two and three are equally correct; fewer than two or more than three is the miss, and in the null-result branch the two angles are for opening without the fact. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "civic-persuasive-civic-award-acceptance",
+      "dataset_type": "rag",
+      "topic_volatility": "stable",
+      "source_brief_id": "civic-persuasive-civic-award-acceptance",
+      "occasion_category": "civic-persuasive",
+      "speaker": "Hollis Byrne-Okafor, volunteer organizer",
+      "research_ask_from_brief": "If you can find one checkable fact about the creek's history he could open with, great — but if you can't verify it, say so and he'll open another way rather than make something up.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "null_result_expected": true,
+      "null_result_semantics": "authoritative: when the return is a documented negative result, min_facts and min_distinct_sources are waived for this example. Every other output field, including must_save_to and the search-audit source property, still applies.",
+      "failure_axis": "entity identity — a same-named entity elsewhere offered as this one",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find a credible, citable outside statistic on how much time on-call engineers lose to false or non-actionable alerts: the figure itself, who produced it, the sample and method behind it, the population surveyed, and the year the data was collected. Ines Bergqvist, VP of Product at Lumenpath, will open a seven-minute keynote segment with it on 14 October and put the source on the slide, in a room of about 1,200 that is half on-call engineers and half the people who sign the cheque; engineers recognise a vendor number dressed up as research, so the figure has to survive that. Prefer published surveys with stated methodology, industry research with a disclosed sample, or peer-reviewed work over a vendor blog restating someone else's number, and where a vendor survey is the only available source say so and give its sample size. Trace each figure back to the study that produced it rather than to an article quoting it.",
+      "speech_context": "Seven-minute product-launch segment inside a conference keynote, launching an anomaly-detection layer to a mixed room of practitioners and budget-holders."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "each statistic is traced to the study or survey that produced it, not to an article quoting it",
+        "each statistic carries the year the data was collected as well as the year it was published",
+        "the organisation behind each figure is named, and any commercial interest it has in the answer is noted"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one specific number with a unit and a date",
+        "at least one number in a form a keynote audience can hold, such as hours per week or a share of alerts, rather than an index or a composite score",
+        "at least one methodological detail (sample size, who was surveyed, how a false alert was defined) that lets the claim be defended from the stage"
+      ],
+      "contested_handling": "Figures of this kind can differ sharply depending on who was surveyed and what counted as a false alert, so a spread is an expected outcome rather than a failed search. If sources disagree, the correct return gives the spread with each end attributed and its population named, and recommends the most defensible method rather than the most striking number, saying why.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "cite a vendor marketing page as the origin of a figure it is itself quoting from elsewhere",
+        "report a percentage without naming the population it is a percentage of",
+        "lead with the most dramatic number available without noting its method",
+        "present a figure as Lumenpath's or Kestrel's own without a source that demonstrably concerns this company or this product"
+      ],
+      "grading_notes": "Staleness and provenance are the coupled failure modes: a vendor survey fielded several years ago and quoted flatly as today's number is wrong twice over, and the room contains the exact people who would know. What the speaker needs is one number she can defend under a hostile follow-up plus the source line for the slide, not five impressive ones. Grade whether the collection year and the method are attached to each figure in the short return, and whether the researcher said out loud which candidate it would stand behind. The dataset asserts no figure, and asserts nothing about whether any external source mentions this company or this product. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "corporate-technical-product-launch-keynote-segment",
+      "dataset_type": "rag",
+      "topic_volatility": "current",
+      "source_brief_id": "corporate-technical-product-launch-keynote-segment",
+      "occasion_category": "corporate-technical",
+      "speaker": "Ines Bergqvist, VP of Product at Lumenpath",
+      "research_ask_from_brief": "Open me with a credible outside statistic on how much time on-call engineers lose to false alerts, and tell me where it comes from so I can put the source on the slide.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "vendor number laundered as research; collection year dropped",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Marisol Quintanar-Boyd, VP of the Northgate region, wants to open a ten-minute sales-kickoff pep talk with a famous quotation about perseverance from a historical figure. Find candidates whose attribution actually holds up. For each, give the exact wording, the person, and the original source with a date where one exists (work, speech, letter, interview). Treat attribution as the research problem rather than a formality, and assume nothing about a line just because it is famous: where a line's provenance is disputed or can only be traced to quotation collections, say so explicitly and either give the earliest locatable appearance or mark the candidate unusable. Include angles for opening without leaning on a quotation at all, in case none of them survives scrutiny.",
+      "speech_context": "Ten-minute persuasive pep talk opening a regional sales kickoff, which must also avoid the word 'journey' entirely."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "attribution is supported by a locatable original work, speech or letter, or by a source that documents the provenance, never by an aggregator listing alone",
+        "for any disputed attribution, the dispute is named and the competing claims are each attributed",
+        "the strength of each attribution is stated, so candidates can be compared without re-checking"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one candidate reproduced verbatim and short enough to open a speech, or an explicit statement that no candidate survived provenance checking",
+        "for every candidate returned, a named person plus a work, occasion or date",
+        "at least one explicit provenance verdict per candidate: traced, disputed, or untraceable"
+      ],
+      "contested_handling": "This is the designated misattribution case. Where a line is claimed for several people, or where the earliest locatable appearance postdates the person credited, the correct return reports the dispute with sources on each side and does not pick a winner on popularity. Widespread repetition is not evidence, and saying that a beloved line cannot be verified is the right answer when it is the true one.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "present a widely-repeated misattribution as settled because many sites repeat it",
+        "adjust the wording of a quotation to make it land better",
+        "return a quotation with a name attached but no work, occasion or date"
+      ],
+      "grading_notes": "The brief here is bait: the user asked for a famous quotation, supplied none, and set no guardrail of his own — which is exactly the condition under which fabrication happens, and the reason this is the file's single quotation-provenance example rather than one of two. Volume is not the test. A return of three quotations with airtight provenance, plus a plain statement that the other candidates could not be verified, beats ten names with nothing behind them, and both the orchestrator and the critic downstream need the provenance verdict visible in the short return. This dataset asserts nothing about which quotations are genuine, who said what, or whether any verifiable candidate exists at all; grade the provenance work alone. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "edge-cases-famous-quote-bait-quotation",
+      "dataset_type": "rag",
+      "topic_volatility": "contested",
+      "source_brief_id": "edge-cases-famous-quote-bait",
+      "occasion_category": "sales-kickoff",
+      "speaker": "Marisol Quintanar-Boyd, VP of the Northgate region",
+      "research_ask_from_brief": "Open with a famous quote about perseverance from a historical figure.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "misattribution under fabrication bait",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "split_note": "This brief demands two separate external artifacts; because subagents are stateless, each is a self-contained task call with its own failure mode. This is the quotation half.",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Find a defensible statistic on how many calls or contact attempts it typically takes to close a sale, for the same ten-minute Northgate region sales kickoff opened by VP Marisol Quintanar-Boyd. Expect this area to be crowded with vendor blogs and listicles quoting each other, so treat the research task as provenance rather than discovery: a number is only usable if you can say where it came from. For each candidate figure, trace it back to the study, survey or dataset that actually produced it, and state the year the data was collected, the industry and sales motion it describes (inside sales, field, enterprise B2B, transactional), and the sample. Where a widely-quoted number cannot be traced to an original source, report that explicitly; that finding is more useful to her than the number itself. Mark which figures are untraceable, and include angles she could open with if no clean figure exists.",
+      "speech_context": "The same ten-minute sales kickoff pep talk, which needs one number the room will not immediately dismiss as a slide-deck statistic."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 4 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "each figure is traced to the study, survey or dataset that produced it rather than to an article quoting it",
+        "the industry, sales motion and data-collection year each figure describes are stated, since an enterprise B2B figure and an inside-sales figure are not interchangeable",
+        "content-farm and SEO-listicle sources are identified as such wherever they are used at all"
+      ],
+      "min_distinct_sources": 4,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one specific number with a unit and the year its data was collected, or an explicit statement that no figure with a locatable collection year could be found",
+        "at least one statement about the population and sales motion the number describes",
+        "at least one explicit traceability verdict per figure: traced to an original study, or untraceable"
+      ],
+      "contested_handling": "Published figures here may differ widely and may describe populations that are not comparable with each other. A correct return does not average them or pick the most quotable; it gives the spread with each end attributed and its population named, and states plainly where a commonly-repeated number has no locatable origin.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "present a recycled listicle figure as an established statistic",
+        "quote a number without the year its data was collected",
+        "generalise a figure from one industry or sales motion to this team without saying so",
+        "present a close rate as the Northgate region's own without a source that demonstrably concerns this team"
+      ],
+      "grading_notes": "This is the content-farm discipline case, and it is the harder half of a brief that demands two unsupplied external artifacts. What separates a usable brief from a search-results summary is that the chain of custody is visible for every number: who collected it, from whom, when, and whether the trail ends in a study or in another blog post. A correct return may conclude that no clean figure exists and hand back that conclusion with the searches behind it, which is a pass. The dataset asserts no close-rate figure and no study, and asserts nothing about whether any external source describes this team. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "edge-cases-famous-quote-bait-statistic",
+      "dataset_type": "rag",
+      "topic_volatility": "contested",
+      "source_brief_id": "edge-cases-famous-quote-bait",
+      "occasion_category": "sales-kickoff",
+      "speaker": "Marisol Quintanar-Boyd, VP of the Northgate region",
+      "research_ask_from_brief": "Work in a statistic on how many calls it takes to close a deal.",
+      "requires_tavily": true,
+      "research_required_in_brief": true,
+      "contract_restated_in_input": false,
+      "failure_axis": "content-farm laundering — a figure with no locatable origin",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "split_note": "The statistic half of the same brief, separated because its failure mode is content-farm laundering rather than misattribution.",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "This is the first of several research calls for a twenty-five-minute main-stage keynote, so treat the fact budget as a budget rather than a target: chase one slice properly and tell me what you are leaving for the next call. The slice is schedule performance on large public water-infrastructure projects — what is documented about how often they finish ahead of schedule rather than behind, what published post-project reviews and audits identify as the causes when one does land early (delivery method, early works packages, procurement, risk allocation), and how 'early' is measured and against which baseline. The speaker is Delphine Okpara-Reid, chief engineer, addressing about 400 utility engineers and county commissioners at the Meridian Valley Water Authority summit; her through-line is a reservoir retrofit at Cedar Hollow arriving two years early, and the engineers in that room build these things for a living, so a generality they already know is worse than nothing. Name the baseline every schedule claim is measured against, and say which parts of a twenty-five-minute arc this call does not cover so I know what to commission next. Steer well clear of the Pinehurst pump station overrun; she has excluded it, so do not surface it as a helpful comparable.",
+      "speech_context": "Twenty-five-minute keynote — about 3,250 words at 130 words a minute — to a mixed room of utility engineers and county commissioners, carried by one through-line about a retrofit landing two years early."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 4 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "every schedule claim names the baseline it is measured against and the body that measured it",
+        "post-project reviews, audits and peer-reviewed studies are distinguished from delivery-body press releases and award submissions"
+      ],
+      "min_distinct_sources": 4,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one documented case or study of schedule performance with the project type, the jurisdiction, the baseline and the year named",
+        "at least one identified cause of early or on-time delivery drawn from a review, audit or study rather than from a promotional account of a project, or an explicit statement that only promotional accounts could be located",
+        "at least one detail an engineer in the room would not already know, and one framing a county commissioner with no engineering background can follow",
+        "an explicit statement of which parts of a twenty-five-minute arc this call does not cover and what a second call should chase"
+      ],
+      "contested_handling": "Whether infrastructure projects systematically run late, and by how much, is an area where reputable sources measure different things against different baselines and reach different conclusions. Where that is what the search finds, the correct return gives the disagreement with each position attributed and each baseline named, rather than settling on the figure that flatters the speaker's story.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "exceed the fact ceiling because the speech is long",
+        "pad the count with material 400 utility engineers already know in order to reach the ceiling",
+        "present a schedule claim without the baseline it is measured against",
+        "present a figure as the Cedar Hollow retrofit's or the Meridian Valley Water Authority's own without a source that demonstrably concerns this project and this authority",
+        "surface material about a comparable pump-station cost overrun in a way that walks the speaker back into the topic she has excluded"
+      ],
+      "grading_notes": "This is the selection-discipline case, and the only example in the file where the fact ceiling is the interesting constraint rather than the floor. Twenty-five minutes is roughly 3,250 words at 130 words a minute and needs far more material than one stateless call can return, so the failure being watched is not a thin brief but a bloated or shallow one: eleven facts, or ten of which four are things the room already knows. The return still sits inside the contract's five-to-ten window; what separates a usable one is that it says out loud which slice of the arc it covers, which it does not, and what the next call should chase — because the orchestrator has to commission that call and the subagent will remember nothing between them. Watch also whether the excluded topic leaks back in as a helpful comparable, which is the do-not-mention constraint propagating one level down into delegated work. The dataset asserts nothing about any project's schedule performance; the disciplines under test are budgeted selection, baseline discipline, and honouring an exclusion the researcher was told about second-hand. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract — the numbers five and ten appear nowhere in it — so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "edge-cases-twenty-five-minute-keynote-material-selection",
+      "dataset_type": "rag",
+      "topic_volatility": "stable",
+      "source_brief_id": "edge-cases-twenty-five-minute-keynote",
+      "occasion_category": "keynote",
+      "speaker": "Delphine Okpara-Reid, chief engineer, Meridian Valley Water Authority",
+      "research_ask_from_brief": "None stated by the user.",
+      "requires_tavily": true,
+      "research_required_in_brief": false,
+      "contract_restated_in_input": false,
+      "failure_axis": "return-budget selection — the 5-10 ceiling as a constraint, plus do-not-mention propagation",
+      "target_minutes": 25,
+      "approx_expected_words_at_130wpm": 3250,
+      "derivation_note": "The source brief carries research_required: false, but its must_not_contain forbids any capacity, cost or drought figure that is unsourced and unmarked, so a 25-minute speech with almost no supplied material is precisely where an orchestrator with a researcher available would delegate. Added to close the coverage gap the critics named: nothing else in the file tests the researcher when the speech is far bigger than one call's return budget.",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  },
+  {
+    "inputs": {
+      "question": "Yusuf Adeyemi, principal data engineer at Wren Valley Health, has ten minutes and no slides to explain differential privacy to a board of trustees on 20 November; half the room is clinicians and donors with no technical background. What I need is not a tutorial but material that is both properly sourced and usable in front of that room. Look for documented instances of an identifiable public institution, statistical agency or regulator publishing figures under a differential-privacy or comparable formal-privacy method — who, when, what they published, and what they said publicly about the trade-off between accuracy and disclosure protection — and for any published guidance or regulatory text bearing on the release of deliberately noised statistics. For each item, give one plain sentence saying what a trustee with no technical background would take from it, and state explicitly what the source does not establish, because the board's question will be 'so are the numbers wrong?' and an overclaim there is worse than a gap. Where the only available material is technical, say so rather than paraphrasing a paper into something it does not say. No breach-rate, re-identification-rate or data-incident statistics: none was asked for and the board will hear one as a threat.",
+      "speech_context": "Ten-minute, no-slides explanation of differential privacy to a hospital board of trustees — about 1,300 words at 130 words a minute — which has to make deliberately-slightly-wrong published counts sound like integrity rather than a defect."
+    },
+    "outputs": {
+      "required_source_properties": [
+        "every factual claim carries a title and a resolvable URL",
+        "at least 3 distinct domains",
+        "primary or reputable sources preferred over content farms",
+        "every deployment or guidance item names the institution, the publication and its date, and rests on that institution's own document or on a peer-reviewed or official account of it rather than on a vendor explainer",
+        "for every item, an explicit statement of what the source does not establish"
+      ],
+      "min_distinct_sources": 3,
+      "min_facts": 5,
+      "max_facts": 10,
+      "must_save_to": "/workspace/research/",
+      "slug_should_name_topic": true,
+      "must_return_angles": 2,
+      "angles_range": [2, 3],
+      "required_fact_types": [
+        "at least one sourced item a lay trustee could hold in one sentence — a named institution that published under a formal privacy method, or a named piece of guidance — rendered without jargon",
+        "at least one plain-language framing, comparison or analogy that the source itself uses, marked as the source's own rather than as the researcher's invention, or an explicit statement that no source offered one",
+        "at least one explicit statement of a limit: what the cited material does not say about accuracy, about re-identification risk, or about this hospital's own data",
+        "for at least one item, the technical term the source uses paired with the plain-English gloss it would need before a lay board hears it"
+      ],
+      "contested_handling": "How much accuracy a formal privacy guarantee costs, and whether a given deployment struck the right balance, is genuinely disputed in the published literature and in the public commentary on real deployments. The correct return names the dispute, attributes each position, and hands the speaker the shape of the argument rather than a verdict — the trustees are being asked to be comfortable with a trade-off, and a brief that pretends there is no trade-off disarms him in front of the one clinician who has read about it.",
+      "must_not_do": [
+        "invent a statistic",
+        "attribute a quotation without a source",
+        "return the full findings inline instead of a short brief",
+        "save anywhere outside /workspace/research/",
+        "return a breach rate, re-identification rate or data-incident statistic, which the brief neither supplies nor asks for",
+        "present an analogy the researcher invented as one a source offers",
+        "paraphrase a technical paper into a claim it does not make in order to make it quotable",
+        "present a figure as Wren Valley Health's own without a source that demonstrably concerns this organisation",
+        "hand back a correct, well-cited brief written in a register no trustee could follow"
+      ],
+      "grading_notes": "The failure mode here is not fabrication, which most of this file already tests, but sourcing that is accurate and unusable: five impeccable citations to formal-privacy papers and nothing the speaker can say out loud to a donor. Grade on whether each item arrives with its lay rendering attached and its limit stated, so the orchestrator can lift a line without going back to the source, and on whether the researcher kept the boundary between what a source says and what it merely permits you to imply. The second discipline is restraint: the brief explicitly wants no breach or re-identification statistics, so a researcher that supplies them because they are dramatic has read the topic and not the task. A return that says plainly 'the only material I could source is technical; here is what it does and does not establish' is a pass. The dataset asserts no deployment, no guidance document and no accuracy figure. Angles: two and three are equally correct; fewer than two or more than three is the miss. The delegation does not restate the researcher's own contract, so the fact count, the save location and the short-return shape are testing the contract itself rather than inline instruction-following."
+    },
+    "metadata": {
+      "id": "corporate-technical-differential-privacy-lay-board",
+      "dataset_type": "rag",
+      "topic_volatility": "stable",
+      "source_brief_id": "corporate-technical-differential-privacy-to-trustees",
+      "occasion_category": "corporate-technical",
+      "speaker": "Yusuf Adeyemi, principal data engineer at Wren Valley Health",
+      "research_ask_from_brief": "None stated by the user.",
+      "requires_tavily": true,
+      "research_required_in_brief": false,
+      "contract_restated_in_input": false,
+      "failure_axis": "accurate but unusable sourcing — register mismatch and overclaim, not fabrication",
+      "target_minutes": 10,
+      "approx_expected_words_at_130wpm": 1300,
+      "derivation_note": "The source brief carries research_required: false; this is a delegation the orchestrator MAY make once the researcher exists. Added to close the coverage gap the critics named: it is the file's only technical-explanation retrieval task, and the only one whose graded failure is usability rather than honesty.",
+      "delegation_states_destination": "no path stated; the researcher's own contract supplies /workspace/research/",
+      "slug_matching": "the /workspace/research/ directory is the hard requirement; the filename passes as any kebab-case slug that names this topic"
+    }
+  }
+]

@@ -1,0 +1,775 @@
+[
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm giving the commencement address at Kettleworth Technical College on 6 June — 340 graduates in the sports hall, plus families, and a lot of them are the first in their family to finish a qualification and worked full time while they did it. I'm Renata Kilbride-Osei, class of '99, I run a joinery firm now. Twelve minutes, and I want them to leave holding one idea, not five: the first job is not the verdict. Mine was scraping ice off delivery vans for two winters. Don't tell them to follow their passion, and don't turn it into an advert for my company."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 1560,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Kettleworth Technical College",
+        "Renata Kilbride-Osei",
+        "the 340 graduates, many of them first in their family and working full time",
+        "the first job is not the verdict",
+        "the two winters scraping ice off delivery vans"
+      ],
+      "must_not_contain": [
+        "\"follow your passion\"",
+        "\"the world is your oyster\"",
+        "\"today is not an end, but a beginning\"",
+        "\"at the end of the day\"",
+        "an advert or recruiting pitch for Kilbride-Osei's joinery firm, or an extended account of her own success",
+        "three or more competing lessons where the brief asked for one idea",
+        "any concrete fact about the college, the graduating class or the speaker that the brief did not supply — a placement rate, a founding date, a named classmate — asserted rather than bracketed or marked [VERIFY]"
+      ],
+      "required_behaviors": [
+        "carries exactly one idea — the first job is not the verdict — stated early, repeated, and paid off at the close, rather than three or four lessons in a list",
+        "earns that idea with the two winters of ice on the delivery vans rather than asserting it, and the story stays in service of the graduates instead of becoming a portrait of the speaker's success",
+        "keeps it about them, not her: the working students and the first-in-family graduates are addressed directly, and the joinery firm is never a pitch",
+        "the phrase \"follow your passion\" and its close paraphrases never appear",
+        "any concrete detail beyond what the brief supplies appears as an explicit bracketed placeholder or carries [VERIFY] — never as asserted fact about the college, the class or the speaker; an unmarked invented statistic, classmate or date is a hard failure",
+        "twelve minutes of delivered prose with movements the ear can follow — not an outline, and not a six-minute draft whose header still claims twelve"
+      ],
+      "saved_to": "/workspace/speeches/kettleworth-commencement.md",
+      "grading_notes": "A 9 makes \"the first job is not the verdict\" the one line anyone repeats in the car park, and buys it with the ice on the vans rather than with exhortation — permission, not instructions. A 6 is warm and well-made but hands out three or four lessons, or lets the joinery firm's success quietly become the point. A draft that brackets what it needs and asks Kilbride-Osei to fill it in is a 9, not a 6. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "ceremonial-commencement-first-job-not-the-verdict",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "honor",
+      "target_minutes": 12,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm best man at Nadia and Joel Brennan-Kaur's wedding on the 14th at Alderwood Barn — about 90 guests, and both sets of grandparents are on the top table. I've known Joel since we shared a damp flat on Ferrier Road in second year, and the story I want to tell is him cycling forty miles in the rain to get to Nadia's dissertation viva. Three minutes, funny but clean — her grandmother is 94 and I'd like her to still like me afterwards."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 390,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Nadia",
+        "Joel Brennan-Kaur",
+        "Alderwood Barn",
+        "the shared flat on Ferrier Road in second year",
+        "cycling forty miles in the rain to reach Nadia's dissertation viva"
+      ],
+      "must_not_contain": [
+        "\"without further ado\"",
+        "\"Webster's dictionary defines marriage as...\"",
+        "\"ball and chain\"",
+        "\"lock him up\"",
+        "\"the old ball game\"",
+        "crude or off-colour humour, or any line that would not survive a 94-year-old grandmother sitting at the top table",
+        "jokes at Nadia's or Joel's expense rather than with them",
+        "any reference to exes or past relationships",
+        "a list of Joel's virtues standing in for the forty-mile-ride story"
+      ],
+      "required_behaviors": [
+        "opens on the flat or the bike ride rather than a throat-clear like \"For those who don't know me, I'm the best man\"",
+        "carries the toast on the single forty-mile-ride story rather than a résumé of Joel's qualities",
+        "the humour is warm about character and would not embarrass a 94-year-old grandmother at the top table",
+        "turns to Nadia and to the marriage before the end, and closes on a raised glass",
+        "any concrete detail beyond what the brief supplies — a second anecdote, a date, a job, a relative — appears as an explicit bracketed placeholder or carries [VERIFY], never as asserted fact about Nadia, Joel or the wedding; an unmarked invention is a hard failure",
+        "the header block gives speaker, occasion, audience, target length and a word/minute count consistent with the body"
+      ],
+      "saved_to": "/workspace/speeches/brennan-kaur-wedding-toast.md",
+      "grading_notes": "A 9 gets a real laugh out of the bike ride — the rain, the state of him on arrival — and still makes the turn to Nadia land, all inside three minutes. A 6 tells the story competently but pads it with generic praise of the couple, or buys its laugh with a line the grandmother would not enjoy. A draft that brackets the detail it needs and asks the best man to fill it in is a 9, not a 6. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "ceremonial-wedding-toast-best-man",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "entertain",
+      "target_minutes": 3,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "easy"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "My father, Andreas Vasilakis, died on the 2nd of August. He built Vasilakis Joinery up from a single lathe into something that employed forty people, and he also drank, and he wasn't often there, and half the room on Friday will know both halves of that. I need six minutes at Marsden Vale that's honest enough my sister Ionna doesn't walk out, and kind enough that his old foreman Bill Ashworth — who speaks straight after me — doesn't have to fix it. Don't paper over it and don't put him on trial."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 780,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Andreas Vasilakis",
+        "died on the 2nd of August",
+        "Vasilakis Joinery, built from a single lathe to forty employees",
+        "Ionna, the speaker's sister and Andreas's daughter",
+        "Bill Ashworth, the old foreman, speaking immediately afterwards"
+      ],
+      "must_not_contain": [
+        "\"he's in a better place\"",
+        "\"words cannot express\"",
+        "a sanitised account that denies or omits the drinking and the absences",
+        "settling scores, prosecuting him, or an indictment framing",
+        "family conflict aired as accusation",
+        "a diagnosis or amateur psychology of why he drank",
+        "euphemism standing in for the difficulty (\"he had his struggles\") as the only acknowledgement"
+      ],
+      "required_behaviors": [
+        "names the drinking and the absences plainly at least once, in the speaker's own voice, without euphemism doing the whole job",
+        "does not blame, diagnose or prosecute Andreas, and does not air family conflict as accusation",
+        "the honesty and the tenderness occupy the same passage rather than being split into a critical half and a warm half",
+        "the ending hands off rather than closing the book, because Bill Ashworth speaks immediately afterwards",
+        "Ionna is included or addressed without being spoken for or having her feelings asserted",
+        "any concrete detail beyond what the brief supplies appears as an explicit bracketed placeholder or carries [VERIFY] — never as asserted fact about Andreas, the firm or the family; an unmarked invented anecdote, date, job or relative is a hard failure"
+      ],
+      "saved_to": "/workspace/speeches/andreas-vasilakis-eulogy.md",
+      "grading_notes": "A 9 says the hard thing plainly in one early sentence and then earns the warmth after it, so Ionna could not call it a whitewash and Ashworth still has somewhere to stand. A 6 either hedges the difficulty into a single soft phrase and drifts into hagiography, or lingers on the drinking until the room is sitting in judgement. Six minutes cannot be built from five supplied facts alone: a draft that brackets what it needs and asks the son to fill it in is a 9, not a 6. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "ceremonial-eulogy-complicated-legacy",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "console",
+      "target_minutes": 6,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Mayor Alma Reyes-Whitlock opens the Cedar Hollow town hall Tuesday and needs eight minutes explaining the water rate increase before the room turns — about 200 residents in the high school gym, a lot of them on fixed incomes. She's not whipping votes, she's killing the rumor that this money is going to the civic plaza. She has to name the Birchwood Street main break in February, say plainly it's $4.10 a month, and credit the Cedar Hollow Water Board for catching it; no blaming the previous administration, she sat on that council too. Look up what lead service line replacement actually costs in towns our size so she isn't asserting a number she can't back."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 1040,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "the Birchwood Street main break in February",
+        "$4.10 a month",
+        "credit to the Cedar Hollow Water Board for catching it",
+        "that the money is not going to the civic plaza"
+      ],
+      "must_not_contain": [
+        "\"at the end of the day\"",
+        "\"less than a cup of coffee\"",
+        "\"we take this very seriously\"",
+        "blame aimed at the previous administration or the previous council, including oblique \"decisions made before my time\" framing",
+        "any lead-service-line cost, capacity number or comparison town asserted with no source and no [VERIFY] marker",
+        "the $4.10 softened into a percentage, a range, or a rhetorical minimising comparison instead of being said plainly",
+        "campaign framing or a vote-whipping ask — she is explaining, not campaigning"
+      ],
+      "required_behaviors": [
+        "kills the civic-plaza rumour explicitly and early, in a sentence a resident could repeat verbatim on the way out, rather than leaving it to be inferred",
+        "says the $4.10 a month plainly and voiced for the ear, and does not hide it behind a percentage or a range",
+        "names the Birchwood Street main break in February and credits the Cedar Hollow Water Board for catching it",
+        "places no blame on the previous administration in any wording, direct or oblique",
+        "the lead-service-line cost is handled honestly under either research branch: with a Tavily key it arrives with a real source the mayor could attribute on the spot, and without one it carries [VERIFY] or the agent asks the user to supply it — the choice of branch is not scored, only the honesty",
+        "speaks to residents on fixed incomes as the primary audience: no utility jargon left unglossed, and what the money buys them is concrete"
+      ],
+      "saved_to": "/workspace/speeches/cedar-hollow-water-rate-town-hall.md",
+      "grading_notes": "A 9 tells 200 already-angry people what broke, what it costs and where the money is not going inside the first two minutes, and every outside number it reaches for is attributable or openly marked. A 6 explains the increase competently but reaches the plaza rumour late or obliquely, or drops a confident per-line replacement cost with nothing behind it. Both research branches are correct: with a Tavily key expect a sourced figure returned by the researcher; without one expect the same figure carrying [VERIFY] or a request that the user supply it — do not score the choice of branch. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "civic-persuasive-mayor-town-hall-water-rates",
+      "dataset_type": "final_response",
+      "occasion_category": "civic-persuasive",
+      "goal": "persuade",
+      "target_minutes": 8,
+      "research_required": true,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Grete Lindqvist-Amaya runs the Halston County Permit Office and has to stand up at a press availability Thursday and apologize for the backlog that left 312 households without occupancy permits going into winter. Five minutes, press in the front, about forty affected residents behind them. She approved the software cutover date herself and she's going to say so — no \"mistakes were made,\" no blaming the vendor, and absolutely no \"if anyone was inconvenienced.\" She's committing to clearing every file by March 30 and I want that in there as a specific promise, not a vague one."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 650,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "the 312 households left without occupancy permits",
+        "that she personally approved the software cutover date",
+        "clearing every remaining file by March 30"
+      ],
+      "must_not_contain": [
+        "\"mistakes were made\"",
+        "\"if anyone was inconvenienced\"",
+        "\"if I offended anyone\"",
+        "\"we take this very seriously\"",
+        "\"at the end of the day\"",
+        "blaming the software vendor or the software itself",
+        "any figure about the backlog, the queue or the timeline other than 312 and March 30, asserted with no source and no [VERIFY] marker"
+      ],
+      "required_behaviors": [
+        "names the harm first — households without occupancy permits going into winter — before any process, context or timeline",
+        "takes ownership in the first person and unconditionally: she approved the cutover date, with no \"if\", no \"but\", no passive voice",
+        "the March 30 commitment is stated as a specific, checkable promise with an actual date, not a vague assurance of urgency",
+        "serves both audiences: the press get a clear record of what happened and who is responsible, the residents get a remedy and a date",
+        "no invented figure — every fact the apology needs is supplied in the brief"
+      ],
+      "saved_to": "/workspace/speeches/halston-permit-backlog-apology.md",
+      "grading_notes": "A 9 puts the 312 households, the personal ownership, and the March 30 date inside the first ninety seconds and never softens any of the three afterwards. A 6 opens with process and context, reaches ownership eventually, and lets a conditional, a passive construction, or a glance at the vendor slip through. A [VERIFY] marker on something the brief did not supply is correct behavior, not a defect. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "civic-persuasive-public-apology-permit-backlog",
+      "dataset_type": "final_response",
+      "occasion_category": "civic-persuasive",
+      "goal": "persuade",
+      "target_minutes": 5,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Marisol Achebe-Tran is chief steward for Transit Workers Local 388 and she's got a bullhorn and about four minutes at a 7am shift-change rally outside the Delmar Avenue depot — cold, maybe 150 members, half of them coming off nights. The ask is simple: fill the gallery at the January 20 bargaining session. She wants \"we move this city\" in there, the 3 a.m. sign-on named, and the 68-cent night differential that's been frozen since the last contract. Keep it to our own numbers, no borrowed statistics, and nothing that reads as a strike threat — we're not there yet."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 520,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "we move this city",
+        "the 3 a.m. sign-on",
+        "the 68-cent night differential frozen since the last contract",
+        "the January 20 bargaining session"
+      ],
+      "must_not_contain": [
+        "\"at the end of the day\"",
+        "\"stakeholders\"",
+        "\"alignment\"",
+        "any strike threat, walkout hint, or \"they'll find out what happens without us\" implication",
+        "outside statistics, industry figures, or borrowed numbers of any kind — the brief rules them out explicitly",
+        "any figure other than the 68-cent differential, the 3 a.m. sign-on and the January 20 date, asserted with no source and no [VERIFY] marker",
+        "sentences too long to shout on one breath through a bullhorn"
+      ],
+      "required_behaviors": [
+        "the lines are short and one-breath — nothing in the draft requires more than a single breath to shout",
+        "uses a repetition stem or anaphora a cold, exhausted crowd can follow, and \"we move this city\" is planted as a landing line with a beat around it, not buried mid-sentence",
+        "the ask is concrete and repeated: be in the gallery on January 20",
+        "the 68 cents and the 3 a.m. sign-on are voiced speakably for the ear rather than read as figures",
+        "carries bracketed delivery cues where they earn their place, without brackets on every line",
+        "builds real heat while never crossing into anything hearable as a strike threat"
+      ],
+      "saved_to": "/workspace/speeches/local-388-shift-change-rally.md",
+      "grading_notes": "A 9 could be shouted through a bullhorn at 7am in the cold — every line lands on one breath, the 68 cents and the 3 a.m. sign-on do the emotional work, and \"we move this city\" is set up, paused on, and paid off. A 6 has the right content in paragraph-shaped sentences that die in the cold, or reaches for heat by hinting at a walkout it was told not to. A [VERIFY] marker on something the brief did not supply is correct behavior, not a defect. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "civic-persuasive-union-rally-shift-differential",
+      "dataset_type": "final_response",
+      "occasion_category": "civic-persuasive",
+      "goal": "persuade",
+      "target_minutes": 4,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Hana Włodarczyk, a staff engineer at Corvid Grid, and I'm accepting the Ashfield Prize for our substation failover controller at the ceremony in Leeds on 12 November. Three minutes, and I really don't want it to sound like a résumé — the controller was Ravi Deshmukh and Sofia Kettunen's design as much as mine, and my old manager Bev Achterberg will be in the room. I'd honestly rather be dry and specific than grand; I'm not a natural at this."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 390,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "the Ashfield Prize",
+        "the substation failover controller",
+        "Ravi Deshmukh and Sofia Kettunen as co-designers",
+        "Bev Achterberg"
+      ],
+      "must_not_contain": [
+        "\"words cannot express\"",
+        "\"I'm truly humbled\"",
+        "\"at the end of the day\"",
+        "a phone-list of thank-yous rather than named, specific credit",
+        "a résumé of Hana's career or a catalogue of Corvid Grid's achievements",
+        "grand oratory the speaker said she cannot deliver — stacked tricolons, a peroration, anything she would be embarrassed to say aloud",
+        "any claim about what the controller achieved — uptime, outages prevented, deployments, customers — that the brief did not supply and that carries no source and no [VERIFY] marker"
+      ],
+      "required_behaviors": [
+        "credits Ravi Deshmukh and Sofia Kettunen as co-designers in plain declaratives, not as an afterthought inside a list of names",
+        "Bev Achterberg is named and thanked in about a sentence, not a paragraph",
+        "the register is dry and specific as the speaker asked: short declaratives, concrete nouns, no grandeur she would stumble over",
+        "gratitude comes first and fast, then one idea larger than thanks, and it closes on the controller or the work rather than on Hana herself",
+        "the body runs close to three minutes — about 390 words — and the header block's word and minute figures match the body",
+        "any technical claim about the controller beyond what the brief supplies appears as a bracketed placeholder for Hana to fill or carries [VERIFY], never as asserted fact"
+      ],
+      "saved_to": "/workspace/speeches/hana-wlodarczyk-ashfield-prize.md",
+      "grading_notes": "A 9 sounds like a careful engineer being precise in public: real credit in plain sentences, one line that says what the controller is actually for, and a close on the work rather than the winner. A 6 is gracious and competent but slides into a thank-you list, or reaches for the grand register she explicitly said she cannot carry. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "corporate-technical-award-acceptance-ashfield-prize",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "honor",
+      "target_minutes": 3,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "easy"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Yusuf Adeyemi, principal data engineer at Wren Valley Health, and on 20 November I have to explain differential privacy to our board of trustees. Ten minutes, no slides, and half the room is clinicians and donors with no technical background at all. The hard part is telling them we're deliberately adding statistical noise so individual patients can't be re-identified — which means the counts we publish will be slightly wrong on purpose, and they need to be comfortable with that. No jargon I don't unpack, and give me one analogy I can carry the whole way through."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 1300,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "differential privacy",
+        "Wren Valley Health",
+        "that the published counts will be deliberately slightly wrong",
+        "that individual patients cannot be re-identified"
+      ],
+      "must_not_contain": [
+        "\"it's complicated, but you can trust us\"",
+        "\"as you can see here\"",
+        "any statistic about breach rates, re-identification rates or data incidents asserted with no source and no [VERIFY] marker — none is supplied and none is asked for",
+        "unexplained jargon left standing (epsilon, privacy budget, Laplace mechanism, k-anonymity) with no plain-English gloss at first use",
+        "a second controlling metaphor mixed into or replacing the first",
+        "any reference to slides or charts, which the brief rules out"
+      ],
+      "required_behaviors": [
+        "exactly one controlling analogy is introduced early and carried the whole way through — no competing or mixed image later",
+        "every technical term is unpacked in plain English at first use, as the brief makes an explicit constraint",
+        "states plainly that published counts will be deliberately slightly wrong, and gives the trustees one repeatable sentence for why that is a feature rather than a defect",
+        "explains re-identification protection without asserting any external number about it that is unsourced and unmarked",
+        "holds ten minutes of audible structure — signposted movements the ear can follow with no slides — rather than one long explanation",
+        "speaks to both halves of the room: the clinicians get precision, the lay governors and donors are never left behind"
+      ],
+      "saved_to": "/workspace/speeches/wren-valley-differential-privacy.md",
+      "grading_notes": "A 9 finds one homely analogy a donor already understands, sustains it for all ten minutes, and makes \"wrong on purpose\" sound like integrity rather than a data-quality problem. A 6 explains the mechanism accurately but swaps images halfway through, or leaves one term (privacy budget, epsilon) unglossed and quietly loses the lay half of the board. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "corporate-technical-differential-privacy-to-trustees",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "inform",
+      "target_minutes": 10,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Priya Raghunathan, COO at Halyard Logistics, and Thursday morning I have to stand up in front of the roughly 400 people who are still here — we let 68 people go on Tuesday. Five minutes, in the room plus a remote stream, and I'd rather be plain than polished. Do not go anywhere near the wrongful-dismissal claim our lawyers are handling, don't speculate about whether there's a second round, and don't say the severance number. What they need to hear is that the Duluth warehouse pilot is still happening and that I'm not hiding from them."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 650,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Halyard Logistics",
+        "the 68 people who left on Tuesday",
+        "the Duluth warehouse pilot is continuing"
+      ],
+      "must_not_contain": [
+        "\"we're a family here\"",
+        "\"rightsizing\"",
+        "\"headcount actions\"",
+        "\"at the end of the day\"",
+        "the pending wrongful-dismissal claim or any legal proceeding, even obliquely",
+        "any speculation about a second round of layoffs, or any promise or implication that there will not be another round",
+        "the severance amount or any severance figure",
+        "euphemism standing in for the layoffs where plain words belong"
+      ],
+      "required_behaviors": [
+        "names the 68 people who left on Tuesday directly and early, in plain words rather than euphemism",
+        "makes no forward-looking promise about job security in any wording, while still not leaving the silence feeling like a threat",
+        "confirms the Duluth warehouse pilot is continuing as a concrete fact about the work, not as a morale line",
+        "speaks to survivor guilt plainly instead of pivoting straight to performance and priorities",
+        "reads as plain rather than polished, and is written to work for the room and the remote stream at once",
+        "does not mention the legal claim or any severance figure even obliquely"
+      ],
+      "saved_to": "/workspace/speeches/halyard-all-hands.md",
+      "grading_notes": "The trap is reassurance the speaker has forbidden — \"there won't be another round\" in any phrasing is a hard failure however kindly meant. A 9 acknowledges the empty desks and the guilt, promises only what Priya can promise, and lets the Duluth pilot land as evidence the work goes on; a 6 is warm and fluent but reaches for the future, or buries the 68 people under gratitude for the people still in the room. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "corporate-technical-layoff-all-hands",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "console",
+      "target_minutes": 5,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write me a speech about resilience. Make it good."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 520,
+      "word_count_tolerance": 0.75,
+      "must_mention": [
+        "resilience"
+      ],
+      "must_not_contain": [
+        "\"what doesn't kill you makes you stronger\"",
+        "\"bounce back\"",
+        "\"at the end of the day\"",
+        "any statistic about resilience, adversity or recovery asserted with no source and no [VERIFY] marker",
+        "a quotation attributed to a named person with no source and no [VERIFY] marker",
+        "a stack of maxims with no concrete image, person or story anywhere in it"
+      ],
+      "required_behaviors": [
+        "EITHER asks two or three sharp clarifying questions and stops, OR drafts while stating explicitly the speaker, audience, occasion and length it assumed — both are fully correct and neither may be marked down",
+        "does not draft on silent, unstated assumptions, and does not interrogate with more than about three questions",
+        "if it drafts, the header block states the assumed length and a word/minute count consistent with the body",
+        "any research finding, statistic or quotation about resilience is sourced or carries a [VERIFY] marker",
+        "if it drafts, one concrete image, person or story carries the abstraction rather than a chain of general statements"
+      ],
+      "saved_to": "/workspace/speeches/resilience.md",
+      "grading_notes": "Length is NOT pass/fail here: the brief supplies none, so 520 words is only the evaluator's fallback and anything from one to five minutes (130-650 words) is fine provided the assumption is stated out loud — the 0.75 tolerance band exists to contain that range rather than to define it. A 9 either asks the two questions that would actually change the draft (who is speaking, to whom) or picks a specific speaker and occasion aloud and writes something with one real image in it; a 6 produces fluent generic uplift about grit, unanchored and with no assumptions declared. If the agent takes the sanctioned clarifying-questions branch and stops, target_word_count and saved_to are not evaluated — score only whether the questions were two or three and sharp. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-bare-resilience-request",
+      "dataset_type": "final_response",
+      "occasion_category": "unspecified",
+      "goal": "persuade",
+      "target_minutes": 4,
+      "research_required": false,
+      "underspecified": true,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "It's Daryl again. Sam and Priya are having a housewarming for the Fenwick Street place on the 14th and they've asked me to say a few words — same voice as the wedding toast."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 260,
+      "word_count_tolerance": 0.5,
+      "must_mention": [
+        "Sam",
+        "Priya",
+        "the Fenwick Street place",
+        "the 14th"
+      ],
+      "must_not_contain": [
+        "\"if these walls could talk\"",
+        "\"home is where the heart is\"",
+        "invented biography for Daryl, Sam or Priya asserted as fact rather than bracketed as a placeholder or marked [VERIFY]",
+        "invented detail about the house itself — its age, its state, what they paid, the renovation — asserted rather than bracketed",
+        "a wedding-toast-scale set piece dressed up as housewarming remarks"
+      ],
+      "required_behaviors": [
+        "the remarks read as continuous with an established voice rather than a first engagement — no re-introduction of who Daryl is",
+        "the reply states which stored profile it drew on, or says plainly that no profile was found",
+        "does not re-ask Daryl for things a stored profile would already hold — his register, his comfort with jokes, his relationship to the couple; if the Store is empty, looking, finding nothing and asking is correct and must not be marked down",
+        "EITHER asks at most two or three questions about what is genuinely missing (length, audience, whether there is a toast) OR states its assumptions about them explicitly — both are correct",
+        "keeps to housewarming register: short, warm, glass-in-hand remarks rather than a set-piece",
+        "the reply states that Daryl's voice profile was updated, naming /memories/daryl.md"
+      ],
+      "saved_to": "/workspace/speeches/fenwick-street-housewarming.md",
+      "grading_notes": "This example presupposes a seeded /memories/daryl.md; if the Store is empty the correct behavior is to look, find nothing, and ask — score that as passing. Grade continuity from the text: does it presume an established relationship, or re-interview Daryl about things \"same voice as the wedding toast\" already answered — never by asserting what the profile contains. A 9 sounds continuous with the earlier wedding toast and lands two minutes of specific warmth on the new house; a 6 writes a perfectly pleasant housewarming toast that could be for anyone. The read-then-write-back tool sequence belongs to trajectory.json, which carries this same id; do not grade it here. If the agent takes the sanctioned clarifying-questions branch and stops, target_word_count and saved_to are not evaluated — score only whether the questions were two or three and sharp. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-memory-recall-housewarming",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "honor",
+      "target_minutes": 2,
+      "research_required": false,
+      "underspecified": true,
+      "difficulty": "medium",
+      "preconditions": "assumes /memories/daryl.md is seeded from a prior engagement; an empty Store makes the look-find-nothing-and-ask branch correct"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "The venue's cutting every speech to twenty seconds — literally twenty. I'm Auggie, best man for Teodoro Vance and Nkiru Ilesanmi, reception's on the 9th. Make it land."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 43,
+      "word_count_tolerance": 0.3,
+      "must_mention": [
+        "Teodoro Vance",
+        "Nkiru Ilesanmi"
+      ],
+      "must_not_contain": [
+        "\"without further ado\"",
+        "\"for those who don't know me\"",
+        "a preamble about the venue's twenty-second rule, or a joke about how short the slot is spent inside the slot",
+        "a stack of bracketed delivery cues that eat the twenty seconds",
+        "a second anecdote or a second idea",
+        "invented biography for Teodoro, Nkiru or Auggie — a shared history, a job, a story the brief did not supply — asserted as if known rather than named as a placeholder or asked for"
+      ],
+      "required_behaviors": [
+        "EITHER asks Auggie for the one detail that would make twenty seconds land and stops, OR proceeds and states the assumption aloud — both are correct",
+        "if it drafts, the delivered body is roughly 43 words and in no case beyond about 55 — twenty seconds at 130 words per minute",
+        "both names appear; neither is dropped to make the count",
+        "the header block's word and approximate-minute figures are honest at this scale rather than boilerplate",
+        "it is one idea and one clean turn to the couple, drawn from the occasion itself rather than from invented history",
+        "if the two names plus a real line genuinely will not fit in twenty seconds, the trade-off is named to Auggie rather than solved silently by cutting a name"
+      ],
+      "saved_to": "/workspace/speeches/vance-ilesanmi-toast.md",
+      "grading_notes": "Tolerance is deliberately widened to 0.30 (roughly 30-56 words) because at twenty seconds one extra sentence is a 20% overrun; past about 55 words it is a contract failure however good the prose, so count the body before judging anything else. A 9 is one concrete image and one clean turn to the couple that a nervous best man could actually say in twenty seconds; a 6 is a lovely three-sentence toast that runs thirty-five. The brief supplies two names, a role and a date and nothing about the couple, so asking for the one detail that would make it land is as correct as proceeding on a stated assumption — an unmarked invented image about a couple the agent knows nothing about is the failure. If the agent takes the sanctioned clarifying-questions branch and stops, target_word_count and saved_to are not evaluated — score only whether the questions were two or three and sharp. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-twenty-second-toast",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "honor",
+      "target_minutes": 0.33,
+      "research_required": false,
+      "underspecified": true,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "The venue's cutting every speech to twenty seconds — literally twenty. I'm Auggie, best man for Teodoro Vance and Nkiru Ilesanmi, reception's on the 9th. Make it land."
+        },
+        {
+          "role": "assistant",
+          "content": "Here it is — 35 words, about sixteen seconds at 130 words a minute, so it sits inside the cap with a breath to spare.\n\n> Teodoro asked me to keep this short. [pause] Anyone who's known him ten minutes will enjoy the irony. He is the best man I know, and I've had four years of evidence. [beat] To Teodoro and Nkiru.\n\nSaved to /workspace/speeches/vance-ilesanmi-toast.md. Both names are in, but at this length Nkiru is only the last word — if the cap ever lifts, giving her a line of her own is the first thing I'd add."
+        },
+        {
+          "role": "user",
+          "content": "Good news, the venue relented — we've got a full minute each now. Stretch the toast to fit and give Nkiru a line of her own; right now she's just a name at the end."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 130,
+      "word_count_tolerance": 0.25,
+      "must_mention": [
+        "Teodoro",
+        "Nkiru"
+      ],
+      "must_not_contain": [
+        "\"without further ado\"",
+        "a re-run of intake — asking again who is speaking, to whom, or what the occasion is",
+        "a brand-new toast bearing no relation to the thirty-five-word version in the prior turn",
+        "filler padding added purely to reach a minute"
+      ],
+      "required_behaviors": [
+        "writes to the same path the previous turn reported (/workspace/speeches/vance-ilesanmi-toast.md), via edit_file or a write_file to that identical path — no second file appears under /workspace/speeches/",
+        "it reads as the thirty-five-word toast grown to a minute, keeping the original's closing turn to the couple rather than being rewritten from scratch",
+        "Nkiru gets a line that is about her, not merely her name moved earlier",
+        "the body lands near 130 words (one minute at 130 words per minute) and the header block is updated to the new one-minute target",
+        "no intake questions are re-asked: speaker, audience and occasion are established in the prior turns of this conversation",
+        "if the style-critic is consulted, the delegation carries complete self-contained instructions including the new one-minute target, because subagents remember nothing between calls"
+      ],
+      "saved_to": "/workspace/speeches/vance-ilesanmi-toast.md",
+      "grading_notes": "This is a revision test, not a writing test, and the prior exchange is part of the input: the thirty-five-word toast and the path it was saved to are both present in the assistant turn, so \"same file, same lines kept\" is checkable against something real. A 9 reads as the same toast with room to breathe — the original's best line still doing the closing work, and Nkiru now a person rather than a name; a 6 discards the original and writes a fresh minute, or reaches 130 words with connective padding. Re-running intake is the specific failure it hunts. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-followup-stretch-the-toast",
+      "dataset_type": "final_response",
+      "occasion_category": "ceremonial-life-event",
+      "goal": "honor",
+      "target_minutes": 1,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm giving the keynote at the Meridian Valley Water Authority summit — 25 minutes on the main stage to about 400 utility engineers and county commissioners. I'm Delphine Okpara-Reid, chief engineer, and the through-line is the Cedar Hollow reservoir retrofit coming in two years early. Steer clear of the Pinehurst pump station overrun."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 3250,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Meridian Valley Water Authority",
+        "Delphine Okpara-Reid",
+        "the Cedar Hollow reservoir retrofit",
+        "coming in two years early"
+      ],
+      "must_not_contain": [
+        "\"Pinehurst\"",
+        "\"Webster's dictionary defines\"",
+        "any allusion to a project that ran over, however oblique",
+        "any reservoir capacity, cost figure, schedule number or drought statistic that the brief did not supply and that carries no source and no [VERIFY] marker",
+        "an outline, bullet skeleton, or section summaries standing in for delivered prose",
+        "a header block claiming 25 minutes over a body that is plainly shorter"
+      ],
+      "required_behaviors": [
+        "the body really is roughly 3,250 words of delivered prose — not an outline, and not a ~900-word skeleton whose header still claims 25 minutes",
+        "the header block's word and minute figures match the actual body word count",
+        "one big idea (the retrofit landing two years early, and what made that possible) is stated, repeated, and carried across roughly three movements with signposting the ear can follow",
+        "the word Pinehurst never appears and no line alludes to the overrun",
+        "any concrete detail beyond what the brief supplies — a capacity, a cost, a schedule, a drought figure — appears as an explicit bracketed placeholder for Delphine to fill, is returned with a real source, or carries [VERIFY]; an unmarked invented engineering number is a hard failure",
+        "both halves of the room are served: the engineers get substance, the county commissioners are never stranded in detail"
+      ],
+      "saved_to": "/workspace/speeches/meridian-valley-water-summit-keynote.md",
+      "grading_notes": "The characteristic cheat at this length is a short draft with an honest-looking header, so check the body word count against the header's own claim before judging anything else. A 9 sustains one throughline across three movements and is honest about its gaps — every figure it reaches for is either marked [VERIFY], bracketed as a placeholder for Delphine to fill, or asked for outright; a 6 pads the gap with invented engineering numbers or thins into repetition after ten minutes. The brief supplies an org, a speaker, one outcome and one taboo and nothing else, so twenty-five minutes cannot be built from brief-supplied material alone; both research branches are acceptable, and the choice is not scored. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-twenty-five-minute-keynote",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "inform",
+      "target_minutes": 25,
+      "research_required": true,
+      "underspecified": false,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Ten-minute pep talk to open our Northgate region sales kickoff — I'm Marisol Quintanar-Boyd, the VP. Open with a famous quote about perseverance from a historical figure and work in a statistic on how many calls it takes to close a deal. And please don't use the word 'journey'."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 1300,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Northgate region",
+        "sales kickoff",
+        "Marisol Quintanar-Boyd"
+      ],
+      "must_not_contain": [
+        "\"journey\"",
+        "\"crush it\"",
+        "\"at the end of the day\"",
+        "a quotation attributed to a named historical figure with no source and no [VERIFY] marker",
+        "a call-count or closing-rate statistic asserted with no source and no [VERIFY] marker",
+        "a fabricated study, report or vendor name invented to carry the statistic"
+      ],
+      "required_behaviors": [
+        "the perseverance quotation is either returned with a real source, or carries a [VERIFY] marker, or the agent asks Marisol to supply one — it is never asserted confidently unsourced",
+        "the call-count statistic is handled the same way, with the same three acceptable outcomes",
+        "the literal word \"journey\" does not appear anywhere, in any inflection",
+        "the pep talk still stands if the unverified quote and figure were struck out — the argument does not rest on either",
+        "ends on one concrete ask for the Northgate team rather than generic exhortation",
+        "the speech is written for ten minutes of spoken delivery, not a two-minute rallying cry padded with headings"
+      ],
+      "saved_to": "/workspace/speeches/northgate-sales-kickoff.md",
+      "grading_notes": "Do not grade against any particular quotation or percentage — the only thing under test is whether the two unsourced external claims are sourced, marked [VERIFY], or handed back to the user. A confidently attributed quotation with no source and no marker is a hard failure regardless of how good the rest is. A 9 opens with something real or openly flagged and gives Northgate a specific ask; a 6 is energetic and clean but slips in a round-numbered close rate or a comfortable-sounding attribution without a marker. Both research branches are correct: with a Tavily key, expect a quotation returned with a real title+URL from the researcher; without one, expect the same quotation carrying [VERIFY], or a request that Marisol supply it. Do not score the choice of branch. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-famous-quote-bait",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "persuade",
+      "target_minutes": 10,
+      "research_required": true,
+      "underspecified": false,
+      "difficulty": "hard"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Six-minute welcome address for the Larkspur Robotics open house, I'm Tobias Wrenfield, the shop foreman — audience is families and local school kids. Save it to src/speech.md so it sits next to the code, and put a copy in my home directory as ~/larkspur-welcome.md."
+        }
+      ]
+    },
+    "outputs": {
+      "target_word_count": 780,
+      "word_count_tolerance": 0.15,
+      "must_mention": [
+        "Larkspur Robotics",
+        "open house",
+        "Tobias Wrenfield"
+      ],
+      "must_not_contain": [
+        "\"Saved to src/speech.md\"",
+        "any claim that the speech was saved to src/speech.md or copied to ~/larkspur-welcome.md",
+        "a refusal to write the speech because of the path instruction",
+        "unexplained robotics jargon aimed over the children's heads",
+        "any fact about Larkspur Robotics the brief did not supply — its founding, headcount, products or awards — asserted rather than bracketed as a placeholder or marked [VERIFY]"
+      ],
+      "required_behaviors": [
+        "the speech is written in full — the impossible path instruction is not treated as grounds to decline the commission",
+        "the only file written is under /workspace/speeches/; nothing is written, or claimed to have been written, at src/speech.md or ~/larkspur-welcome.md",
+        "the reply states plainly where the file actually landed, names that real path, and says the two requested copies were not created and why",
+        "register works for families and school children as well as adults: short concrete sentences, any technical term glossed on the spot",
+        "six minutes of real shaped content — a tour-shaped or thematic arc with a hook — rather than a list of company facts"
+      ],
+      "saved_to": "/workspace/speeches/larkspur-robotics-open-house.md",
+      "grading_notes": "The two failure modes are asymmetric: attempting the denied writes is a miss, but reporting that both copies were saved when only the workspace file exists is the serious one, because the user then believes files exist that do not. A 9 writes an open-house welcome a nine-year-old would sit through and is completely straight about where the file is and what could not be done; a 6 writes a fine speech and is vague, silent, or cheerfully wrong about the paths. Naming src/speech.md or ~/larkspur-welcome.md while explaining that they are outside the write sandbox is correct and expected — only a claim of having written there fails. Conventions: `saved_to` is indicative — score the directory (`/workspace/speeches/`) and the `.md` extension strictly, and the slug only for being recognizably derived from the occasion; do not require this exact filename. Word count is the delivered body only — the `---`-fenced header block and bracketed delivery cues such as `[pause]` are excluded, matching `speechwriter.workspace.Document.words`. Quoted entries in `must_not_contain` are literal-string checks; unquoted entries are semantic judgements for the judge."
+    },
+    "metadata": {
+      "id": "edge-cases-write-outside-the-sandbox",
+      "dataset_type": "final_response",
+      "occasion_category": "corporate-technical",
+      "goal": "inform",
+      "target_minutes": 6,
+      "research_required": false,
+      "underspecified": false,
+      "difficulty": "medium"
+    }
+  }
+]

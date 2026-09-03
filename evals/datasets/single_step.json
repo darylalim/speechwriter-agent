@@ -1,0 +1,594 @@
+[
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Write me a speech about resilience. Make it good."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "ask_clarifying_questions",
+      "must_cover": [
+        "who is speaking (and whether the user is the one delivering it), to whom, and on what occasion — none of the three is stated anywhere in the brief; one compound question may bundle two or three of them",
+        "the length or time limit — nothing can be paced at the configured 130 words per minute without one",
+        "the turn ends at the questions: no full draft is delivered in the same reply, because the answers change what gets written"
+      ],
+      "must_not_do": [
+        "run an intake questionnaire — more than three questions is the interrogation step 1 explicitly forbids",
+        "produce a full draft in this turn on silent assumptions: the brief fills none of step 1's seven intake slots, so there is nothing to write to",
+        "invent a named event, organisation, city or audience and present it as though the user supplied it",
+        "ask a rhetorical question it has already answered for itself ('I'll assume a graduation — sound right?') and then draft 800 words below it without waiting"
+      ],
+      "max_questions": 3,
+      "grading_notes": "The maximally underspecified brief: a theme and nothing else, with zero of step 1's seven intake slots filled. This is the one place in the set where the prompt's imperative clause bites literally — 'If the user has not supplied these, ask concise clarifying questions FIRST' — so the expected decision is the ask branch, and this example is what stops an agent that never asks anything from sweeping the intake half of the dataset. The either-branch licence step 1 also grants is preserved elsewhere, on briefs that actually specify something; see intake-layoff-all-hands-well-specified, which is the production divergence case. Three gradings to apply carefully. (1) BUNDLING IS ALLOWED: a single compound question ('Who's speaking, to whom, and on what occasion?') counts as covering all three of those gaps, so three questions reach both must_cover gaps with room to spare. (2) SOFT PASS for the proceed branch: a reply that names the speaker, audience, occasion, length and goal it is assuming, says so explicitly, and invites correction before it drafts, passes — that reply is doing the same work as the questions. What fails is proceeding on assumptions it never states, or asking more than three questions. (3) The goal (inform / persuade / honor / entertain / console) is a legitimate third question but is NOT required; asking about the other two gaps and stopping is a pass, not a miss. No word count is gradeable here: the brief states no length, so if a model drafts under the soft pass, the only length criterion is that the header block declares the length it assumed and a word count consistent with it at 130 wpm."
+    },
+    "metadata": {
+      "id": "intake-bare-resilience-request",
+      "brief_id": "edge-cases-bare-resilience-request",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "unspecified",
+      "brief_specification": "underspecified",
+      "brief_adapted": false,
+      "divergence_case": false,
+      "soft_pass_branch": "proceed_with_stated_assumptions"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Opening for my talk at the Southern Reliability Summit in Wellington — it's about how we rebuilt incident review at Fernbrook Systems after the March outage. Give me a hook that isn't \"hi, my name is\"."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "either_acceptable",
+      "must_cover": [
+        "who is speaking and in what role — the user says 'my talk' but never says who they are, and register depends on it",
+        "who is in the room: practitioners, executives, or a mix, and roughly how many",
+        "how long the opening should run (the brief says 'opening', not a duration)",
+        "if it proceeds, those three must be stated as assumptions before or inside the delivered hook"
+      ],
+      "must_not_do": [
+        "ask what the talk is about, where it is, or which company — the subject (rebuilding incident review), the venue (Southern Reliability Summit, Wellington) and the company (Fernbrook Systems) are all supplied",
+        "ask more than three questions",
+        "write a hook that asserts a concrete outage detail the user never supplied — a duration, a customer count, a revenue figure, a page count — as if it were fact",
+        "silently pick a length and audience and hand back a hook with no statement of what it assumed"
+      ],
+      "max_questions": 3,
+      "grading_notes": "Speaker identity, audience and length are genuinely absent; the topic and venue are not. A good clarifying round targets only the first three, and a compound question that bundles two of them counts as covering both. Asking 'what was the March outage?' is legitimate — it is a gap the hook needs — but is not required, since the model may reasonably ask the user to fill the detail in after drafting the shape. Both branches pass; the fabrication risk is the one hard failure, because a hook is exactly where an invented incident statistic is tempting and nothing in the brief licenses one."
+    },
+    "metadata": {
+      "id": "intake-conference-talk-opening",
+      "brief_id": "corporate-technical-conference-talk-opening",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "corporate-technical",
+      "brief_specification": "underspecified",
+      "brief_adapted": false,
+      "divergence_case": true
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "My aunt Rosalind Achebe-Tan died last Thursday and the family's asked me to speak at the service on Saturday. She taught high-school chemistry in Ballanoch for thirty-one years and kept a greenhouse full of orchids that she'd talk to. Please don't bring up the falling-out with her brother Marcus."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "either_acceptable",
+      "must_cover": [
+        "how long the model should speak — the brief states no length, and a eulogy runs 3-7 minutes by the speech-structures template",
+        "who the speaker is, or at least how they should be introduced in relation to Rosalind (the user says only that they are her niece or nephew)",
+        "if it proceeds, the assumed length and the assumed relationship must be stated, and the two supplied anchors — thirty-one years of chemistry teaching, and the orchid greenhouse she talked to — must be what the eulogy is built on"
+      ],
+      "must_not_do": [
+        "run the seven-line intake checklist from the audience-and-occasion skill at a bereaved user — that checklist is for the model's own analysis, not a form to hand back",
+        "ask about the falling-out with her brother Marcus, or why it is off-limits",
+        "ask for a cause of death",
+        "re-ask supplied facts: Ballanoch, thirty-one years, high-school chemistry, the orchids, the Saturday service",
+        "invent biography — a spouse, children, a hometown, a favourite hymn — to fill the eulogy out",
+        "ask more than three questions"
+      ],
+      "max_questions": 3,
+      "grading_notes": "Intake discipline under emotional load. Both branches pass, but the register of the decision is itself under test: two gentle questions beat three clinical ones, and proceeding on stated assumptions is arguably the kinder choice here. The sharpest failure mode is volume — a bereaved user handed a seven-line questionnaire — followed by re-asking anything the four supplied details already answer. Do not grade the length of any produced draft against a number: the brief states none."
+    },
+    "metadata": {
+      "id": "intake-eulogy-unnamed-speaker",
+      "brief_id": "edge-cases-eulogy-unnamed-speaker",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "eulogy",
+      "brief_specification": "underspecified",
+      "brief_adapted": false,
+      "divergence_case": true
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Bertrand Nkemelu, executive director of the Calloway Street Arts Trust. On the 21st I have to stand in front of about 90 members at our AGM and apologise: we cancelled the youth programme's spring term with nine days' notice, and forty families found out by a form email. Four minutes. The board's told me to keep it to what we actually did — no hedging."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "ask_clarifying_questions",
+      "must_cover": [
+        "what the concrete repair is — what the Trust is actually doing for the forty families whose spring term was cancelled. The apology template in speech-structures is 'name the harm → take full ownership → their impact → concrete repair → changed behaviour', and the brief supplies the harm, the impact, the speaker, the audience, the occasion and the length but nothing at all for the repair beat",
+        "what changed behaviour he is authorised to commit to — the template's closing beat, and no policy, refund, make-up term or notice-period change appears anywhere in the brief"
+      ],
+      "must_not_do": [
+        "offer a conditional apology framing — 'if anyone was offended', 'to those who feel let down', 'mistakes were made' — as an option, a sample line, or a suggested softener; both audience-and-occasion and speech-structures name conditional ownership as the taboo that undoes an apology, and the user has already ruled out hedging in his own words",
+        "ask who is speaking, who is in the room, what the occasion is, or how long it runs — all four are supplied",
+        "ask more than three questions",
+        "ask whether he really wants to apologise, or propose reframing the remarks as an announcement, an update, or a 'thank you for your patience'",
+        "invent a remedy — a refund schedule, a make-up term, a named policy change, a hire — and present it as though the user supplied it"
+      ],
+      "max_questions": 3,
+      "grading_notes": "The apology is the highest-value intake case in the set because the missing item is not a preference but a structural requirement: the occasion template has a beat that cannot be written from anything in the brief, and it is the beat the audience came for. That is what makes the ask branch expected here rather than merely licensed. Both gaps may be bundled into one question ('what are you able to offer the forty families, and what changes so it doesn't happen again?'); a third question of the model's choosing — for example whether he is permitted to name the reason for the cancellation — is allowed but not required, within the three-question cap. SOFT PASS for the proceed branch: a reply that drafts around an explicit, visible placeholder for the repair and says plainly it needs that answer before the remarks are usable passes, because the gap stays visible. A reply that fills the beat with an invented remedy, or papers over it with 'we will do better', fails outright — the second is exactly the self-pity-and-vagueness failure the skill warns about. If it proceeds at all it must state the budget four minutes buys: roughly 520 words at the configured 130 words per minute. The taboo criterion is mechanically gradeable from the text: search the reply for conditional-apology phrasing."
+    },
+    "metadata": {
+      "id": "intake-apology-arts-trust-cancelled-term",
+      "brief_id": "civic-institutional-apology-cancelled-youth-term",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "apology",
+      "brief_specification": "underspecified-in-one-slot",
+      "brief_adapted": false,
+      "divergence_case": false,
+      "research_enabled": false,
+      "added_by": "coverage-repair: no apology or commencement occasion existed in the set"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Nadia Oyelaran is running in the 14th state house district and keeps getting hit with rural broadband questions at every stop. Write her a stump segment on it she can drop in anywhere — she wants the Quarry Road dead zone named and she wants to land on \"nobody should have to drive to a parking lot to do their homework.\" Check what the feds currently count as broadband speed so she doesn't get the number wrong on stage. Check with me before you write anything — the stops vary a lot and I don't want a segment that only works in one room."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "ask_clarifying_questions",
+      "must_cover": [
+        "how long the segment should run — the brief never says, and a drop-in segment's length is the whole question",
+        "what a typical stop looks like: audience size and composition vary by stop, which is exactly what 'drop it in anywhere' leaves open",
+        "whether the segment must be self-contained (able to sit anywhere in a longer stump) or can assume an introduction before it"
+      ],
+      "must_not_do": [
+        "draft first and ask afterwards — the user explicitly asked to be checked with before anything is written",
+        "ask for the local reference (the Quarry Road dead zone is supplied) or for the landing line (supplied verbatim, in quotes)",
+        "ask more than three questions",
+        "ask what district she is running in (the 14th state house district is supplied)",
+        "RESEARCH-ENABLED BRANCH ONLY: ask the user what the federal broadband speed definition is — with a Tavily key the brief hands that to the agent, so it is a step 3 delegation to the `researcher`, not an intake gap. With research DISABLED the researcher is absent and the prompt says to write from supplied material, so asking the user for the number in place of one of the three gaps, or drafting it under `[VERIFY]`, both pass"
+      ],
+      "max_questions": 3,
+      "grading_notes": "This is the one intake case in the set where proceeding straight to a draft is a miss for a reason outside step 1's discretion: the user's own last sentence asks to be checked with before anything is written, so this example grades instruction-following on top of intake shape. Everything else is ordinary intake discipline — the questions must hit the three genuine gaps and none of the four supplied facts. A third or fourth question of the model's choosing — e.g. whether the segment ends on an ask or hands back to the rest of the stump — is permitted but not required, within the three-question cap. The example assumes the research-enabled branch (metadata.research_enabled), which is what makes the broadband-number criterion bite; see that criterion for how it relaxes when the key is absent."
+    },
+    "metadata": {
+      "id": "intake-stump-segment-rural-broadband",
+      "brief_id": "civic-persuasive-stump-segment-rural-broadband",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "civic-persuasive",
+      "brief_specification": "underspecified",
+      "brief_adapted": true,
+      "adaptation_note": "Final sentence added to the corpus brief_text so the user explicitly requests a clarifying round; the rest is verbatim.",
+      "divergence_case": false,
+      "research_enabled": true
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Priya Raghunathan, COO at Halyard Logistics, and Thursday morning I have to stand up in front of the roughly 400 people who are still here — we let 68 people go on Tuesday. Five minutes, in the room plus a remote stream, and I'd rather be plain than polished. Do not go anywhere near the wrongful-dismissal claim our lawyers are handling, don't speculate about whether there's a second round, and don't say the severance number. What they need to hear is that the Duluth warehouse pilot is still happening and that I'm not hiding from them."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "either_acceptable",
+      "must_cover": [
+        "if it proceeds: the ~650-word budget it is writing to at 130 words per minute, and any assumption it is making that the brief does not supply (for example that the script must read the same to the remote stream as to the room)",
+        "if it asks: questions confined to what the brief genuinely leaves open — whether she takes questions afterwards, whether the stream is recorded or reshared, whether the Duluth pilot can be described in any detail",
+        "the reply must not propose, hint at, or ask permission to touch any of the three forbidden areas — the wrongful-dismissal claim, second-round speculation, the severance number — and if it produces a draft in this turn, that draft must contain none of them"
+      ],
+      "must_not_do": [
+        "ask who the speaker is, who the audience is, how long it runs, what the occasion is, what must be mentioned or what is off-limits — the brief answers every one of those in its own words",
+        "ask more than three questions",
+        "ask whether she can reassure people there will not be a second round — the brief forbids that speculation, so raising it as an intake option is an instruction-following miss, not a clarification",
+        "proceed with an unstated assumption about the forbidden material (for example quietly deciding to allude to severance 'in general terms')"
+      ],
+      "max_questions": 3,
+      "grading_notes": "THE production-divergence case, and the reason this dataset cannot score intake one way. On briefs of exactly this specification level, observed runs split: one model asked three clarifying questions and stopped, another drafted immediately on stated assumptions. Step 1 licenses both, so both pass. What separates a pass from a fail is whether the questions land on real gaps and whether the assumptions are said out loud. A brief this complete makes 'asks about something already answered' the live failure: every intake slot in step 1 — speaker, audience, occasion, goal, length, must-mention, do-not-mention — is filled by the user's own sentences. The prohibitions criterion is scored on THIS turn's text only; whether they survive into a later draft is a trajectory question, not a single-step one."
+    },
+    "metadata": {
+      "id": "intake-layoff-all-hands-well-specified",
+      "brief_id": "corporate-technical-layoff-all-hands",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "corporate-technical",
+      "brief_specification": "fully-specified",
+      "brief_adapted": false,
+      "divergence_case": true
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "The venue's cutting every speech to twenty seconds — literally twenty. I'm Auggie, best man for Teodoro Vance and Nkiru Ilesanmi, reception's on the 9th. Make it land."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "proceed_with_stated_assumptions",
+      "must_cover": [
+        "proceed to the draft — speaker, couple, occasion, date and hard length are all supplied, so there is no intake gap to fill",
+        "state the budget it is writing to: twenty seconds is roughly 43 words at the configured 130 words per minute",
+        "keep both names — Teodoro Vance and Nkiru Ilesanmi — inside that budget, or say plainly which one is being cut and why, rather than resolving the squeeze in silence"
+      ],
+      "must_not_do": [
+        "open a clarifying round at all — asking here is the failure this case exists to catch",
+        "ask for the venue, the guest count, the couple's names, the date, or how long the speech should be",
+        "silently treat 'twenty seconds' as approximate and budget for a minute",
+        "drop one of the two names without telling the user",
+        "use more than two bracketed delivery cues in a sub-60-word draft — at 43 words each cue costs real seconds, and delivery-and-cadence warns that brackets on every line drown the ones that matter"
+      ],
+      "max_questions": 0,
+      "grading_notes": "The counterweight that stops this dataset from rewarding intake reflexively. Every step 1 slot is answered in three sentences, so a clarifying round is pure friction and delays a decision the user has already made for the model. 'Stated assumptions' here does not mean inventing gaps to declare: the only thing that must be stated is the arithmetic — the word budget the model is writing to — because at this scale the 130 wpm contract is the whole brief. A model that asks even one question fails; a model that drafts 120 words and calls it twenty seconds fails for a different reason. Two things are deliberately NOT hard criteria at this decision point. (1) The write path is conditional: if it writes a file at all it must land under /workspace/speeches/, since the sandbox denies everywhere but /workspace and /memories/ — but returning the 43 words in chat before or instead of writing is not a failure here. (2) The cue ceiling is countable and deliberately loose, set at two so it agrees with the exemplar assistant reply in intake-followup-stretch-the-toast, which uses two cues in 35 words: two passes, five does not."
+    },
+    "metadata": {
+      "id": "intake-twenty-second-toast",
+      "brief_id": "edge-cases-twenty-second-toast",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "wedding-toast",
+      "brief_specification": "fully-specified",
+      "brief_adapted": false,
+      "divergence_case": false
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm giving the keynote at the Meridian Valley Water Authority summit — 25 minutes on the main stage to about 400 utility engineers and county commissioners. I'm Delphine Okpara-Reid, chief engineer, and the through-line is the Cedar Hollow reservoir retrofit coming in two years early. Steer clear of the Pinehurst pump station overrun."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "proceed_with_stated_assumptions",
+      "must_cover": [
+        "proceed — speaker, role, audience, size, venue, length, through-line and the one taboo are all supplied",
+        "state the length budget it is working to: 25 minutes is roughly 3,250 words at the configured 130 words per minute",
+        "commit, in this reply, to keeping the Pinehurst pump station overrun out — naming it as a constraint it is already working under, not as something it needs clarified"
+      ],
+      "must_not_do": [
+        "ask for the speaker, the audience, the length, the venue, the through-line or the do-not-mention — all six are in the brief",
+        "ask 'anything else you'd like me to include?' as a stand-in for intake",
+        "invent a reservoir capacity, a cost figure, a completion date or a drought statistic in order to have enough material for 3,250 words",
+        "commit to 25 minutes and plan a ~900-word outline-shaped draft"
+      ],
+      "max_questions": 0,
+      "grading_notes": "A fully-specified brief at the opposite length extreme from the toast, chosen so 'proceed' cannot be confused with 'proceed because it is short'. The decision under test is whether the model recognises a complete brief and commits to a plan with its length arithmetic stated. The fabrication pressure is structural rather than requested: 3,250 words is a lot of speech to fill from four supplied facts, and the honest routes are depth on the supplied through-line, `[VERIFY]` markers, or a `researcher` delegation (this example assumes the research-enabled branch) — never an invented capacity figure. Announcing a sourcing policy at intake is NOT required: no clause in orchestrator_prompt asks for one, step 1 requires stating assumptions rather than a sourcing manifesto, and the contract is 'Mark anything unverified [VERIFY]' inside the output. Grade the observable negative instead — no figure absent from the brief may appear unmarked — and treat a stated sourcing policy as a bonus. Likewise the header block's claimed minutes matching the delivered body is a property of the produced draft, not of this decision, and is graded in the trajectory dataset."
+    },
+    "metadata": {
+      "id": "intake-twenty-five-minute-keynote",
+      "brief_id": "edge-cases-twenty-five-minute-keynote",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 1,
+      "occasion_category": "keynote",
+      "brief_specification": "fully-specified",
+      "brief_adapted": false,
+      "divergence_case": false,
+      "research_enabled": true
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "The venue's cutting every speech to twenty seconds — literally twenty. I'm Auggie, best man for Teodoro Vance and Nkiru Ilesanmi, reception's on the 9th. Make it land."
+        },
+        {
+          "role": "assistant",
+          "content": "Here it is — 35 words, about sixteen seconds at 130 words a minute, so it sits inside the cap with a breath to spare.\n\n> Teodoro asked me to keep this short. [pause] Anyone who's known him ten minutes will enjoy the irony. He is the best man I know, and I've had four years of evidence. [beat] To Teodoro and Nkiru.\n\nSaved to /workspace/speeches/vance-ilesanmi-toast.md. Both names are in, but at this length Nkiru is only the last word — if the cap ever lifts, giving her a line of her own is the first thing I'd add."
+        },
+        {
+          "role": "user",
+          "content": "Good news, the venue relented — we've got a full minute each now. Stretch the toast to fit and give Nkiru a line of her own; right now she's just a name at the end."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "proceed_with_stated_assumptions",
+      "must_cover": [
+        "resolve 'the toast', 'Nkiru' and 'just a name at the end' against the established thread instead of re-asking — every one of them is fixed by turn 1",
+        "state the new budget: a full minute is roughly 130 words at the configured 130 words per minute, nearly four times the 35 words the toast currently runs",
+        "proceed on the one substantive instruction in this turn — Nkiru gets a line of her own — rather than treating it as something to clarify"
+      ],
+      "must_not_do": [
+        "re-run intake: asking again who the speaker is, who the couple are, where the reception is or what the occasion is, is exactly the failure this case hunts",
+        "ask any clarifying question at all — the only new fact needed (a full minute) is in the user's sentence",
+        "discard the twenty-second version and start over — the landing that already works should survive the expansion",
+        "treat the thread as unreadable ('could you paste the toast again?') when it is right there in context"
+      ],
+      "max_questions": 0,
+      "grading_notes": "The mirror image of the underspecified cases: this turn names no speaker, no audience and no occasion, and is nonetheless fully specified, because the thread supplies all three. Re-opening intake is the failure under test. NOT GRADED HERE, deliberately, so this example scores one decision: whether the revision is written in place at /workspace/speeches/vance-ilesanmi-toast.md rather than to a fresh slug (a step 5 file-convention decision), and whether any `task` call to the `style-critic` carries complete self-contained instructions per the stateless-subagent rule (a step 6 delegation decision). Both are real contract obligations and both belong in the trajectory dataset; a model that handles intake correctly must not fail this example on a file-path or delegation choice."
+    },
+    "metadata": {
+      "id": "intake-followup-stretch-the-toast",
+      "brief_id": "edge-cases-followup-stretch-the-toast",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "intake",
+      "turns": 3,
+      "occasion_category": "wedding-toast-revision",
+      "brief_specification": "follow-up-turn",
+      "prior_turn_brief_id": "edge-cases-twenty-second-toast",
+      "brief_adapted": false,
+      "divergence_case": false,
+      "scope_note": "Trimmed to the intake decision only; in-place revision and stateless-subagent criteria moved to grading_notes as explicitly not graded."
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Hana Włodarczyk, a staff engineer at Corvid Grid, and I'm accepting the Ashfield Prize for our substation failover controller at the ceremony in Leeds on 12 November. Three minutes, and I really don't want it to sound like a résumé — the controller was Ravi Deshmukh and Sofia Kettunen's design as much as mine, and my old manager Bev Achterberg will be in the room. I'd honestly rather be dry and specific than grand; I'm not a natural at this."
+        },
+        {
+          "role": "assistant",
+          "content": "Final draft is at /workspace/speeches/hana-wlodarczyk-ashfield-prize.md — 384 words, just under three minutes at 130 a minute. The style-critic flagged two tricolons in the middle as grander than you asked for, so the credit to Ravi Deshmukh and Sofia Kettunen now sits in plain declaratives instead. Bev Achterberg gets one sentence near the end rather than a paragraph, which keeps it off résumé ground. It closes on the controller rather than on you — that was your instinct and I think it's the right one."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "write_memory",
+      "must_cover": [
+        "one file under /memories/, keyed to the speaker — /memories/hana-wlodarczyk.md or an equivalent slug of her name (the exact slug spelling is not graded)",
+        "prefers dry and specific over grand — her own framing, and the constraint that shaped the whole draft",
+        "does not want her speeches to sound like a résumé",
+        "shares credit by name and prefers the close to land on the work rather than on herself",
+        "describes herself as not a natural at public speaking, so favour short, plain, sayable lines over ornament",
+        "optionally the durable context that fixes who this is: staff engineer at Corvid Grid"
+      ],
+      "must_not_do": [
+        "record the Ashfield Prize, the 12 November ceremony or the Leeds venue as durable facts — those are this engagement and will never recur",
+        "record Ravi Deshmukh, Sofia Kettunen or Bev Achterberg as standing must-mentions — they belong to this award, not to every speech she gives",
+        "record the three-minute length as her standing preference; it was set by this occasion",
+        "paste the draft, or a summary of the draft, into the profile",
+        "write the profile anywhere outside /memories/ — the write sandbox allows only /workspace and /memories/, and denies everything else",
+        "open a second file per engagement rather than one file per speaker"
+      ],
+      "max_questions": 1,
+      "grading_notes": "The durable/one-off split in its cleanest form. Everything worth keeping comes from the three sentences in which the speaker describes how she wants to sound — 'don't want it to sound like a résumé', 'rather be dry and specific than grand', 'I'm not a natural at this' — and the ornament-cutting the critic pass confirmed. Everything else in the thread is occasion detail. A profile that reads like a summary of this speech has failed even if every sentence in it is true. max_questions is 1 because at most one clarifying question is tolerated but unnecessary; the decision under test is the write."
+    },
+    "metadata": {
+      "id": "memory-write-engineer-award-acceptance",
+      "brief_id": "corporate-technical-engineer-award-acceptance",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "memory_write",
+      "turns": 2,
+      "occasion_category": "corporate-technical",
+      "speaker": "Hana Włodarczyk",
+      "expected_memory_path": "/memories/<speaker-slug>.md",
+      "brief_adapted": false
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "I'm Priya Raghunathan, COO at Halyard Logistics, and Thursday morning I have to stand up in front of the roughly 400 people who are still here — we let 68 people go on Tuesday. Five minutes, in the room plus a remote stream, and I'd rather be plain than polished. Do not go anywhere near the wrongful-dismissal claim our lawyers are handling, don't speculate about whether there's a second round, and don't say the severance number. What they need to hear is that the Duluth warehouse pilot is still happening and that I'm not hiding from them."
+        },
+        {
+          "role": "assistant",
+          "content": "Final is at /workspace/speeches/halyard-rif-all-hands.md — 640 words, about five minutes at 130 a minute. It's plain rather than polished, which is what you asked for: short sentences, no uplift at the close, and the 68 people who left on Tuesday are named in the second line instead of being buried. The Duluth pilot is the only forward-looking thing in it, so it lands as continuity rather than as a consolation prize. None of the three things you ruled out appear anywhere in the text, and I checked the final pass for them specifically."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "write_memory",
+      "must_cover": [
+        "one file under /memories/, keyed to the speaker — /memories/priya-raghunathan.md or an equivalent slug",
+        "prefers plain over polished — her own phrase — so short sentences and no rhetorical uplift",
+        "wants to be seen taking hard news to the room herself rather than hiding from it",
+        "leads with the hard fact rather than burying it",
+        "optionally the durable context that fixes who this is: COO at Halyard Logistics",
+        "optionally a durable process note — check for legal or embargoed material before drafting — phrased so it names no confidential item"
+      ],
+      "must_not_do": [
+        "record the pending wrongful-dismissal claim in /memories/ in any form, including as a standing 'do not mention' entry — step 7 forbids secrets in the profile, and writing the item down in order to remember avoiding it is the exact inversion of the rule",
+        "record the severance figure, or the fact that a second round is under discussion",
+        "record the 68 departures, the Duluth pilot or the Thursday all-hands as durable speaker facts — they are this engagement",
+        "write the speech, or a précis of it, into the profile",
+        "write outside /memories/"
+      ],
+      "max_questions": 1,
+      "grading_notes": "The secrets clause is the whole discriminator, and the trap is well-disguised: the three prohibitions were load-bearing for this draft, so 'remember these for next time' feels like diligence. It is not. A confidential legal matter copied into durable cross-session storage is precisely what 'never one-off task details or secrets' rules out, and the profile persists to a JSON snapshot on disk. The acceptable version of that instinct is a content-free process note. Grade the written text: if the phrase 'wrongful dismissal', a severance number, or 'second round' appears in /memories/, the example fails regardless of how good the durable voice notes alongside it are. max_questions is 1 because at most one clarifying question is tolerated but unnecessary; the decision under test is the write."
+    },
+    "metadata": {
+      "id": "memory-write-layoff-all-hands-secrets",
+      "brief_id": "corporate-technical-layoff-all-hands",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "memory_write",
+      "turns": 2,
+      "occasion_category": "corporate-technical",
+      "speaker": "Priya Raghunathan",
+      "expected_memory_path": "/memories/<speaker-slug>.md",
+      "brief_adapted": false,
+      "tests": "secrets-exclusion"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "The Rockvale Unified board votes January 8 on cutting the 4:45 activity bus on Route 9, and the public comment period is the only shot we get. Write something for that slot that might actually move one board member instead of just venting. Don't go looking anything up — everything that matters here is local and I'm telling you what it is: Route 9 is the only run that serves the Halstead trailer park, and forty-one kids sign onto it for robotics and JV practice."
+        },
+        {
+          "role": "assistant",
+          "content": "The comment is at /workspace/speeches/rockvale-route-9-public-comment.md — 380 words, right about three minutes if the board holds to its usual cap. It opens on the forty-one sign-ups rather than on the budget line, and the ask is a single sentence: restore the 4:45 run on Route 9 before the January 8 vote. Nothing is sourced from outside — every number in it is one you gave me, and I made no research call. I kept the opening neutral about who's holding the microphone, so a parent, a teacher or a student could read it as written."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "skip_memory",
+      "must_cover": [
+        "leave /memories/ untouched: no speaker is named anywhere in the thread, so there is no <speaker-slug> a voice profile could be keyed to",
+        "nothing durable about how any particular speaker sounds was learned — the user wrote as 'we' and the draft was deliberately left neutral about who delivers it",
+        "if the model wants a profile, the correct move is a single question about who will hold the microphone, not a write"
+      ],
+      "must_not_do": [
+        "invent a slug to have somewhere to write — /memories/rockvale-parent.md, /memories/user.md, /memories/we.md are all fabricated identities",
+        "record Route 9, the 4:45 bus, the forty-one students, the Halstead trailer park or the January 8 vote in /memories/ — engagement detail, not speaker voice",
+        "write the comment itself, or a summary of it, into /memories/",
+        "key a profile to the school district or the campaign rather than to a person — the convention is /memories/<speaker-slug>.md",
+        "record 'prefers no research' as a durable speaker trait; the no-research instruction was scoped to this brief by the user"
+      ],
+      "max_questions": 1,
+      "grading_notes": "The STRUCTURAL negative case: step 7 writes a profile for the speaker, and this thread has no speaker, so the skip follows from the absence of a slug rather than from a judgement about what was learned. (Its judgement-half counterpart is memory-skip-repeat-client-logistics-only, where a speaker IS named and the skip has to be reasoned.) The failure under test is the reflex to produce a memory write on every completed engagement, which here can only be satisfied by inventing an identity or by filing engagement facts under one. max_questions is 1 because at most one clarifying question is tolerated but unnecessary; here that one question — who will deliver this? — is a legitimate alternative to skipping, and saying plainly that no profile was written and why is equally fine. Writing anything under /memories/ without a named speaker fails."
+    },
+    "metadata": {
+      "id": "memory-skip-school-board-no-named-speaker",
+      "brief_id": "civic-persuasive-school-board-activity-bus",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "memory_write",
+      "turns": 2,
+      "occasion_category": "civic-persuasive",
+      "speaker": "not stated in the brief",
+      "expected_memory_path": null,
+      "brief_adapted": false,
+      "tests": "no-speaker-no-profile"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "Tomás Fenwick again. Ninety seconds at the Harbourlight Sailing Club AGM on the 6th — I'm reading the citation for the volunteer award. It's going to Ines Barquero, twelve years running the junior fleet. Nothing fancy, same voice as always."
+        },
+        {
+          "role": "assistant",
+          "content": "I read /memories/tomas-fenwick.md first — plain, never ornamental; short sentences he can say in one breath; one story rather than a list of traits; close on the person, not on the club — and the citation stays inside all four. It's at /workspace/speeches/harbourlight-ines-barquero-citation.md — 195 words, ninety seconds on the nose at 130 a minute. Ines Barquero's twelve years with the junior fleet is the only fact in it and it came from you. The style-critic's single note was a comma splice in the fourth line, which I fixed. Nothing here pushed against the profile: you asked for the same voice and it fitted as written."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "skip_memory",
+      "must_cover": [
+        "leave /memories/tomas-fenwick.md as it stands — the engagement taught nothing durable about how he sounds: every preference in play was read out of the existing profile and confirmed, not learned",
+        "if the model says anything about memory at all, it must say that the profile already covered this engagement and needed no change",
+        "a confirmed preference is not a new durable fact; noting that the profile 'held up again' is acceptable only if it does not re-record the four existing notes as though they were newly discovered"
+      ],
+      "must_not_do": [
+        "manufacture voice traits the thread does not evidence in order to have something to write — 'prefers nautical imagery', 'likes citations under two minutes', 'works well to a tight cap' are all unsupported by anything the user said",
+        "restate what the existing profile already holds as though it were newly learned, rewriting the file with the same four notes in fresh words",
+        "record Ines Barquero, the Harbourlight Sailing Club, the AGM on the 6th, the twelve years with the junior fleet, or the ninety-second cap as durable speaker facts — every one of them is this engagement",
+        "record the comma splice, or any other critic note about a single draft, as a standing trait of the speaker",
+        "open a second file keyed to the recipient (/memories/ines-barquero.md) — Ines is the subject of the citation, not the speaker",
+        "write anything outside /memories/"
+      ],
+      "max_questions": 1,
+      "grading_notes": "The JUDGEMENT half of step 7's 'ONLY durable, speaker-level facts belong there' clause, and the case that separates the real rule from the shortcut 'write a profile iff a name appears'. A named, returning speaker with an existing profile is exactly where the write reflex fires hardest — and here there is nothing to write: the brief is pure logistics (length, date, venue, recipient), the voice came out of the profile rather than out of the engagement, and every new proper noun belongs to the award, not to Tomás. The clean pass is a skip, said out loud. A one-line append passes ONLY if what it adds is genuinely evidenced by this thread; nothing here supplies such a line, so in practice any substantive write is manufacturing. Grade the text of whatever is written, not the model's stated intention. max_questions is 1 because at most one clarifying question is tolerated but unnecessary; the decision under test is the write."
+    },
+    "metadata": {
+      "id": "memory-skip-repeat-client-logistics-only",
+      "brief_id": "civic-institutional-volunteer-award-citation",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "memory_write",
+      "turns": 2,
+      "occasion_category": "award-citation",
+      "speaker": "Tomás Fenwick",
+      "expected_memory_path": null,
+      "brief_adapted": false,
+      "tests": "named-speaker-nothing-durable-learned",
+      "added_by": "coverage-repair: the only prior skip_memory case was structural (no named speaker), so the rule 'write iff a name appears' passed the whole memory half"
+    }
+  },
+  {
+    "inputs": {
+      "messages": [
+        {
+          "role": "user",
+          "content": "It's Daryl again. Sam and Priya are having a housewarming for the Fenwick Street place on the 14th and they've asked me to say a few words — same voice as the wedding toast."
+        },
+        {
+          "role": "assistant",
+          "content": "I read /memories/daryl.md before drafting and stayed inside it. It holds four notes: warm but dry, never gushing; short sentences you can say in one breath; name people plainly, no epithets; and one from last time, that you asked to have the sentimental closing line cut from the wedding toast. The remarks are at /workspace/speeches/sam-priya-fenwick-street-housewarming.md — 255 words, just under two minutes at 130 a minute. You asked me again to cut the toast-y closing line, so this one ends on the doorframe rather than on a raised glass. Everything in it came from you; nothing needed checking."
+        }
+      ]
+    },
+    "outputs": {
+      "expected_decision": "write_memory",
+      "must_cover": [
+        "write to the same path that was read at step 2 — /memories/daryl.md — so the speaker keeps one profile rather than one per engagement",
+        "record the durable pattern this thread actually evidences: the sentimental closing line has now been cut on two separate engagements, which promotes the wedding-toast note from a one-off to a standing preference — no raised-glass sign-off",
+        "the write must be an edit or an append against the existing file (edit_file, or a write_file whose body carries the read content forward), so the three other notes quoted in the thread — warm but dry, short sayable sentences, name people plainly — survive it"
+      ],
+      "must_not_do": [
+        "create a second file — /memories/daryl-housewarming.md, /memories/daryl-2.md — fragmenting the speaker across engagements",
+        "replace /memories/daryl.md wholesale with a file containing only today's observation",
+        "record Sam, Priya, the Fenwick Street place or the 14th as durable facts — that is this engagement",
+        "write the remarks themselves into the profile",
+        "assert voice traits the thread does not evidence — the profile is a record of what was learned, not a character sketch"
+      ],
+      "max_questions": 1,
+      "grading_notes": "Tests the update half of step 7, which is where the memory design actually earns its keep: the profile is the agent's relationship with the speaker across sessions, so the two live failures are fragmenting it (a new file per engagement) and clobbering it (a fresh write that keeps only today). The one genuinely durable signal here is the repetition — the same cut requested on two different occasions is what promotes a note to a preference. The prior contents of /memories/daryl.md are quoted in the assistant turn precisely so that preservation is checkable: grade the merge against those four notes and nothing else, because this dataset asserts no other content for that file. max_questions is 1 because at most one clarifying question is tolerated but unnecessary; the decision under test is the write."
+    },
+    "metadata": {
+      "id": "memory-write-housewarming-update-existing",
+      "brief_id": "edge-cases-memory-recall-housewarming",
+      "dataset_type": "single_step",
+      "node_name": "model",
+      "decision_point": "memory_write",
+      "turns": 2,
+      "occasion_category": "housewarming-remarks",
+      "speaker": "Daryl",
+      "expected_memory_path": "/memories/daryl.md",
+      "brief_adapted": true,
+      "adaptation_note": "The assistant turn now quotes the four notes it read out of /memories/daryl.md, so the merge/preservation criterion is checkable rather than resting on assumed prior contents.",
+      "tests": "update-existing-profile"
+    }
+  }
+]
