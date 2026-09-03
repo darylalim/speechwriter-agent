@@ -53,25 +53,35 @@ command -v uvx >/dev/null 2>&1 || {
   exit 1
 }
 
+# --- Same pins as .github/workflows/{ci,release}.yml. ---
+# Left floating, this gate and CI can disagree, and not only by being noisier or quieter:
+# a `# ty: ignore` is *required* by a version that cannot resolve a symbol and *rejected*
+# as an unused-ignore by one that can, so a floating local checker plus a pinned CI admits
+# source states that satisfy neither. That is what a304a89 fixed. Pinning here costs the
+# early warning of an Astral release, which CI's own bump is the better place to absorb.
+# test_tool_pins_agree_across_ci_release_and_the_hook keeps these three sites in step.
+RUFF_VERSION="0.16.0"
+TY_VERSION="0.0.63"
+
 # --- Autofix what is mechanically fixable (line-length 100, isort via lint select "I"). ---
 before=$(cksum < "$file")
-uvx ruff format --quiet -- "$file" >/dev/null 2>&1
-uvx ruff check --fix --quiet -- "$file" >/dev/null 2>&1
+uvx ruff@"$RUFF_VERSION" format --quiet -- "$file" >/dev/null 2>&1
+uvx ruff@"$RUFF_VERSION" check --fix --quiet -- "$file" >/dev/null 2>&1
 after=$(cksum < "$file")
 
-lint_out=$(uvx ruff check -- "$file" 2>&1)
+lint_out=$(uvx ruff@"$RUFF_VERSION" check -- "$file" 2>&1)
 lint_status=$?
-type_out=$(uvx ty check 2>&1)
+type_out=$(uvx ty@"$TY_VERSION" check 2>&1)
 type_status=$?
 
 if [ "$lint_status" -ne 0 ] || [ "$type_status" -ne 0 ]; then
   {
     echo "The quality gates CLAUDE.md requires to stay clean are failing after your edit to $rel:"
     if [ "$lint_status" -ne 0 ]; then
-      printf '\n[uvx ruff check %s]\n%s\n' "$rel" "$lint_out"
+      printf '\n[uvx ruff@%s check %s]\n%s\n' "$RUFF_VERSION" "$rel" "$lint_out"
     fi
     if [ "$type_status" -ne 0 ]; then
-      printf '\n[uvx ty check] (whole project; diagnostics may be in files you did not edit)\n%s\n' "$type_out"
+      printf '\n[uvx ty@%s check] (whole project; diagnostics may be in files you did not edit)\n%s\n' "$TY_VERSION" "$type_out"
     fi
     echo
     echo "Fix these before continuing. Prefer typing something precisely over widening to Any;"
