@@ -14,6 +14,7 @@ uv run speechwriter                      # interactive REPL (also: uv run python
 uv run streamlit run streamlit_app.py    # the web UI (same bundle, second front end)
 uv run pytest                            # full suite — offline, no API key or network
 uv run pytest tests/test_build.py::test_write_sandbox_confines_writes   # single test
+uv run python evals/validate_datasets.py # the 55 eval datasets vs the live contract (bare `python` won't resolve the import)
 uvx ruff@0.16.0 check .                  # lint (line-length 100)
 uvx ruff@0.16.0 format .                 # format
 uvx ty@0.0.63 check                      # type check
@@ -209,7 +210,7 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 ## Gotchas
 
 - **`tests/test_build.py` reaches into three private third-party symbols**, any of which can vanish on a dependency bump: `deepagents.middleware.filesystem._check_fs_permission` (the sandbox test, the likely casualty), `agent.nodes["tools"].bound.tools_by_name` (the prompt-vs-tool test), and `ChatAnthropic._get_request_payload` (the payload test). That is deliberate — a rename breaks them loudly, which is the failure mode we want. It also imports `yaml`, which is **no longer** transitive-only: `pyyaml>=6.0` is declared in `[dependency-groups] dev` as of `d4265dd`.
-- **`[tool.ruff.format] exclude = ["*.md"]` is load-bearing — don't drop it.** Ruff 0.16 formats Python code blocks inside `.md`, which would make the formatter the only part of the toolchain that reaches into docs: `ruff check` skips Markdown entirely (`No Python files found`), and `hooks/ruff-ty-gate.sh` filters to `*.py`/`*.pyi`. Without the exclude, the documented `uvx ruff@0.16.0 format .` silently rewrites the hand-typeset fences in `README.md` — and in this file, whose **Commands** block is column-aligned by hand — so an unrelated commit picks up a docs diff. With it, the formatter sees 18 Python files and `.` is safe for the hook, CI, and the command line alike.
+- **`[tool.ruff.format] exclude = ["*.md"]` is load-bearing — don't drop it.** Ruff 0.16 formats Python code blocks inside `.md`, which would make the formatter the only part of the toolchain that reaches into docs: `ruff check` skips Markdown entirely (`No Python files found`), and `hooks/ruff-ty-gate.sh` filters to `*.py`/`*.pyi`. Without the exclude, the documented `uvx ruff@0.16.0 format .` silently rewrites the hand-typeset fences in `README.md` — and in this file, whose **Commands** block is column-aligned by hand — so an unrelated commit picks up a docs diff. With it, the formatter sees 19 Python files and `.` is safe for the hook, CI, and the command line alike.
 - `workspace/` and `.speechwriter/` are gitignored runtime output — `load_settings()` creates them on startup, so a missing folder never fails the first draft.
 - The CLI rotates `thread_id` after a `KeyboardInterrupt` so it never resumes a half-executed graph; that intentionally drops prior conversation context.
 - The orchestrator is given **no direct tools** (`tools=[]`). Research is delegated so noisy search results never crowd the writing context. Add new capabilities as subagents unless the orchestrator genuinely needs them inline.
