@@ -171,6 +171,27 @@ try:
             check(isinstance(o.get(k), list), f"{lab}: {k} is not a list")
         check(bool(o.get("grading_notes")), f"{lab}: empty grading_notes")
 
+        # must_not_contain mixes two kinds in one list: literal substrings, written fully
+        # wrapped in double quotes, and prose for an LLM judge, written bare. Nothing in the
+        # schema separates them yet -- the eventual fix is two fields, decided alongside the
+        # evaluator that consumes them. Until then, lock the convention so that split stays a
+        # mechanical transform: an entry is wrapped or bare, never half-quoted.
+        for v in o.get("must_not_contain") or []:
+            t = str(v).strip()
+            check(
+                t.startswith('"') == t.endswith('"'),
+                f"{lab}: must_not_contain entry is half-quoted, so its kind is ambiguous: {t!r}",
+            )
+        # must_mention carries no quoted entries at all today, and a new one would be a second
+        # convention in a field that has none. Force the schema decision rather than let it drift.
+        for v in o.get("must_mention") or []:
+            t = str(v).strip()
+            check(
+                not (len(t) >= 2 and t.startswith('"') and t.endswith('"')),
+                f"{lab}: must_mention entry is quote-wrapped: {t!r} -- must_mention is "
+                "uniformly judge prose; add an explicit literal field instead of mixing kinds",
+            )
+
     # The same 130-wpm figure appears in trajectory and rag metadata; recompute it there too,
     # or a WORDS_PER_MINUTE change fails only final_response and leaves the rest silently stale.
     for name in ("trajectory", "rag", "single_step"):

@@ -41,7 +41,12 @@ command -v git >/dev/null 2>&1 || exit 0
 # suite but by nothing else in the inner loop, since that file is not Python and so never
 # reaches ruff-ty-gate.sh. Ignored files stay invisible here -- --untracked-files=all lists
 # untracked but not ignored paths -- so a local, gitignored secrets file never pins the gate on.
-watched=(src tests skills .streamlit pyproject.toml uv.lock)
+#
+# evals is watched for the same reason as .streamlit: test_eval_datasets_match_the_live_contract
+# checks the committed dataset JSON against config.py, and JSON never reaches ruff-ty-gate.sh
+# either. Without it, editing a dataset -- the most likely edit in that folder by far -- would
+# leave the inner loop silent and the drift would surface only in CI.
+watched=(src tests skills .streamlit evals pyproject.toml uv.lock)
 dirty=$(git status --porcelain --untracked-files=all -- "${watched[@]}" 2>/dev/null)
 [ -n "$dirty" ] || exit 0
 
