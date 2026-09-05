@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -46,6 +47,7 @@ from evaluators import (  # noqa: E402  -- needs the sys.path line above
     unscored,
 )
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
 EV = Path(__file__).resolve().parent / "datasets"
 DATASETS = ("final_response", "trajectory", "single_step", "rag")
 NAME_PREFIX = "Speechwriter: "
@@ -63,6 +65,28 @@ def to_messages(inputs: dict[str, Any]) -> list[dict[str, str]]:
     return [{"role": "user", "content": f"{question}\n\nContext: {context}".strip()}]
 
 
+def message_text(message: Any) -> str:
+    """The assistant's prose, whichever shape the provider used.
+
+    ``AIMessage.content`` is a plain string for some responses and a list of content blocks for
+    others -- which is how the first live run scored a finished 1,560-word commencement address
+    as "the output is empty" while its own saved_to check confirmed the file had been written.
+    Only ``text`` blocks are joined: thinking and tool_use blocks are not what was said.
+    """
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts)
+    return ""
+
+
 def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     """Turn a finished graph state plus the files it left behind into a RunRecord."""
     calls: list[ToolCall] = []
@@ -70,9 +94,10 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     for message in state.get("messages", []):
         for call in getattr(message, "tool_calls", None) or []:
             calls.append(ToolCall(str(call.get("name", "")), dict(call.get("args") or {})))
-        content = getattr(message, "content", None)
-        if getattr(message, "type", "") == "ai" and isinstance(content, str) and content.strip():
-            text = content
+        if getattr(message, "type", "") == "ai":
+            spoken = message_text(message)
+            if spoken.strip():
+                text = spoken
 
     # Disk writes, mapped back to the virtual paths the criteria are written in.
     for path in sorted(workspace.rglob("*.md")):
@@ -82,11 +107,34 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     return RunRecord(text=text, calls=tuple(calls))
 
 
+def prime_environment() -> None:
+    """Load the real project's settings once, before any ``SPEECHWRITER_HOME`` override.
+
+    ``load_settings()`` derives ``project_root`` from ``SPEECHWRITER_HOME`` and loads *that*
+    directory's dotenv, so a temp home would go looking for credentials that are not there and
+    every run would fail at the first API call. Priming against the real root puts them in
+    ``os.environ``, where ``load_dotenv``'s never-override rule then preserves them.
+    """
+    from speechwriter.config import load_settings
+
+    os.environ.pop("SPEECHWRITER_HOME", None)
+    load_settings()
+
+
 def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
     """One graded run of the real agent, in a workspace of its own."""
     from speechwriter.agent import build_agent
 
     with tempfile.TemporaryDirectory(prefix="speechwriter-eval-") as home:
+        # skills_dir is project_root / "skills", and project_root IS the temp home -- so a bare
+        # one silently runs the agent with the rhetoric library absent. That does not just fail
+        # every required_skill_reads criterion, it changes the behaviour under test.
+        #
+        # Copied, not symlinked. Settings._vpath maps a real path to a virtual one with
+        # `path.resolve().relative_to(project_root)`, and resolve() follows the link straight
+        # back to the real repo -- which is not under the temp root, so skills_vpath raises
+        # before a single model call. The tree is four SKILL.md files; a copy costs nothing.
+        shutil.copytree(REPO_ROOT / "skills", Path(home) / "skills")
         os.environ["SPEECHWRITER_HOME"] = home
         bundle = build_agent()
         state = bundle.agent.invoke(
@@ -212,7 +260,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             print("--langsmith and --dry-run are contradictory", file=sys.stderr)
             return 2
+        prime_environment()
         return run_langsmith(args.dataset, args.limit, args.no_judge)
+
+    if not args.dry_run:
+        prime_environment()
 
     examples = json.loads((EV / f"{args.dataset}.json").read_text(encoding="utf-8"))[: args.limit]
     print(

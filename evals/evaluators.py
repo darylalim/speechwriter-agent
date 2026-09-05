@@ -294,7 +294,9 @@ def score_final_response(run: RunRecord, out: dict[str, Any], meta: dict[str, An
     literals, prose = split_must_not_contain(out.get("must_not_contain") or [])
     found = [lit for lit in literals if lit.lower() in run.text.lower()]
     scores.append(
-        Score(
+        Score("must_not_contain_literal", None, "no output to search")
+        if not run.text.strip()
+        else Score(
             "must_not_contain_literal",
             float(not found),
             f"found {found}" if found else f"clean ({len(literals)} literals)",
@@ -374,9 +376,31 @@ SCORERS = {
 }
 
 
+# Datasets whose criteria are about what the agent SAID. trajectory grades the path it took, so
+# a terse reply there is not itself a failure.
+TEXT_PRODUCING = ("final_response", "single_step", "rag")
+
+
 def score_example(dataset: str, run: RunRecord, example: dict[str, Any]) -> list[Score]:
-    """Every machine-checkable criterion for one example, plus an explicit unscored tail."""
-    return SCORERS[dataset](run, example.get("outputs") or {}, example.get("metadata") or {})
+    """Every machine-checkable criterion for one example, plus an explicit unscored tail.
+
+    ``produced_output`` comes first and is not a formality. Every absence-based criterion in the
+    suite is satisfied by an empty reply, so without a liveness row a run that emitted nothing
+    scores partial credit off criteria it never engaged -- which is exactly how a harness bug
+    that dropped the assistant's text read as a 7/17 result instead of a broken run.
+    """
+    scores = SCORERS[dataset](run, example.get("outputs") or {}, example.get("metadata") or {})
+    if dataset in TEXT_PRODUCING:
+        alive = bool(run.text.strip())
+        scores.insert(
+            0,
+            Score(
+                "produced_output",
+                float(alive),
+                f"{len(run.text.split())} words returned" if alive else "NO TEXT RETURNED",
+            ),
+        )
+    return scores
 
 
 # --- the judge half: prose criteria a substring check cannot reach ---
@@ -432,6 +456,15 @@ def judge_criteria(model: Any, key: str, output_text: str, criteria: list[str]) 
     """
     if not criteria:
         return []
+    if not output_text.strip():
+        # Absence-based criteria ("contains no advert", "invents no statistic") are ALL trivially
+        # satisfied by producing nothing, so a run that emitted no text would bank passes and
+        # read as mediocre rather than broken. Unscored, for the same reason an unparseable order
+        # constraint is unscored: nothing was measured.
+        return [
+            Score(f"{key}[{i}]", None, "no output to judge -- the run produced no text")
+            for i in range(len(criteria))
+        ]
     numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(criteria))
     prompt = (
         f"CRITERION LIST ({key}), {len(criteria)} items:\n{numbered}\n\n"

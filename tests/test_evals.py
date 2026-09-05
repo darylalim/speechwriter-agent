@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -334,3 +335,123 @@ def test_coverage_never_counts_what_it_could_not_measure():
     assert ev.coverage(scores) == 0.5
     assert [s.key for s in ev.unscored(scores)] == ["c", "d"]
     assert ev.coverage([]) == 0.0
+
+
+def test_a_graded_runs_temp_home_can_build_the_agent_with_its_skills(tmp_path, monkeypatch):
+    # run_experiment gives every graded run its own SPEECHWRITER_HOME so write-path criteria are
+    # attributable -- but that variable overrides project_root, and skills_dir is
+    # project_root / "skills", so a bare temp home runs the agent with the rhetoric library
+    # absent. create_deep_agent only *logs* a missing skills tree, so the run would have produced
+    # plausible numbers for a differently-configured agent.
+    #
+    # Copying the tree is the fix, and a symlink is NOT: Settings._vpath maps a real path to a
+    # virtual one through `path.resolve().relative_to(project_root)`, and resolve() follows the
+    # link back to the real repo, which is not under the temp root. skills_vpath then raises
+    # inside orchestrator_prompt -- which is how the first live run died, on all four datasets,
+    # before a single model call. Both halves are asserted below.
+    #
+    # Free and offline: build_agent() never touches the wire, which is the invariant that makes
+    # this test possible at all.
+    shutil.copytree(REPO_ROOT / "skills", tmp_path / "skills")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used-offline")
+
+    from speechwriter.agent import build_agent
+    from speechwriter.prompts import orchestrator_prompt
+
+    bundle = build_agent()
+    prompt = orchestrator_prompt(bundle.settings)
+    assert bundle.settings.skills_vpath == "/skills/"
+    slugs = sorted(p.parent.name for p in bundle.settings.skills_dir.glob("*/SKILL.md"))
+    assert len(slugs) == 4, f"the graded run would see {slugs}, not the four committed skills"
+    assert "/skills/" in prompt
+
+    # And the harness must COPY that tree, never link it. Asserted against the source rather
+    # than by provoking the failure, so improving Settings._vpath does not fail this test for a
+    # reason that is not a bug.
+    source = (REPO_ROOT / "evals" / "run_experiment.py").read_text(encoding="utf-8")
+    assert "copytree" in source, "run_experiment no longer copies the skills tree into the home"
+    assert "symlink_to" not in source, (
+        "run_experiment symlinks the skills tree. Settings._vpath maps a real path to a virtual "
+        "one through path.resolve().relative_to(project_root), and resolve() follows the link "
+        "back to the real repo -- outside the temp root -- so skills_vpath raises inside "
+        "orchestrator_prompt. That killed the first live run on all four datasets before a "
+        "single model call. Copy it."
+    )
+
+
+def _harness_module():
+    """Import ``evals/run_experiment.py`` — module level is import-safe, the wire is behind main."""
+    path = REPO_ROOT / "evals" / "run_experiment.py"
+    spec = importlib.util.spec_from_file_location("speechwriter_run_experiment", path)
+    assert spec and spec.loader, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_assistant_text_is_read_from_content_blocks_not_only_plain_strings():
+    # AIMessage.content is a plain string for some responses and a list of content blocks for
+    # others. Accepting only str is how the first live run scored a finished 1,560-word
+    # commencement address as "the output is empty" -- while its own saved_to check confirmed
+    # the file had been written. Thinking and tool_use blocks are deliberately not joined:
+    # they are not what the speaker says.
+    harness = _harness_module()
+
+    class Msg:
+        def __init__(self, content):
+            self.content = content
+            self.type = "ai"
+
+    assert harness.message_text(Msg("plain string")) == "plain string"
+    assert harness.message_text(Msg([{"type": "text", "text": "block text"}])) == "block text"
+    assert (
+        harness.message_text(
+            Msg(
+                [
+                    {"type": "thinking", "thinking": "should not appear"},
+                    {"type": "text", "text": "the speech"},
+                    {"type": "tool_use", "name": "write_file", "input": {}},
+                ]
+            )
+        )
+        == "the speech"
+    )
+    assert harness.message_text(Msg(None)) == ""
+
+
+def test_an_empty_output_cannot_bank_passes_on_absence_criteria():
+    # Every negative criterion in the suite -- "contains no advert", "invents no statistic",
+    # "quotes nothing unsourced" -- is trivially satisfied by producing nothing. Before the
+    # liveness precondition a run that returned no text scored 7/17 on this very example and
+    # reported 85% coverage, so a harness bug read as a mediocre model rather than a broken run.
+    ev = _evaluators_module()
+    fr = json.loads((REPO_ROOT / "evals" / "datasets" / "final_response.json").read_text("utf-8"))
+    example = next(
+        e for e in fr if e["metadata"]["id"] == "ceremonial-commencement-first-job-not-the-verdict"
+    )
+    wrote_a_file = (ev.ToolCall("write_file", {"file_path": "/workspace/speeches/x.md"}),)
+
+    empty = ev.RunRecord("", wrote_a_file)
+    scores = ev.score_example("final_response", empty, example)
+    scores += ev.judge_example(None, "final_response", empty, example)
+
+    liveness = next(s for s in scores if s.key == "produced_output")
+    assert liveness.score == 0.0, "an empty reply was not flagged"
+    # The judge is never even called — a None model would raise if it were.
+    assert all(
+        not s.machine_scored
+        for s in scores
+        if s.key.startswith(("must_mention", "must_not_contain", "required_behaviors"))
+    ), "an absence-based criterion scored a pass against an empty output"
+
+    # And the same example with real text must still reach the deterministic absence check,
+    # or the guard above would have disabled scoring wholesale.
+    alive = ev.RunRecord("A speech about Kettleworth and the first job.", wrote_a_file)
+    literal = next(
+        s
+        for s in ev.score_example("final_response", alive, example)
+        if s.key == "must_not_contain_literal"
+    )
+    assert literal.machine_scored, "the literal check stopped running for non-empty output"
