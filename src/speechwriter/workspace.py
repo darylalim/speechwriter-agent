@@ -78,7 +78,7 @@ class Document:
         rendered directly above it would just look broken. Still an estimate — Markdown
         punctuation counts as a word — but one that lands within a few words of the draft's.
         """
-        return len(_STAGE_DIRECTION.sub(" ", self.body).split())
+        return _count_spoken(self.body)
 
     @property
     def minutes(self) -> float:
@@ -93,6 +93,24 @@ class MemoryEntry:
     key: str
     namespace: tuple[str, ...]
     text: str
+
+
+def _count_spoken(body: str) -> int:
+    """Words said aloud in an already-header-stripped body."""
+    return len(_STAGE_DIRECTION.sub(" ", body).split())
+
+
+def spoken_words(text: str) -> int:
+    """Words said aloud in a draft, given the file's full text.
+
+    The eval scorers need this figure for a speech that only ever existed in a message, with
+    no file behind it, and a second implementation there would drift from the one the browser
+    shows -- the same reason this module refuses to re-derive ``WORDS_PER_MINUTE``. Strips the
+    ``---`` header block first, then the bracketed delivery cues, exactly as
+    :attr:`Document.words` does.
+    """
+    _, body = _split_front_matter(text)
+    return _count_spoken(body)
 
 
 def load_documents(directory: Path) -> list[Document]:

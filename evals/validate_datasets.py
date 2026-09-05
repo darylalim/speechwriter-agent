@@ -300,6 +300,67 @@ try:
         )
         check(o.get("must_return_angles") in (2, 3), f"{lab}: must_return_angles")
 
+    # --- cross-file: one brief, one set of facts about it ---
+    # Sixteen briefs appear in more than one dataset, byte-identical in the input and keyed
+    # differently per file: final_response and trajectory join on metadata.id, single_step on
+    # brief_id, rag on source_brief_id. Nothing tied those copies together and two had drifted.
+    # The twenty-second toast was flagged underspecified in one file and fully-specified in
+    # another while its three graders disagreed about whether a clarifying question was correct
+    # behaviour or the failure the case existed to catch -- so one run passed two datasets and
+    # failed the third on the same brief, which reads as model non-determinism rather than a
+    # dataset bug. The mayor brief carried two different goals. Neither is visible to a
+    # per-example check: each file is internally consistent, and only the join contradicts.
+    #
+    # occasion_category is deliberately NOT compared. It disagrees on six briefs by design --
+    # final_response labels coarsely (ceremonial-life-event) where trajectory and single_step
+    # label finely (wedding-toast-revision) -- and that is granularity, not conflict.
+    BRIEF_KEY = {
+        "final_response": "id",
+        "trajectory": "id",
+        "single_step": "brief_id",
+        "rag": "source_brief_id",
+    }
+    # single_step names the specification axis with more resolution than the bool the other files
+    # carry. "follow-up-turn" describes a different property entirely and is not comparable, so it
+    # is absent here rather than mapped to either value.
+    SPECIFICATION = {
+        "fully-specified": False,
+        "underspecified": True,
+        "underspecified-in-one-slot": True,
+    }
+    spine: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+    for name, exs in ok.items():
+        for e in exs:
+            brief = e["metadata"].get(BRIEF_KEY[name])
+            check(bool(brief), f"{label_of(name, e)}: no metadata.{BRIEF_KEY[name]} to join on")
+            if brief:
+                spine.setdefault(str(brief), []).append((name, e))
+
+    shared = {b: v for b, v in spine.items() if len(v) > 1}
+    # Anti-vacuity, and a floor rather than a census: every check below is satisfied by an empty
+    # spine, so a renamed join key would turn this silent instead of red. It is not pinned exactly
+    # like EXPECTED_COUNTS because reusing a brief is encouraged -- the count should be free to
+    # rise, only a collapse is a bug.
+    check(len(shared) >= 10, f"only {len(shared)} shared briefs joined -- did a join key change?")
+
+    for brief, members in sorted(shared.items()):
+        facts: dict[str, dict[str, Any]] = {}
+        for name, e in members:
+            m, where = e["metadata"], label_of(name, e)
+            for axis in ("goal", "target_minutes", "research_required"):
+                if axis in m:
+                    facts.setdefault(axis, {})[where] = m[axis]
+            if "underspecified" in m:
+                facts.setdefault("underspecified", {})[where] = bool(m["underspecified"])
+            if (spec := m.get("brief_specification")) in SPECIFICATION:
+                facts.setdefault("underspecified", {})[where] = SPECIFICATION[spec]
+        for axis, per_file in facts.items():
+            check(
+                len({repr(v) for v in per_file.values()}) == 1,
+                f"brief {brief!r}: {axis} disagrees across files: {per_file}. One brief, one set "
+                f"of facts -- an agent tuned to one file is penalised by the other.",
+            )
+
     # --- fabrication scan: a URL anywhere in an example is a fabricated-source risk ---
     # Scans inputs and metadata as well as outputs: a URL pasted into a store_seed fixture
     # or a speech_context is ground truth the agent is scored against just the same.

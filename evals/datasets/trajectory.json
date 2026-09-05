@@ -794,7 +794,7 @@
       "target_minutes_is_assumption": false,
       "approx_expected_words_at_130wpm": 43,
       "word_count_derivation": "130 words per minute * (20 / 60) minutes = 43.3 words",
-      "underspecified": false,
+      "underspecified": true,
       "research_required": false,
       "intake_ambiguous": false,
       "max_clarifying_questions": 3,

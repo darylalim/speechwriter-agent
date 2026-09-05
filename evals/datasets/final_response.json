@@ -193,7 +193,7 @@
       "id": "civic-persuasive-mayor-town-hall-water-rates",
       "dataset_type": "final_response",
       "occasion_category": "civic-persuasive",
-      "goal": "persuade",
+      "goal": "inform",
       "target_minutes": 8,
       "research_required": true,
       "underspecified": false,

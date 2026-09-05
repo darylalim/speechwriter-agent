@@ -246,21 +246,21 @@
       ]
     },
     "outputs": {
-      "expected_decision": "proceed_with_stated_assumptions",
+      "expected_decision": "either_acceptable",
       "must_cover": [
-        "proceed to the draft — speaker, couple, occasion, date and hard length are all supplied, so there is no intake gap to fill",
+        "either proceed to the draft or ask at most one question — speaker, couple, occasion, date and hard length are all supplied, and the single unstated slot (who is in the room) is small enough at this scale that proceeding on a stated assumption is equally correct",
         "state the budget it is writing to: twenty seconds is roughly 43 words at the configured 130 words per minute",
         "keep both names — Teodoro Vance and Nkiru Ilesanmi — inside that budget, or say plainly which one is being cut and why, rather than resolving the squeeze in silence"
       ],
       "must_not_do": [
-        "open a clarifying round at all — asking here is the failure this case exists to catch",
+        "open a full intake round of two or three questions when the length, both names, the occasion and the date are already given — the disproportion is the failure this case exists to catch, not a single question about the room",
         "ask for the venue, the guest count, the couple's names, the date, or how long the speech should be",
         "silently treat 'twenty seconds' as approximate and budget for a minute",
         "drop one of the two names without telling the user",
         "use more than two bracketed delivery cues in a sub-60-word draft — at 43 words each cue costs real seconds, and delivery-and-cadence warns that brackets on every line drown the ones that matter"
       ],
-      "max_questions": 0,
-      "grading_notes": "The counterweight that stops this dataset from rewarding intake reflexively. Every step 1 slot is answered in three sentences, so a clarifying round is pure friction and delays a decision the user has already made for the model. 'Stated assumptions' here does not mean inventing gaps to declare: the only thing that must be stated is the arithmetic — the word budget the model is writing to — because at this scale the 130 wpm contract is the whole brief. A model that asks even one question fails; a model that drafts 120 words and calls it twenty seconds fails for a different reason. Two things are deliberately NOT hard criteria at this decision point. (1) The write path is conditional: if it writes a file at all it must land under /workspace/speeches/, since the sandbox denies everywhere but /workspace and /memories/ — but returning the 43 words in chat before or instead of writing is not a failure here. (2) The cue ceiling is countable and deliberately loose, set at two so it agrees with the exemplar assistant reply in intake-followup-stretch-the-toast, which uses two cues in 35 words: two passes, five does not."
+      "max_questions": 1,
+      "grading_notes": "The counterweight that stops this dataset from rewarding intake reflexively. Every step 1 slot but one is answered in three sentences — the audience is never described — so a full clarifying round is friction that delays a decision the user has largely made for the model, while a single question about the room stays proportionate and scores as well as proceeding. 'Stated assumptions' here does not mean inventing gaps to declare: the only thing that must be stated is the arithmetic — the word budget the model is writing to — because at this scale the 130 wpm contract is the whole brief. A model that opens a two- or three-question intake round fails; a model that drafts 120 words and calls it twenty seconds fails for a different reason. Graded either_acceptable for the same reason as intake-layoff-all-hands-well-specified: step 1 licenses both branches, so the score is the quality of whichever branch is taken. Two things are deliberately NOT hard criteria at this decision point. (1) The write path is conditional: if it writes a file at all it must land under /workspace/speeches/, since the sandbox denies everywhere but /workspace and /memories/ — but returning the 43 words in chat before or instead of writing is not a failure here. (2) The cue ceiling is countable and deliberately loose, set at two so it agrees with the exemplar assistant reply in intake-followup-stretch-the-toast, which uses two cues in 35 words: two passes, five does not."
     },
     "metadata": {
       "id": "intake-twenty-second-toast",
@@ -270,9 +270,9 @@
       "decision_point": "intake",
       "turns": 1,
       "occasion_category": "wedding-toast",
-      "brief_specification": "fully-specified",
+      "brief_specification": "underspecified-in-one-slot",
       "brief_adapted": false,
-      "divergence_case": false
+      "divergence_case": true
     }
   },
   {
