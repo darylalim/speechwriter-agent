@@ -354,8 +354,16 @@ def score_single_step(run: RunRecord, out: dict[str, Any], meta: dict[str, Any])
     asked = count_questions(run.text)
     cap = out.get("max_questions")
     if isinstance(cap, int):
-        ok = asked <= cap
-        scores.append(Score("max_questions", float(ok), f"asked ~{asked}, cap {cap}"))
+        # Sound in one direction only: the count is an upper bound, so at-or-under the cap is a
+        # real pass needing no model. Over the cap may be nothing but rhetoric inside a drafted
+        # speech, so it escalates rather than failing on a number that cannot tell the two apart.
+        scores.append(
+            Score("max_questions", 1.0, f"at most {asked} question marks, cap {cap}")
+            if asked <= cap
+            else Score(
+                "max_questions", None, f"{asked} question marks exceed cap {cap} -- escalated"
+            )
+        )
     decision = out.get("expected_decision")
     branch = "either branch passes" if decision == "either_acceptable" else "judge the branch"
     scores.append(
@@ -395,14 +403,17 @@ def score_rag(run: RunRecord, out: dict[str, Any], meta: dict[str, Any]) -> list
     return scores
 
 
-# A question mark ends a question; a bare "?" inside a quotation does not start a new one. Crude
-# on purpose -- it is a *cap* check, and the branch itself is judged, so an off-by-one here
-# cannot flip a correct run to failing on its own.
-_QUESTION = re.compile(r"\?[\s\"')\]]*(?:\n|$|[A-Z])")
-
-
 def count_questions(text: str) -> int:
-    return len(_QUESTION.findall(text)) or text.count("?")
+    """An UPPER BOUND on how many questions the reply asks the user.
+
+    Deliberately just the question marks. It over-counts -- a delivered draft full of rhetorical
+    questions ("What is resilience? Is it endurance?") inflates it, and a reply that asked the
+    user nothing at all can score 3 -- but it never *under*-counts, and that asymmetry is what
+    makes it usable: at or under the cap is a sound pass, and only over the cap needs a judge.
+    Without that, the two ``max_questions: 0`` examples would fail any correct run whose speech
+    happens to ask a rhetorical question.
+    """
+    return text.count("?")
 
 
 SCORERS = {
@@ -557,6 +568,55 @@ USE_OR_MENTION_SCHEMA = {
 }
 
 
+QUESTION_COUNT_SYSTEM = """You count clarifying questions in one assistant reply.
+
+Count ONLY questions the assistant asks the USER in order to gather missing information about
+the commission -- who is speaking, to whom, on what occasion, how long, what to mention.
+
+Do NOT count:
+- rhetorical questions inside a drafted speech ("What is resilience? Is it endurance?")
+- questions quoted from someone else
+- offers phrased as questions that request no information ("Shall I proceed?" asks nothing the
+  writer needs, but "How long should it run?" does)
+
+Return the count as an integer.
+"""
+
+QUESTION_COUNT_SCHEMA = {
+    "title": "QuestionCount",
+    "type": "object",
+    "properties": {
+        "count": {"type": "integer"},
+        "questions": {"type": "array", "items": {"type": "string"}},
+        "reason": {"type": "string"},
+    },
+    "required": ["count", "reason"],
+}
+
+
+def judge_question_count(model: Any, run: RunRecord, out: dict[str, Any]) -> list[Score]:
+    """Resolve a max_questions cap that the question-mark count could not settle."""
+    cap = out.get("max_questions")
+    if not isinstance(cap, int) or count_questions(run.text) <= cap or not run.text.strip():
+        return []
+    reply = model.with_structured_output(QUESTION_COUNT_SCHEMA).invoke(
+        [
+            {"role": "system", "content": QUESTION_COUNT_SYSTEM},
+            {"role": "user", "content": f"CAP: {cap}\n\nREPLY:\n{run.text}"},
+        ]
+    )
+    asked = int((reply or {}).get("count", 0))
+    ok = asked <= cap
+    return [
+        Score(
+            "max_questions",
+            float(ok),
+            f"{asked} clarifying question(s) to the user vs cap {cap} -- "
+            f"{(reply or {}).get('reason', '')[:120]}",
+        )
+    ]
+
+
 def judge_literal_hits(model: Any, run: RunRecord, out: dict[str, Any]) -> list[Score]:
     """One row per banned phrase found, resolving use-versus-mention.
 
@@ -630,6 +690,8 @@ def judge_example(model: Any, dataset: str, run: RunRecord, example: dict[str, A
     scores: list[Score] = []
     for key in JUDGED_FIELDS[dataset]:
         scores.extend(judge_criteria(model, key, text, list(out.get(key) or [])))
+    if dataset == "single_step":
+        scores.extend(judge_question_count(model, run, out))
     if dataset == "final_response":
         _, prose = split_must_not_contain(out.get("must_not_contain") or [])
         scores.extend(judge_criteria(model, "must_not_contain", text, prose))

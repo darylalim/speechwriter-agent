@@ -561,3 +561,45 @@ def test_a_graded_run_does_not_leave_speechwriter_home_pointing_at_a_deleted_dir
     assert source.index("previous_home = os.environ.get") < source.index("with context as home:"), (
         "the prior SPEECHWRITER_HOME must be captured before the temp home replaces it"
     )
+
+
+def test_a_rhetorical_question_in_a_draft_cannot_breach_the_question_cap():
+    # count_questions is a question-mark tally, so a delivered speech that asks "What is
+    # resilience? Is it endurance?" scores 3 while asking the user nothing. Two examples
+    # (intake-twenty-five-minute-keynote, intake-followup-stretch-the-toast) expect
+    # proceed_with_stated_assumptions with max_questions 0 -- exactly the runs that SHOULD
+    # draft -- so a raw count would fail them for rhetoric the brief never forbade.
+    #
+    # The count is an UPPER bound, which is what makes the split sound: at or under the cap is a
+    # real pass needing no model, and only over the cap escalates.
+    ev = _evaluators_module()
+    draft = "Here is your speech. What is resilience? Is it endurance? I say it is choice."
+    # Two question marks, and both are rhetorical: the tally sees 2, the user was asked nothing.
+    assert ev.count_questions(draft) == 2, "the tally is meant to over-count, not under-count"
+
+    out = {"expected_decision": "proceed_with_stated_assumptions", "max_questions": 0}
+    row = next(
+        s
+        for s in ev.score_example("single_step", ev.RunRecord(draft, ()), {"outputs": out})
+        if s.key == "max_questions"
+    )
+    assert row.score is None and "escalated" in row.comment, (
+        "a draft's rhetorical questions were scored as a breach of the intake cap"
+    )
+
+    # Under the cap resolves deterministically, with no judge call.
+    quiet = ev.RunRecord("Here is your speech. It is about standing back up.", ())
+    row = next(
+        s
+        for s in ev.score_example("single_step", quiet, {"outputs": out})
+        if s.key == "max_questions"
+    )
+    assert row.score == 1.0
+
+    # And the judge counts questions put to the USER, not question marks.
+    model = _StubModel([{"count": 0, "reason": "both questions are rhetorical, inside the draft"}])
+    resolved = ev.judge_question_count(model, ev.RunRecord(draft, ()), out)
+    assert [s.score for s in resolved] == [1.0]
+    assert "0 clarifying question(s)" in resolved[0].comment
+    # No escalation when the tally already fits.
+    assert ev.judge_question_count(_StubModel([]), quiet, out) == []
