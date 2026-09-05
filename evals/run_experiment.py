@@ -27,6 +27,7 @@ audit went looking for.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shutil
@@ -99,12 +100,19 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
             if spoken.strip():
                 text = spoken
 
-    # Disk writes, mapped back to the virtual paths the criteria are written in.
+    # Disk writes, mapped back to the virtual paths the criteria are written in. Contents are
+    # captured too, not just paths: rag's sourcing criteria are about the saved research note,
+    # which the returned brief only points at.
+    artifacts: list[tuple[str, str]] = []
     for path in sorted(workspace.rglob("*.md")):
         virtual = "/workspace/" + path.relative_to(workspace).as_posix()
         if virtual not in [c.path for c in calls]:
             calls.append(ToolCall("write_file", {"file_path": virtual}))
-    return RunRecord(text=text, calls=tuple(calls))
+        try:
+            artifacts.append((virtual, path.read_text(encoding="utf-8")))
+        except OSError:
+            continue
+    return RunRecord(text=text, calls=tuple(calls), artifacts=tuple(artifacts))
 
 
 def prime_environment() -> None:
@@ -125,7 +133,19 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
     """One graded run of the real agent, in a workspace of its own."""
     from speechwriter.agent import build_agent
 
-    with tempfile.TemporaryDirectory(prefix="speechwriter-eval-") as home:
+    keep = os.environ.get("SPEECHWRITER_EVAL_KEEP") == "1"
+    context = (
+        contextlib.nullcontext(tempfile.mkdtemp(prefix="speechwriter-eval-"))
+        if keep
+        else tempfile.TemporaryDirectory(prefix="speechwriter-eval-")
+    )
+    # Restored afterwards, because SPEECHWRITER_HOME otherwise outlives the directory it names:
+    # grade() and score_final_response both call load_settings(), which CREATES workspace_dir and
+    # the store's parent -- so every run was re-littering a home that had just been deleted, and
+    # scoring resolved workspace_vpath against a path that no longer existed. Unsetting restores
+    # the real project root, which is what the criteria are written against.
+    previous_home = os.environ.get("SPEECHWRITER_HOME")
+    with context as home:
         # skills_dir is project_root / "skills", and project_root IS the temp home -- so a bare
         # one silently runs the agent with the rhetoric library absent. That does not just fail
         # every required_skill_reads criterion, it changes the behaviour under test.
@@ -140,7 +160,14 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
         state = bundle.agent.invoke(
             {"messages": to_messages(inputs)}, config=bundle.turn_config(thread_id)
         )
-        return extract(state, Path(home) / "workspace")
+        record = extract(state, Path(home) / "workspace")
+        if keep:
+            print(f"   [kept] artifacts under {home}")
+        if previous_home is None:
+            os.environ.pop("SPEECHWRITER_HOME", None)
+        else:
+            os.environ["SPEECHWRITER_HOME"] = previous_home
+        return record
 
 
 def grade(dataset: str, run: RunRecord, example: dict[str, Any], no_judge: bool) -> list[Score]:
@@ -254,6 +281,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="score a canned run; no model call")
     p.add_argument("--no-judge", action="store_true", help="deterministic scorers only")
     p.add_argument("--langsmith", action="store_true", help="record as a LangSmith experiment")
+    p.add_argument("--keep", action="store_true", help="leave each run's temp home on disk")
     args = p.parse_args(argv)
 
     if args.langsmith:
@@ -263,6 +291,8 @@ def main(argv: list[str] | None = None) -> int:
         prime_environment()
         return run_langsmith(args.dataset, args.limit, args.no_judge)
 
+    if args.keep:
+        os.environ["SPEECHWRITER_EVAL_KEEP"] = "1"
     if not args.dry_run:
         prime_environment()
 

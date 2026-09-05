@@ -73,6 +73,8 @@ class RunRecord:
 
     text: str
     calls: tuple[ToolCall, ...] = ()
+    artifacts: tuple[tuple[str, str], ...] = ()
+    """``(virtual path, contents)`` for every file the run left behind."""
 
     @property
     def tool_names(self) -> list[str]:
@@ -134,6 +136,33 @@ def split_must_not_contain(entries: list[str]) -> tuple[list[str], list[str]]:
         else:
             prose.append(text)
     return literals, prose
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def find_literal_hits(text: str, literals: list[str]) -> list[tuple[str, str]]:
+    """``(phrase, surrounding context)`` for each literal that appears in ``text``.
+
+    The context is the sentence carrying the phrase plus its neighbours, because
+    quoting-to-reject routinely straddles a sentence break -- "They'll tell you to follow your
+    passion. Mine was scraping ice off vans." Judging the hit sentence alone would lose exactly
+    the evidence that distinguishes use from mention.
+    """
+    sentences = _SENTENCE.split(text)
+    hits: list[tuple[str, str]] = []
+    for phrase in literals:
+        needle = phrase.lower()
+        for i, sentence in enumerate(sentences):
+            if needle in sentence.lower():
+                context = " ".join(sentences[max(0, i - 1) : i + 2])
+                hits.append((phrase, context.strip()))
+                break
+        else:
+            if needle in text.lower():  # spans a split; fall back to a raw window
+                start = text.lower().index(needle)
+                hits.append((phrase, text[max(0, start - 220) : start + 220].strip()))
+    return hits
 
 
 # --- order constraints ---
@@ -292,16 +321,24 @@ def score_final_response(run: RunRecord, out: dict[str, Any], meta: dict[str, An
     )
 
     literals, prose = split_must_not_contain(out.get("must_not_contain") or [])
-    found = [lit for lit in literals if lit.lower() in run.text.lower()]
-    scores.append(
-        Score("must_not_contain_literal", None, "no output to search")
-        if not run.text.strip()
-        else Score(
-            "must_not_contain_literal",
-            float(not found),
-            f"found {found}" if found else f"clean ({len(literals)} literals)",
+    if not run.text.strip():
+        scores.append(Score("must_not_contain_literal", None, "no output to search"))
+    else:
+        hits = find_literal_hits(run.text, literals)
+        # A hit is not yet a verdict. A substring search cannot tell USE from MENTION, and
+        # quoting a cliche in order to reject it is a legitimate move the briefs themselves
+        # invite ("Don't tell them to follow your passion"). Clean stays fully deterministic and
+        # needs no model; a hit escalates to judge_literal_hits below. Under --no-judge it stays
+        # unscored rather than resolving to a guess in either direction.
+        scores.append(
+            Score("must_not_contain_literal", 1.0, f"clean ({len(literals)} literals)")
+            if not hits
+            else Score(
+                "must_not_contain_literal",
+                None,
+                f"escalated to the judge: {[h[0] for h in hits]}",
+            )
         )
-    )
     for key, items in (
         ("must_mention", out.get("must_mention") or []),
         ("must_not_contain_prose", prose),
@@ -493,6 +530,88 @@ def judge_criteria(model: Any, key: str, output_text: str, criteria: list[str]) 
     return scores
 
 
+USE_OR_MENTION_SYSTEM = """You decide one narrow question about a speech draft.
+
+A banned phrase appears in the draft. Decide whether the speech USES it or MENTIONS it.
+
+USE  - the speaker asserts the phrase in their own voice, sincerely, as their own words.
+MENTION - the speaker quotes the phrase in order to reject, mock, refuse, or set it aside.
+          Typically attributed to someone else ("they'll tell you...", "I could say...") and
+          followed or preceded by a turn against it.
+
+Rules:
+- Only MENTION passes. Use is a violation however elegantly it is phrased.
+- If the phrase is a proper noun, a file path, or a factual claim rather than a cliche, there is
+  almost never a mention reading: default to USE.
+- If the framing is ambiguous, or the rejection is not actually made, answer USE.
+"""
+
+USE_OR_MENTION_SCHEMA = {
+    "title": "UseOrMention",
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "description": "either 'use' or 'mention'"},
+        "reason": {"type": "string"},
+    },
+    "required": ["verdict", "reason"],
+}
+
+
+def judge_literal_hits(model: Any, run: RunRecord, out: dict[str, Any]) -> list[Score]:
+    """One row per banned phrase found, resolving use-versus-mention.
+
+    Reported per phrase rather than folded back into a single pass/fail, so the report says
+    which phrase appeared and why it was allowed -- an escalation that survives should be
+    visible, never silently forgiven.
+    """
+    # No empty-draft guard is needed: an empty draft contains no literal, so find_literal_hits
+    # returns nothing and the loop never runs.
+    literals, _ = split_must_not_contain(out.get("must_not_contain") or [])
+    scores: list[Score] = []
+    for phrase, context in find_literal_hits(run.text, literals):
+        reply = model.with_structured_output(USE_OR_MENTION_SCHEMA).invoke(
+            [
+                {"role": "system", "content": USE_OR_MENTION_SYSTEM},
+                {
+                    "role": "user",
+                    "content": f"BANNED PHRASE: {phrase!r}\n\nWHERE IT APPEARS:\n{context}",
+                },
+            ]
+        )
+        verdict = str((reply or {}).get("verdict", "use")).strip().lower()
+        mention = verdict == "mention"
+        scores.append(
+            Score(
+                f"must_not_contain_literal[{phrase}]",
+                float(mention),
+                f"{'MENTION, allowed' if mention else 'USE, violation'} -- "
+                f"{(reply or {}).get('reason', '')[:130]}",
+            )
+        )
+    return scores
+
+
+# The researcher prompt splits its output deliberately: "RETURN a concise brief ... Keep the
+# return short; the detail lives in the file you saved." So rag's sourcing criteria are about
+# an artifact the reply only points at, and judging the reply alone marks a properly sourced
+# run down for obeying its own instructions. The speech datasets are the other way round -- the
+# draft is what was said, and the file is a copy of it.
+ARTIFACT_JUDGED = {"rag": "/workspace/research/"}
+
+
+def graded_text(dataset: str, run: RunRecord) -> str:
+    """What the judge should actually read for this dataset."""
+    prefix = ARTIFACT_JUDGED.get(dataset)
+    if prefix is None:
+        return run.text
+    saved = [(path, body) for path, body in run.artifacts if path.startswith(prefix)]
+    if not saved:
+        return run.text
+    parts = [f"RETURNED BRIEF:\n{run.text}"]
+    parts += [f"\n\nSAVED ARTIFACT {path}:\n{body}" for path, body in saved]
+    return "".join(parts)
+
+
 # Which prose fields each dataset hands the judge, and whether satisfying them means the output
 # DOES the thing or AVOIDS it. The negative lists are graded the same way -- the criterion text
 # already describes the forbidden behaviour, and JUDGE_SYSTEM tells the judge absence passes.
@@ -507,10 +626,12 @@ JUDGED_FIELDS = {
 def judge_example(model: Any, dataset: str, run: RunRecord, example: dict[str, Any]) -> list[Score]:
     """Every prose criterion for one example. Pairs with :func:`score_example`."""
     out = example.get("outputs") or {}
+    text = graded_text(dataset, run)
     scores: list[Score] = []
     for key in JUDGED_FIELDS[dataset]:
-        scores.extend(judge_criteria(model, key, run.text, list(out.get(key) or [])))
+        scores.extend(judge_criteria(model, key, text, list(out.get(key) or [])))
     if dataset == "final_response":
         _, prose = split_must_not_contain(out.get("must_not_contain") or [])
-        scores.extend(judge_criteria(model, "must_not_contain", run.text, prose))
+        scores.extend(judge_criteria(model, "must_not_contain", text, prose))
+        scores.extend(judge_literal_hits(model, run, out))
     return scores

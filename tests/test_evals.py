@@ -455,3 +455,109 @@ def test_an_empty_output_cannot_bank_passes_on_absence_criteria():
         if s.key == "must_not_contain_literal"
     )
     assert literal.machine_scored, "the literal check stopped running for non-empty output"
+
+
+class _StubModel:
+    """Minimal stand-in for a chat model: records prompts, replays canned verdicts."""
+
+    def __init__(self, verdicts):
+        self._verdicts = list(verdicts)
+        self.prompts: list[str] = []
+
+    def with_structured_output(self, _schema):
+        return self
+
+    def invoke(self, messages):
+        self.prompts.append(messages[-1]["content"])
+        return self._verdicts.pop(0)
+
+
+def test_a_banned_phrase_escalates_instead_of_failing_outright():
+    # A substring search cannot tell USE from MENTION, and the briefs themselves invite the
+    # mention ("Don't tell them to follow your passion"), so a speech that quotes the cliche in
+    # order to reject it was being failed for doing what was asked. The live run hit exactly
+    # this: must_not_contain_literal FAILED on "follow your passion" while the judge passed
+    # required_behaviors[3] saying the phrase "is never used as advice".
+    #
+    # Clean output stays fully deterministic and calls no model at all; only a hit escalates.
+    ev = _evaluators_module()
+    fr = json.loads((REPO_ROOT / "evals" / "datasets" / "final_response.json").read_text("utf-8"))
+    example = next(
+        e for e in fr if e["metadata"]["id"] == "ceremonial-commencement-first-job-not-the-verdict"
+    )
+
+    clean = ev.RunRecord("Kettleworth taught me one thing. The first job is not the verdict.", ())
+    row = next(
+        s
+        for s in ev.score_example("final_response", clean, example)
+        if s.key == "must_not_contain_literal"
+    )
+    assert row.score == 1.0, "a clean draft must resolve deterministically, with no judge call"
+
+    hit = ev.RunRecord(
+        "Somebody will tell you to follow your passion. I want to say something else.", ()
+    )
+    row = next(
+        s
+        for s in ev.score_example("final_response", hit, example)
+        if s.key == "must_not_contain_literal"
+    )
+    assert row.score is None and "escalated" in row.comment, (
+        "a literal hit must defer to the judge, not resolve to a verdict a substring search "
+        "cannot justify"
+    )
+
+
+def test_the_use_mention_judge_reports_one_visible_row_per_phrase():
+    # An escalation that survives has to be visible in the report, named by phrase -- otherwise
+    # a banned phrase is silently forgiven and nobody can audit why.
+    ev = _evaluators_module()
+    out = {"must_not_contain": ['"follow your passion"', '"at the end of the day"']}
+    text = (
+        "Somebody will tell you to follow your passion. I disagree. "
+        "And at the end of the day, that is what matters."
+    )
+    model = _StubModel(
+        [
+            {"verdict": "mention", "reason": "attributed to a third party and then rejected"},
+            {"verdict": "use", "reason": "asserted sincerely in the speaker's own voice"},
+        ]
+    )
+    scores = ev.judge_literal_hits(model, ev.RunRecord(text, ()), out)
+    assert [s.key for s in scores] == [
+        "must_not_contain_literal[follow your passion]",
+        "must_not_contain_literal[at the end of the day]",
+    ]
+    assert [s.score for s in scores] == [1.0, 0.0]
+    assert "MENTION, allowed" in scores[0].comment and "USE, violation" in scores[1].comment
+
+    # The judge must see the surrounding sentences: quoting-to-reject straddles a sentence break,
+    # so the hit sentence alone loses the evidence that distinguishes the two.
+    assert "I disagree" in model.prompts[0], "context did not include the neighbouring sentence"
+
+    # No hits means no judge call at all -- a StubModel with no verdicts left would raise on
+    # invoke, so this also pins that the escalation never fires speculatively.
+    assert ev.judge_literal_hits(_StubModel([]), ev.RunRecord("no cliches here", ()), out) == []
+    assert ev.judge_literal_hits(_StubModel([]), ev.RunRecord("", ()), out) == []
+
+
+def test_a_hit_spanning_a_sentence_split_still_gets_context():
+    ev = _evaluators_module()
+    hits = ev.find_literal_hits(
+        "They say the world is your oyster and I never believed it", ["the world is your oyster"]
+    )
+    assert len(hits) == 1 and "never believed" in hits[0][1]
+
+
+def test_a_graded_run_does_not_leave_speechwriter_home_pointing_at_a_deleted_directory():
+    # SPEECHWRITER_HOME was outliving the TemporaryDirectory it named. load_settings() CREATES
+    # workspace_dir and the store's parent, and both grade() and score_final_response call it
+    # after the run -- so each graded example silently re-created its own deleted home (a
+    # workspace/ and .speechwriter/ with no skills/, which is exactly what was found littering
+    # /var/folders), and scoring resolved workspace_vpath against a path that no longer existed.
+    harness = _harness_module()
+    source = harness.__loader__.get_source("speechwriter_run_experiment") or ""
+    assert "previous_home" in source, "invoke_agent no longer restores SPEECHWRITER_HOME"
+    assert source.index("previous_home = os.environ.get") < source.index("with context as home:"), (
+        "the prior SPEECHWRITER_HOME must be captured before the temp home replaces it"
+    )
