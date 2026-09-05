@@ -603,3 +603,40 @@ def test_a_rhetorical_question_in_a_draft_cannot_breach_the_question_cap():
     assert "0 clarifying question(s)" in resolved[0].comment
     # No escalation when the tally already fits.
     assert ev.judge_question_count(_StubModel([]), quiet, out) == []
+
+
+def test_the_judge_is_given_the_examples_own_grading_notes():
+    # grading_notes is HOW to apply must_cover/must_not_do, and withholding it makes the judge
+    # stricter than the dataset. intake-bare-resilience-request's must_cover and must_not_do
+    # describe the ASK branch only; its grading_notes documents a SOFT PASS for the proceed
+    # branch ("a reply that names the speaker, audience, occasion, length and goal it is
+    # assuming ... passes"), and metadata.soft_pass_branch names it. A live run did exactly that
+    # and was scored 3/9, because the judge never saw the paragraph licensing it.
+    ev = _evaluators_module()
+    ss = json.loads((REPO_ROOT / "evals" / "datasets" / "single_step.json").read_text("utf-8"))
+    example = next(e for e in ss if e["metadata"]["id"] == "intake-bare-resilience-request")
+    assert "SOFT PASS" in example["outputs"]["grading_notes"], "the notes under test changed"
+
+    model = _StubModel(
+        [
+            {
+                "verdicts": [
+                    {"index": i, "satisfied": True, "applicable": True, "reason": "ok"}
+                    for i in range(len(example["outputs"]["must_cover"]))
+                ]
+            },
+            {
+                "verdicts": [
+                    {"index": i, "satisfied": True, "applicable": True, "reason": "ok"}
+                    for i in range(len(example["outputs"]["must_not_do"]))
+                ]
+            },
+        ]
+    )
+    run = ev.RunRecord("Assuming a graduation, 400 students, eight minutes — tell me if wrong.", ())
+    ev.judge_example(model, "single_step", run, example)
+    assert model.prompts, "the judge was never called"
+    assert all("SOFT PASS" in p for p in model.prompts), (
+        "the example's grading notes did not reach the judge, so a documented soft pass is "
+        "graded against criteria written for the other branch"
+    )

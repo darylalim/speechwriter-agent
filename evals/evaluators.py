@@ -494,7 +494,9 @@ JUDGE_SCHEMA = {
 }
 
 
-def judge_criteria(model: Any, key: str, output_text: str, criteria: list[str]) -> list[Score]:
+def judge_criteria(
+    model: Any, key: str, output_text: str, criteria: list[str], notes: str = ""
+) -> list[Score]:
     """Grade one list of prose criteria, one :class:`Score` per criterion.
 
     ``model`` is any LangChain chat model; it is passed in rather than constructed so the caller
@@ -514,8 +516,20 @@ def judge_criteria(model: Any, key: str, output_text: str, criteria: list[str]) 
             for i in range(len(criteria))
         ]
     numbered = "\n".join(f"{i}. {c}" for i, c in enumerate(criteria))
+    # The example's own grading_notes are HOW to apply the criteria, and withholding them makes
+    # the judge stricter than the dataset. intake-bare-resilience-request documents a SOFT PASS
+    # for the proceed branch ("a reply that names the speaker, audience, occasion, length and
+    # goal it is assuming ... passes -- that reply is doing the same work as the questions"), and
+    # its must_cover/must_not_do describe only the ask branch. Judging without the notes failed a
+    # reply that had done exactly what the notes call a pass.
+    guidance = (
+        f"HOW TO APPLY THESE CRITERIA (the example's own grading notes):\n{notes}\n\n"
+        if notes
+        else ""
+    )
     prompt = (
         f"CRITERION LIST ({key}), {len(criteria)} items:\n{numbered}\n\n"
+        f"{guidance}"
         f"OUTPUT UNDER TEST:\n<<<\n{output_text}\n>>>\n\n"
         f"Return exactly {len(criteria)} verdicts, one per index."
     )
@@ -687,13 +701,14 @@ def judge_example(model: Any, dataset: str, run: RunRecord, example: dict[str, A
     """Every prose criterion for one example. Pairs with :func:`score_example`."""
     out = example.get("outputs") or {}
     text = graded_text(dataset, run)
+    notes = str(out.get("grading_notes") or "")
     scores: list[Score] = []
     for key in JUDGED_FIELDS[dataset]:
-        scores.extend(judge_criteria(model, key, text, list(out.get(key) or [])))
+        scores.extend(judge_criteria(model, key, text, list(out.get(key) or []), notes))
     if dataset == "single_step":
         scores.extend(judge_question_count(model, run, out))
     if dataset == "final_response":
         _, prose = split_must_not_contain(out.get("must_not_contain") or [])
-        scores.extend(judge_criteria(model, "must_not_contain", text, prose))
+        scores.extend(judge_criteria(model, "must_not_contain", text, prose, notes))
         scores.extend(judge_literal_hits(model, run, out))
     return scores
