@@ -240,6 +240,8 @@ def test_a_recorded_turn_replays_with_its_truncation_warning(monkeypatch, tmp_pa
     # Replay is the path the user sees after every turn, and it runs without the model —
     # so it is worth proving that a turn which hit the ceiling still says so on redraw.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -264,6 +266,9 @@ def test_a_recorded_turn_replays_with_its_truncation_warning(monkeypatch, tmp_pa
 def test_web_app_renders_without_network_or_api_key(monkeypatch, tmp_path):
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # Same rule, and here it is load-bearing rather than defensive: an exported base URL makes
+    # `model_credentials_present` true, so the setup error this asserts on never renders.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     # The bundle is cached across the process, so a leftover from another test would pin
     # this run to the wrong SPEECHWRITER_HOME.
     st.cache_resource.clear()
@@ -277,6 +282,8 @@ def test_web_app_renders_without_network_or_api_key(monkeypatch, tmp_path):
 
 def test_both_pages_render(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -355,6 +362,8 @@ def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
     # The browse page's Memory branch (an expander per profile) was never driven by a test,
     # so a crash there would only surface when a human opened the page.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -408,20 +417,30 @@ def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
     # literals, so a future repalette is free to pick any colors that pass.
     data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
     theme = data["theme"]
+    # Read once and named: underlining satisfies F73 for every mode at once, so this is the
+    # switch that decides whether the per-mode contrast rule below has any work to do.
+    underlined = theme.get("linkUnderline", True)
 
     for mode in ("light", "dark"):
         palette = theme[mode]
-        link, background, body = (
-            palette["linkColor"],
-            palette["backgroundColor"],
-            palette["textColor"],
-        )
-        # 1.4.3 Contrast (Minimum): link text against the field it is read on.
-        assert _contrast(link, background) >= 4.5, f"{mode} linkColor is under AA"
+        link, body = palette["linkColor"], palette["textColor"]
+        # Every surface a link can be read on, not just the page ground: chat bubbles,
+        # expanders and the whole sidebar sit on secondaryBackgroundColor, and in light mode
+        # that is the tightest of them — 4.67:1, against 5.38:1 on the background that used to
+        # be the only one checked.
+        surfaces = {v for k, v in palette.items() if k.endswith("ackgroundColor")}
+        surfaces |= {
+            v for k, v in palette.get("sidebar", {}).items() if k.endswith("ackgroundColor")
+        }
+        for surface in sorted(surfaces):
+            # 1.4.3 Contrast (Minimum), for text.
+            assert _contrast(link, surface) >= 4.5, f"{mode} linkColor is under AA on {surface}"
         # F73: a link may not be marked by color alone. Either it is underlined, or it stands
-        # 3:1 clear of the prose around it. Underlining satisfies both modes at once, which is
-        # why it is on — #61afef sits 1.11:1 against dark-mode body text.
-        assert theme.get("linkUnderline", True) or _contrast(link, body) >= 3.0
+        # 3:1 clear of the prose around it — #61afef sits 1.11:1 against dark-mode body text,
+        # which is why the underline is what carries this today.
+        assert underlined or _contrast(link, body) >= 3.0, (
+            f"{mode} links are distinguished by color alone"
+        )
 
 
 def test_the_status_badge_gates_on_credentials_not_an_anthropic_key(monkeypatch, tmp_path):
@@ -445,6 +464,17 @@ def test_the_status_badge_gates_on_credentials_not_an_anthropic_key(monkeypatch,
     assert not app.error
     assert not app.chat_input[0].disabled
 
+    # The mirror. Without it, hardcoding the badge to "Ready" passes the whole suite — the
+    # same lie this test exists to catch, told in the other direction.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL")
+    monkeypatch.delenv("SPEECHWRITER_MODEL")
+    st.cache_resource.clear()
+    bare = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+
+    assert not bare.exception
+    assert any("No credentials]" in block.value for block in bare.markdown)
+    assert bare.chat_input[0].disabled
+
 
 def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_path):
     # The pill used to be consumed by *not being rendered* once the transcript filled. A turn
@@ -453,6 +483,8 @@ def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_p
     # commission fired a second time, unasked. This is that exact state: selection present,
     # transcript empty. Only an `on_change` click may queue a brief now, never a bare rerun.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -468,26 +500,32 @@ def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_p
     assert "queued_prompt" not in app.session_state
 
 
-def test_an_unreadable_file_does_not_forge_the_signature_of_a_smaller_folder(monkeypatch, tmp_path):
+def test_an_unreadable_file_bypasses_the_cache_instead_of_keying_against_it(monkeypatch, tmp_path):
     # The agent writes into this folder while the page renders, so a name can survive the glob
-    # and fail the stat. Skipping it outright would build the exact cache key of a folder that
-    # never held it — and `load_documents` re-globs, so the parse behind that key can disagree
-    # with it. A dangling symlink is the same race, deterministically.
+    # and fail the stat. Any key built from what remains describes a folder we could not fully
+    # see — and `load_documents` re-globs, so the parse behind it can disagree. Worse, a later
+    # render hitting the same race rebuilds the same key and is served that stale parse. A
+    # dangling symlink is the same race, deterministically.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     settings = load_settings()
     speeches = settings.workspace_dir / config.SPEECHES_SUBDIR
     _write(speeches / "kept.md", "a draft", mtime=1_000_000)
 
-    seen: list[tuple[tuple[str, float], ...]] = []
-    monkeypatch.setattr(webui, "_parse_documents", lambda _dir, sig: seen.append(sig) or [])
+    keyed: list[tuple[tuple[str, float], ...]] = []
+    real = webui._parse_documents
+    monkeypatch.setattr(
+        webui, "_parse_documents", lambda directory, sig: keyed.append(sig) or real(directory, sig)
+    )
 
-    webui.documents(speeches)
+    assert [doc.slug for doc in webui.documents(speeches)] == ["kept"]
+    assert len(keyed) == 1  # a folder we can see whole is cached as usual
+
     (speeches / "racing.md").symlink_to(speeches / "gone.md")
-    webui.documents(speeches)
+    found = webui.documents(speeches)
 
-    # Unreadable must not read as absent, or the second call serves the first call's parse.
-    assert seen[0] != seen[1]
-    assert any(name == "racing.md" for name, _ in seen[1])
+    assert len(keyed) == 1, "an unstattable file must not mint a cache key"
+    # And the page still gets the drafts it can read — the race costs the cache, not the view.
+    assert [doc.slug for doc in found] == ["kept"]
 
 
 def test_a_typed_brief_does_not_leave_a_suggestion_queued(monkeypatch, tmp_path):
@@ -497,6 +535,8 @@ def test_a_typed_brief_does_not_leave_a_suggestion_queued(monkeypatch, tmp_path)
     # Streamlit coalesces a pending rerun with a new one and ships every widget state on each
     # message, and the chat box stays typeable while a pill's turn is still running.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -524,12 +564,106 @@ def test_a_typed_brief_does_not_leave_a_suggestion_queued(monkeypatch, tmp_path)
     assert commissioned == ["A toast for Ana"]
 
 
+def _click_measure(app) -> None:
+    """Press the Measure button, which shares `app.button` with the sidebar's reset."""
+    next(button for button in app.button if button.label == "Measure").click().run()
+
+
+def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypatch, tmp_path):
+    # `_measured`/`_remember`/`_forget` are the most intricate new logic on the page and the
+    # audio tests never reach them — they call `workspace.measure_spoken_length` directly.
+    # Stubbing the synthesis puts the flag path under test without the audio extra, which CI
+    # never installs. The bound is lowered rather than measuring nine drafts.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    settings = load_settings()
+    for index in range(3):
+        _write(
+            settings.workspace_dir / config.SPEECHES_SUBDIR / f"draft-{index}.md",
+            f"draft {index} " + " ".join(["word"] * 120),
+            mtime=1_000_000 + index,
+        )
+
+    monkeypatch.setattr(webui, "MEASURE_CACHE_ENTRIES", 2)
+    monkeypatch.setattr(
+        webui,
+        "spoken_length",
+        lambda text: workspace.SpokenLength(seconds=90.0, wav=b"", sample_rate=24_000),
+    )
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+
+    for option in list(app.selectbox[0].options):
+        app.selectbox[0].select(option).run()
+        _click_measure(app)
+
+    assert not app.exception
+    # A measured draft reports the synthesised figure beside the estimate...
+    assert any(metric.label == "Measured" for metric in app.metric)
+    # ...and the flag list is held to the cache's own size, so a flag cannot outlive its WAV
+    # by more than the bound. Without `del flags[:-MEASURE_CACHE_ENTRIES]` this would be 3.
+    assert len(app.session_state["measured"]) == 2
+
+    # Re-viewing an already-measured draft refreshes its flag, so the list ages the way the
+    # cache does: `st.cache_resource` is LRU and reorders on read, where a list that only ever
+    # appended would evict by *first* request and drop a draft whose WAV is still warm.
+    oldest = app.session_state["measured"][0]
+    slug = oldest.split(":")[1]
+    revisited = next(option for option in app.selectbox[0].options if option.startswith(slug))
+    app.selectbox[0].select(revisited).run()
+
+    assert app.session_state["measured"][-1] == oldest, "a read must refresh the flag"
+
+    # A failed synthesis must forget the draft, or the flag re-raises on every rerun with no
+    # way back to the button — the page becomes unrecoverable rather than merely unmeasured.
+    def _unavailable(_text: str) -> workspace.SpokenLength:
+        raise workspace.AudioUnavailable("install the audio extra")
+
+    monkeypatch.setattr(webui, "spoken_length", _unavailable)
+    app.selectbox[0].select(app.selectbox[0].options[0]).run()
+    _click_measure(app)
+
+    assert not app.exception
+    assert any("install the audio extra" in info.value for info in app.info)
+    # Forgotten — the count drops rather than the failed draft staying flagged forever.
+    assert len(app.session_state["measured"]) == 1
+    # And the button is back, which is also what you want after installing the extra.
+    assert any(button.label == "Measure" for button in app.button)
+
+
+def test_new_conversation_disarms_a_queued_suggestion(monkeypatch, tmp_path):
+    # A brief queued by a pill click is drained by the Write page — but only if that page runs.
+    # Leave the queue armed (a render that raised, a stop during a cold start, a nav away) and
+    # walk to Workspace, and "New conversation" is the one control that says "drop all this".
+    # If it does not clear the queue, the next visit to Write commissions the speech the reader
+    # believed they had abandoned, and spends tokens doing it. Asserted from Workspace on
+    # purpose: on the Write page the drain would hide the bug.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+    app.session_state["queued_prompt"] = "Write a 3-minute wedding toast."
+    next(button for button in app.button if button.label == "New conversation").click().run()
+
+    assert not app.exception
+    assert "queued_prompt" not in app.session_state
+
+
 def test_the_workspace_view_control_cannot_be_deselected(monkeypatch, tmp_path):
     # Without `required`, a second click on the lit segment returns None — which matches
     # neither the "Research" nor the "Memory" branch and falls through to the `else`, drawing
     # Speeches with no segment highlighted. Asserted on the widget rather than by driving a
     # deselect, because AppTest's `unselect` bypasses the frontend rule it is testing.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # CLAUDE.md: SPEECHWRITER_BASE_URL changes the client type, and AppTest builds a model.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 

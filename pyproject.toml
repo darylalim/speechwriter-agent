@@ -14,7 +14,11 @@ dependencies = [
     "langchain-tavily>=0.2.18",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
-    "streamlit>=1.60.0",
+    # 1.62 for the widget parameters the web UI now depends on: persist_state and required on
+    # the pickers, delta_description on st.metric, and download_button(on_click="ignore").
+    # uv.lock resolves 1.62 and CI tests only that, so a lower floor was a claim nothing here
+    # could check — a consumer installing at the floor met a TypeError on the Workspace page.
+    "streamlit>=1.62.0",
 ]
 
 [project.scripts]

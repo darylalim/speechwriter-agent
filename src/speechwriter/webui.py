@@ -42,6 +42,13 @@ _PENDING = "turn_in_flight"
 
 _PREVIEW_LEN = 110
 
+# The Write page's suggestion pills: the widget's own key, and the plain key a click hands to
+# the next rerun. Both live here rather than in the page because `reset_conversation` has to be
+# able to disarm the queue — a brief left armed by a run the reader walked away from would
+# otherwise commission a speech, and spend tokens, on the next visit to the page.
+SUGGESTION_KEY = "suggestion"
+_QUEUED = "queued_prompt"
+
 # How many measured drafts `spoken_length` keeps. Exported because `browse.py` bounds its
 # "already measured" flags to the same number: a flag that outlives its cache entry sends the
 # next page render straight back into a ~9s synthesis, which is what the button exists to stop.
@@ -115,14 +122,15 @@ def documents(directory: Path) -> list[workspace.Document]:
             try:
                 stamps.append((path.name, path.stat().st_mtime))
             except OSError:
-                # The agent writes into this folder while the page renders, so a file can go
-                # unreadable between the glob and the stat. `workspace.load_documents` re-globs
-                # and tolerates the same race, so it may still parse a file this stat could not
-                # reach — which is why the name is recorded with a sentinel rather than
-                # dropped. Omitting it would mint the exact signature of a folder that never
-                # held the file, and hand back a cached parse that disagrees with the read.
-                # Raising, meanwhile, would take the whole Workspace page down over a race.
-                stamps.append((path.name, -1.0))
+                # The agent writes into this folder while the page renders, so a name can
+                # survive the glob and fail the stat. Any key built from here would then
+                # describe a folder we could not fully see — and `load_documents` re-globs, so
+                # the parse behind that key can disagree with it. Worse, a later render hitting
+                # the same race would rebuild the same key and be served the stale parse. So
+                # read straight through instead: an unreadable file costs the cache, never
+                # correctness, and the race clears itself on the next render. Raising here
+                # would take the whole Workspace page down over it.
+                return workspace.load_documents(directory)
     return _parse_documents(str(directory), tuple(sorted(stamps)))
 
 
@@ -162,6 +170,21 @@ def transcript() -> list[Turn]:
     return st.session_state[_TRANSCRIPT]
 
 
+def queue_suggestion(brief: str) -> None:
+    """Hand a picked suggestion to the next rerun."""
+    st.session_state[_QUEUED] = brief
+
+
+def take_queued_suggestion() -> str | None:
+    """Pop the queued brief, if any.
+
+    Draining is the whole point, so this is never a plain read: a brief that stayed in the
+    queue would fire again on a later rerun as a commission nobody asked for.
+    """
+    queued = st.session_state.pop(_QUEUED, None)
+    return queued if isinstance(queued, str) else None
+
+
 def thread_id() -> str:
     """The LangGraph thread this session resumes on each turn."""
     return st.session_state[_THREAD]
@@ -178,6 +201,9 @@ def reset_conversation() -> None:
     st.session_state[_SEEN] = set()
     st.session_state[_PENDING] = False
     st.session_state[_THREAD] = _new_thread_id()
+    # A queued suggestion is part of the conversation being dropped. Left armed, "New
+    # conversation" would be followed immediately by the commission it was meant to abandon.
+    st.session_state.pop(_QUEUED, None)
 
 
 def run_turn(bundle: SpeechwriterAgent, prompt: str) -> Turn:

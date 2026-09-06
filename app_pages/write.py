@@ -2,7 +2,15 @@
 
 import streamlit as st
 
-from speechwriter.webui import get_bundle, render_turn, run_turn, transcript
+from speechwriter.webui import (
+    SUGGESTION_KEY,
+    get_bundle,
+    queue_suggestion,
+    render_turn,
+    run_turn,
+    take_queued_suggestion,
+    transcript,
+)
 
 # Concrete openers, not feature labels: the orchestrator's first job is intake, and a brief
 # that already names speaker, audience, occasion, and length skips a round of questions.
@@ -26,10 +34,11 @@ history = transcript()
 # Not `anthropic_api_key` directly — a model served over SPEECHWRITER_BASE_URL needs no key
 # of ours, and gating the chat input on one would disable a working configuration.
 has_key = bundle.settings.model_credentials_present
-
-# Session keys. The pill's own selection cannot carry the commission — see `_queue_suggestion`.
-_PICKED = "suggestion"
-_QUEUED = "queued_prompt"
+# Drained here, before anything renders or can raise. The queue has to be emptied by the run
+# that sees it, and the further down the script that happens the more ways there are to leave
+# it armed — a render that raises, a page switch, a stop landing during a cold start. Losing a
+# brief to an abandoned run is the safe direction; firing one is not.
+queued = take_queued_suggestion()
 
 
 def _queue_suggestion() -> None:
@@ -42,9 +51,14 @@ def _queue_suggestion() -> None:
     still lit — and the same commission fired a second time, unasked. A queue that is
     *popped* by the run consuming it cannot do that, whatever the pill still looks like.
     """
-    picked = st.session_state.get(_PICKED)
-    if picked:
-        st.session_state[_QUEUED] = SUGGESTIONS[picked]
+    picked = st.session_state.get(SUGGESTION_KEY)
+    # `.get`, not a subscript: this runs inside a callback, where a KeyError would replace the
+    # page with a traceback instead of being ignored. A label that is no longer one of ours —
+    # a stale widget value surviving a hot reload after the suggestions were renamed — should
+    # queue nothing, which is exactly what the pre-queue code did.
+    brief = SUGGESTIONS.get(picked) if isinstance(picked, str) else None
+    if brief:
+        queue_suggestion(brief)
 
 
 if not history:
@@ -68,7 +82,7 @@ if not history:
         st.pills(
             "Try one of these",
             list(SUGGESTIONS),
-            key=_PICKED,
+            key=SUGGESTION_KEY,
             on_change=_queue_suggestion,
             label_visibility="collapsed",
             # Matched to the chat input below. A pill that takes the click and then silently
@@ -91,13 +105,11 @@ for turn in history:
 # `submit_mode="stop"` turns the send button into a stop button while a turn is running, so
 # a commission that goes long can be cancelled instead of being waited out.
 typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=not has_key)
-# Drained on its own line, before the choice. Folding the pop into `typed or ...` short-
-# circuits it: whenever a typed brief wins, the pop never runs and the queued suggestion stays
-# armed to fire as a second, unasked commission on a later rerun. Streamlit coalesces a pending
-# rerun with a new one and ships every widget state on each message, and the chat box stays
-# typeable while a turn runs — so a pill click and a typed brief really do arrive together.
-# Popping unconditionally keeps the queue single-use; a typed message still supersedes a pill.
-queued = st.session_state.pop(_QUEUED, None)
+# The queue was already drained at the top of the script, so this only chooses. Reading it
+# here as `typed or st.session_state.pop(...)` would short-circuit the pop whenever a typed
+# brief wins and leave the suggestion armed — Streamlit coalesces a pending rerun with a new
+# one and ships every widget state on each message, and the chat box stays typeable while a
+# turn runs, so a pill click and a typed brief really do arrive together.
 prompt: str | None = typed or queued
 
 if prompt and has_key:

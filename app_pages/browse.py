@@ -40,8 +40,9 @@ def _humanize(key: str) -> str:
 # refreshed on every hit, so the list ages the way the cache does — `st.cache_resource` is LRU
 # and reorders on read, where a list that only ever appended would evict by *first* request.
 # The two still cannot be made identical: that cache is process-global while these flags are
-# per-session, so another tab can evict a WAV this session is flagging. The bound makes that
-# rare and self-correcting rather than unbounded, which is all it is for.
+# per-session, so another tab can evict a WAV this session is flagging. When that happens the
+# next render of that draft pays one synthesis and both are consistent again — the bound buys
+# a list that cannot grow without limit and a divergence that costs 9s once, not a guarantee.
 _MEASURED = "measured"
 
 
@@ -88,8 +89,8 @@ def _measure_if_requested(
     wraps its install command across a narrow strip — and that string's whole job is to be
     readable.
 
-    Any failure forgets the draft. Without that the page is unrecoverable: `st.cache_data` does
-    not cache exceptions, so a sticky flag re-attempts and re-raises on every rerun, and a
+    Any failure forgets the draft. Without that the page is unrecoverable: `st.cache_resource`
+    does not cache exceptions, so a sticky flag re-attempts and re-raises on every rerun, and a
     traceback out of here stops the rest of the page rendering. Clearing it puts the button
     back, which is also what you want after installing the extra the first branch complains
     about.
