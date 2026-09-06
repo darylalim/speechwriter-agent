@@ -29,7 +29,7 @@ printf 'BRIEF\nexit\n' | uv run speechwriter   # drive one real turn non-interac
 
 ### Environment
 
-`load_settings()` reads six variables, and its docstring (`config.py`) is the roster — `ANTHROPIC_API_KEY` (lazy; the CLI panics with a setup panel, `build_agent()` does not), `TAVILY_API_KEY`, `SPEECHWRITER_MODEL`, `SPEECHWRITER_MAX_TOKENS`, `SPEECHWRITER_MAX_RESEARCH_RESULTS`, and `SPEECHWRITER_HOME`. Both integer knobs go through `_optional_int_env`, which *warns and falls back* rather than raising, so a typo'd value costs a log line, not a crash.
+`load_settings()` reads eight variables, and its docstring (`config.py`) is the roster — `ANTHROPIC_API_KEY` (lazy; the CLI panics with a setup panel, `build_agent()` does not), `TAVILY_API_KEY`, `SPEECHWRITER_MODEL`, `SPEECHWRITER_MAX_TOKENS`, `SPEECHWRITER_MAX_RESEARCH_RESULTS`, `SPEECHWRITER_HOME`, `SPEECHWRITER_BASE_URL`, and `OPENAI_API_KEY`. Both integer knobs go through `_optional_int_env`, which *warns and falls back* rather than raising, so a typo'd value costs a log line, not a crash.
 
 **`SPEECHWRITER_HOME` overrides `project_root`, and everything else derives from it** — workspace, skills, store path, and which dotenv file gets loaded. There is no `tests/conftest.py`; it is the suite's *only* isolation mechanism and all ~38 test call sites set it by hand. A new test that forgets it reads and writes the real repo. Note the trade-off it carries: `load_settings()` creates `workspace_dir` and the store's parent but **never `skills_dir`**, and `create_deep_agent` only logs when a skills tree is missing — so every test pointing `SPEECHWRITER_HOME` at a `tmp_path` runs with the rhetoric library silently absent. Nothing in the suite exercises real skill loading; `test_all_skills_have_valid_frontmatter` reads the files off disk instead.
 
@@ -79,6 +79,16 @@ Likewise `SPEECHES_SUBDIR` / `RESEARCH_SUBDIR` / `WORDS_PER_MINUTE` are single-s
 Subagents are also stateless across `task` calls; the orchestrator prompt says so, and any new subagent must be given complete self-contained instructions per call.
 
 Because "inherits nothing" makes every key load-bearing, `build_subagents()` returns `list[SubAgent]` — deepagents' `TypedDict`, not `dict[str, Any]`. That is deliberate: a typo like `"skill":` for `"skills":` would *not* fail at runtime, the `style-critic` would just silently lose the rhetoric library. Typed, `ty` rejects the unknown key. Keep the precise type when adding a subagent.
+
+### The model has two clients, and the URL picks it — not the id
+
+`SPEECHWRITER_BASE_URL` routes the agent at any OpenAI-compatible endpoint (a local `mlx_lm.server`, vLLM, LM Studio) instead of Anthropic. It is the *only* switch: a local id like `mlx-community/Qwen3.8-27B-4bit` carries no provider prefix for `init_chat_model` to infer, so `_build_model` states `model_provider="openai"` explicitly. Four things are load-bearing.
+
+The client kwargs are threaded through **every ceiling tier**, not added to one branch — a tier that omitted them would build an *Anthropic* client for a local model and fail at the first call, far from the config that caused it. The tiers themselves are untouched: `ChatOpenAI.profile` is `None`, so a local model resolves through tier 3 to the 32k floor, which is the wanted answer rather than a fallback (`ChatOpenAI`'s own default is `max_tokens=None` — "let the server decide" — and on a *reasoning* model that is an unbounded thinking budget, the same trap tier 3 exists for, one notch worse). That branch logs at `info`, not `warning`: an unprofiled Anthropic id means a typo, an unprofiled local id means Tuesday.
+
+`model_credentials_present` — not `anthropic_api_key` — is what both front ends gate on, because a local model needs no key of ours and refusing to start would brick a working setup. And **`SPEECHWRITER_BASE_URL` changes the client type, so it breaks model tests if a developer exports it**; with no `conftest.py`, the four tests that build a model `delenv` it by hand. A new model test must do the same.
+
+`_build_model` still touches no network — `base_url` is recorded, never probed — so the offline invariant holds and an unreachable server fails at the first turn instead of at build time.
 
 ### Research is capability-gated, and it changes the agent's shape
 

@@ -20,6 +20,7 @@ from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
+from langchain_openai import ChatOpenAI
 
 import speechwriter
 from speechwriter import config, memory, prompts
@@ -154,6 +155,9 @@ def test_ceiling_resolution_is_three_tier(monkeypatch, tmp_path):
     # LangChain does know: capping Opus at 32k would be the same mistake inverted.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
+    # who exported it to drive the local model would otherwise turn this test red.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
     # Tier 2: a profiled model keeps its own, larger ceiling.
     monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-4-8")
@@ -176,6 +180,9 @@ def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):
     # so the test keeps meaning once the real ids gain profiles.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
+    # who exported it to drive the local model would otherwise turn this test red.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
     with caplog.at_level(logging.WARNING, logger="speechwriter.agent"):
         _build_model(load_settings())
@@ -200,6 +207,9 @@ def test_default_model_still_resolves_through_tier_two(monkeypatch, tmp_path):
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
+    # who exported it to drive the local model would otherwise turn this test red.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
     model = _build_model(load_settings())
 
@@ -226,6 +236,9 @@ def test_payload_omits_parameters_current_models_reject(monkeypatch, tmp_path):
     # into: a rename breaks this test loudly, which is the failure mode we want.
     rejected = {"temperature", "top_p", "top_k"}
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
+    # who exported it to drive the local model would otherwise turn this test red.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
     for model_id in (config.DEFAULT_MODEL, "claude-opus-5", "claude-opus-4-8"):
         monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
@@ -242,6 +255,113 @@ def test_payload_omits_parameters_current_models_reject(monkeypatch, tmp_path):
             assert isinstance(model, ChatAnthropic)
             payload = model._get_request_payload([])
             assert rejected.isdisjoint(payload), f"{model_id} (override={override}): {payload}"
+
+
+def test_local_endpoint_builds_an_openai_client(monkeypatch, tmp_path):
+    # SPEECHWRITER_BASE_URL is the whole switch: it selects the *client*, because a locally
+    # served id like "mlx-community/Qwen3.8-27B-4bit" carries no provider prefix that
+    # `init_chat_model` could infer. Asserted through `_build_model` rather than on Settings
+    # so a branch that forgot to thread the kwargs through a ceiling tier is caught here.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+
+    settings = load_settings()
+    assert settings.uses_local_endpoint is True
+    # The point of the gate: no Anthropic key, yet the configuration is runnable.
+    assert settings.anthropic_api_key is None
+    assert settings.model_credentials_present is True
+
+    model = _build_model(settings)
+    assert isinstance(model, ChatOpenAI)
+    assert model.openai_api_base == "http://127.0.0.1:8080/v1"
+    assert model.model_name == "mlx-community/Qwen3.8-27B-4bit"
+
+
+def test_local_endpoint_keeps_the_three_tier_ceiling(monkeypatch, tmp_path):
+    # The client swap must not bypass the ceiling logic. A local model has no LangChain
+    # profile, so it lands on tier 3 -- and that matters more here than on the Anthropic
+    # path: ChatOpenAI's own default is `max_tokens=None`, i.e. "let the server decide",
+    # which on a reasoning model that defaults to a high effort level is an unbounded
+    # thinking budget rather than a merely small one.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    assert getattr(_build_model(load_settings()), "max_tokens", None) == config.DEFAULT_MAX_TOKENS
+
+    # Tier 1 still wins, and still reaches the OpenAI client rather than silently
+    # constructing an Anthropic one on the override branch.
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "4242")
+    overridden = _build_model(load_settings())
+    assert isinstance(overridden, ChatOpenAI)
+    assert overridden.max_tokens == 4242
+
+
+def test_local_endpoint_payload_omits_rejected_parameters(monkeypatch, tmp_path):
+    # The sibling of test_payload_omits_parameters_current_models_reject, for the second
+    # client. Same reasoning, and the same reason it cannot be folded into that test: the
+    # assertion there pins `isinstance(model, ChatAnthropic)`, which is exactly what this
+    # configuration must *not* be.
+    rejected = {"temperature", "top_p", "top_k"}
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+
+    for override in (None, "128000"):
+        if override is None:
+            monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+        else:
+            monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", override)
+        model = _build_model(load_settings())
+        assert isinstance(model, ChatOpenAI)
+        assert rejected.isdisjoint(model._get_request_payload([]))
+
+
+def test_blank_base_url_is_treated_as_unset(monkeypatch, tmp_path):
+    # `export SPEECHWRITER_BASE_URL=` is how a shell says "unset". Read with a bare
+    # `os.environ.get` that empty string is truthy enough to set the field, and every call
+    # would be routed at a nonexistent endpoint while the banner reported a local model.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+
+    for blank in ("", "   "):
+        monkeypatch.setenv("SPEECHWRITER_BASE_URL", blank)
+        settings = load_settings()
+        assert settings.base_url is None
+        assert settings.uses_local_endpoint is False
+        assert isinstance(_build_model(settings), ChatAnthropic)
+
+
+def test_model_credentials_gate_refuses_only_when_nothing_is_configured(monkeypatch, tmp_path):
+    # The CLI raises SystemExit on this and the web UI disables its chat input, so a false
+    # negative silently bricks a working setup and a false positive defers the failure to
+    # the first turn. Both front ends read this one property; assert it directly.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    assert load_settings().model_credentials_present is False
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    assert load_settings().model_credentials_present is True
+
+
+def test_local_endpoint_api_key_falls_back_to_a_placeholder(monkeypatch, tmp_path):
+    # ChatOpenAI raises without *a* key, and a local server never reads one -- so the
+    # placeholder is what makes the no-credentials-at-all case work at all. A real
+    # OPENAI_API_KEY must still win, for a hosted OpenAI-compatible endpoint.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    assert load_settings().endpoint_api_key == config.LOCAL_API_KEY_PLACEHOLDER
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
+    assert load_settings().endpoint_api_key == "sk-real"
 
 
 def test_truncation_warner_counts_ceiling_stops():

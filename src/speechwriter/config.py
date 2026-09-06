@@ -60,6 +60,12 @@ SPEECHES_SUBDIR = "speeches"
 RESEARCH_SUBDIR = "research"
 WORDS_PER_MINUTE = 130
 
+# Sent as the bearer token when `base_url` points somewhere that does not check one.
+# `ChatOpenAI` requires *a* key at construction and raises without one, so an empty string
+# is not an option; a local `mlx_lm.server` never reads it. Named rather than inlined so the
+# value that shows up in a request log is greppable back to this comment.
+LOCAL_API_KEY_PLACEHOLDER = "local"
+
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -84,6 +90,10 @@ class Settings:
     # argument after it, so a caller constructing Settings by position would bind their
     # API key here. Explicit output-token override; None defers to the model's profile.
     max_tokens: int | None
+    # Appended for the same reason. An OpenAI-compatible endpoint to use *instead of*
+    # Anthropic; None (the normal case) leaves the Anthropic path untouched.
+    base_url: str | None
+    openai_api_key: str | None
 
     # -- derived helpers -------------------------------------------------
 
@@ -91,6 +101,38 @@ class Settings:
     def research_enabled(self) -> bool:
         """Live web research is only possible when a Tavily key is present."""
         return bool(self.tavily_api_key)
+
+    @property
+    def uses_local_endpoint(self) -> bool:
+        """Whether the model is served over an OpenAI-compatible URL rather than by Anthropic.
+
+        One flag drives three coupled things, the same shape as ``research_enabled``:
+        which client :func:`~speechwriter.agent._build_model` constructs, whether an
+        ``ANTHROPIC_API_KEY`` is required at all, and what the front ends put on the banner.
+        """
+        return self.base_url is not None
+
+    @property
+    def model_credentials_present(self) -> bool:
+        """Whether the configured model can actually be called.
+
+        Both front ends gate on this rather than on ``anthropic_api_key`` directly: an
+        Anthropic key is *irrelevant* when the model is served locally, and demanding one
+        would refuse to start a configuration that works perfectly well. A local endpoint
+        needs no credential of ours — reachability is a runtime concern, and probing it here
+        would break the "building the agent touches no network" invariant.
+        """
+        return self.uses_local_endpoint or bool(self.anthropic_api_key)
+
+    @property
+    def endpoint_api_key(self) -> str:
+        """The bearer token to send to ``base_url``, never empty.
+
+        Resolved here rather than in :mod:`speechwriter.agent` so that reading credentials
+        out of the environment stays this module's job — the same reason ``base_url`` is a
+        field and not an ``os.environ`` lookup at the call site.
+        """
+        return self.openai_api_key or LOCAL_API_KEY_PLACEHOLDER
 
     def _vpath(self, path: Path) -> str:
         """Map a real path under ``project_root`` to the agent's virtual path."""
@@ -121,6 +163,12 @@ def load_settings() -> Settings:
     * ``SPEECHWRITER_MAX_TOKENS`` — *override* the output-token ceiling per model call.
       Left unset, the model's own LangChain profile decides, falling back to
       ``DEFAULT_MAX_TOKENS`` only for an id that has no profile.
+    * ``SPEECHWRITER_BASE_URL`` — point the agent at an OpenAI-compatible endpoint
+      (a local ``mlx_lm.server``, vLLM, LM Studio, Ollama) instead of Anthropic. Unset
+      is the normal case and changes nothing.
+    * ``OPENAI_API_KEY`` — sent to that endpoint when one is set. Local servers ignore
+      it, so it is optional and falls back to a placeholder; a hosted OpenAI-compatible
+      service will need a real one.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
@@ -162,6 +210,11 @@ def load_settings() -> Settings:
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
         max_tokens=_optional_int_env("SPEECHWRITER_MAX_TOKENS"),
+        # `or None` rather than a bare `.get`: an exported-but-empty SPEECHWRITER_BASE_URL
+        # is how a shell says "unset", and an empty string here would route every call to a
+        # nonexistent endpoint while `uses_local_endpoint` still reported True.
+        base_url=(os.environ.get("SPEECHWRITER_BASE_URL") or "").strip() or None,
+        openai_api_key=os.environ.get("OPENAI_API_KEY"),
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         project_root=project_root,

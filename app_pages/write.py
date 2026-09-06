@@ -23,7 +23,9 @@ SUGGESTIONS = {
 
 bundle = get_bundle()
 history = transcript()
-has_key = bool(bundle.settings.anthropic_api_key)
+# Not `anthropic_api_key` directly — a model served over SPEECHWRITER_BASE_URL needs no key
+# of ours, and gating the chat input on one would disable a working configuration.
+has_key = bundle.settings.model_credentials_present
 
 suggested = None
 if not history:
@@ -48,7 +50,8 @@ if not history:
 if not has_key:
     st.error(
         "No `ANTHROPIC_API_KEY` found. Add it to a local `.env` file "
-        "(`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app.",
+        "(`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app — or run a local model "
+        "instead by setting `SPEECHWRITER_BASE_URL` to an OpenAI-compatible server.",
         icon=":material/key_off:",
     )
 

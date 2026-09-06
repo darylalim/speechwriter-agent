@@ -100,11 +100,15 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
     ceiling = bundle.ceiling_label
+    # Shown only when set, so the default Anthropic banner is unchanged. Worth a line of its
+    # own: "which model" and "served from where" fail differently, and a local server that is
+    # simply not running looks like a hung turn unless the banner said where it was pointed.
+    endpoint = f"\n[dim]endpoint[/]   [green]local[/] {s.base_url}" if s.uses_local_endpoint else ""
     console.print(
         Panel(
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "
             f"critiques, and remembers.\n\n"
-            f"[dim]model[/]      {s.model}\n"
+            f"[dim]model[/]      {s.model}{endpoint}\n"
             f"[dim]max tokens[/] {ceiling}\n"
             f"[dim]research[/]   {research}\n"
             f"[dim]speeches[/]   {s.workspace_dir / 'speeches'}\n"
@@ -121,13 +125,19 @@ def main() -> None:
     console = Console()
     bundle = build_agent()
 
-    if not bundle.settings.anthropic_api_key:
+    # Not `anthropic_api_key` directly: a locally served model needs no key of ours, and
+    # demanding one would refuse to start a configuration that runs fine.
+    if not bundle.settings.model_credentials_present:
         console.print(
             Panel(
                 "[bold red]No ANTHROPIC_API_KEY found.[/]\n\n"
                 "Set it before running, e.g. add a line to a local [bold].env[/] file:\n"
                 "  [dim]ANTHROPIC_API_KEY=sk-ant-...[/]\n"
-                "and (for live research) [dim]TAVILY_API_KEY=tvly-...[/]",
+                "and (for live research) [dim]TAVILY_API_KEY=tvly-...[/]\n\n"
+                "Or run a local model instead — point the agent at any OpenAI-compatible\n"
+                "server and no Anthropic key is needed:\n"
+                "  [dim]SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1[/]\n"
+                "  [dim]SPEECHWRITER_MODEL=mlx-community/Qwen3.8-27B-4bit[/]",
                 border_style="red",
                 title="Setup needed",
                 padding=(1, 2),

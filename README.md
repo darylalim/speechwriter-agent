@@ -106,11 +106,47 @@ It binds to `localhost` only by default; the agent spends your API budget and re
 |---|---|---|
 | `SPEECHWRITER_MODEL` | `claude-sonnet-5` | Any Claude model id — `claude-opus-5` for top quality, with no ceiling override needed alongside it (LangChain profiles it at its real 128k). |
 | `SPEECHWRITER_MAX_TOKENS` | model's own profile | Overrides the output-token ceiling. Unset, a model LangChain can profile keeps its own ceiling — as of the pinned `langchain-anthropic` every shipped Claude id is profiled at 64k–128k, so the default resolves to **128000**. An id it *cannot* profile (a typo, or one newer than the pin) would silently inherit 4096, so it gets 32000 instead plus a warning. Extended thinking bills against the same ceiling, which is why 4096 is not enough. |
+| `SPEECHWRITER_BASE_URL` | — | Point the agent at an OpenAI-compatible endpoint instead of Anthropic — a local `mlx_lm.server`, vLLM, LM Studio, Ollama. Set it and no `ANTHROPIC_API_KEY` is required. See [Running a local model](#running-a-local-model). |
+| `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a hosted OpenAI-compatible service will need a real one. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |
 
----
+### Running a local model
+
+The agent can run entirely on your machine — no API key, no per-token cost, nothing leaving
+the laptop. Any OpenAI-compatible server works; on Apple Silicon, [MLX](https://github.com/ml-explore/mlx-lm) is the fastest path:
+
+```bash
+uv tool install mlx-lm
+mlx_lm.server --model mlx-community/Qwen3.8-27B-4bit --port 8080
+```
+
+Then point the agent at it:
+
+```ini
+SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1
+SPEECHWRITER_MODEL=mlx-community/Qwen3.8-27B-4bit
+```
+
+`SPEECHWRITER_BASE_URL` selects the *client*, not just the id — a local model name carries no
+provider prefix for LangChain to infer, so the endpoint is what makes the choice unambiguous.
+Nothing else changes: the same graph, subagents, skills, sandbox, and memory.
+
+Two things worth knowing:
+
+- **The ceiling resolves through tier 3.** A locally served id has no LangChain profile, so it
+  takes the 32000-token floor. That is the wanted answer here, not a fallback — `ChatOpenAI`'s
+  own default is "let the server decide", which on a reasoning model is an unbounded thinking
+  budget.
+- **Reasoning effort is worth tuning.** Qwen3.8's chat template defaults to
+  `reasoning_effort: xhigh`, which spends ~1400 tokens deliberating before it writes a line.
+  For prose, `low` is both faster and better; pass it via the server's
+  `chat_template_args`.
+
+Sizing, on 32GB unified memory: the 4-bit 27B weighs 15GB on disk and peaks at ~15.5GB
+resident, generating ~21 tok/s on an M2 Max — comfortably inside the ~24GB macOS allows the
+GPU by default, with headroom left for the KV cache.
 
 ## Using it as a library
 

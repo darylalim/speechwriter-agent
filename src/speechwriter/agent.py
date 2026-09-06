@@ -2,8 +2,9 @@
 
 This is the single place that assembles the Deep Agent:
 
-* **model**        — Anthropic Claude (configurable), with an explicit output-token
-                     ceiling rather than one inherited from LangChain's profile table.
+* **model**        — Anthropic Claude by default, or any OpenAI-compatible endpoint via
+                     ``SPEECHWRITER_BASE_URL``, with an explicit output-token ceiling
+                     rather than one inherited from LangChain's profile table.
 * **system_prompt**— the speechwriting method (see :mod:`speechwriter.prompts`).
 * **subagents**    — ``researcher`` (Tavily) + ``style-critic`` (see :mod:`speechwriter.subagents`).
 * **skills**       — the on-demand rhetoric library under ``/skills``.
@@ -162,22 +163,57 @@ def _build_model(settings: Settings) -> BaseChatModel:
     a blunt constant overriding better-informed knowledge.
 
     Constructing the client performs no network I/O, so ``build_agent`` stays offline.
-    """
-    if settings.max_tokens is not None:
-        return init_chat_model(settings.model, max_tokens=settings.max_tokens)
+    That still holds for a local endpoint: ``base_url`` is recorded on the client, never
+    probed, so an unreachable server fails at the first turn rather than at build time.
 
-    model = init_chat_model(settings.model)
+    ``SPEECHWRITER_BASE_URL`` swaps the *client*, not the tiers. A locally served model has
+    no LangChain profile, so it resolves through tier 3 — which is the wanted answer here
+    rather than a fallback, hence the softer log level on that branch.
+    """
+    # An OpenAI-compatible endpoint (a local `mlx_lm.server`, vLLM, LM Studio) is selected by
+    # URL, not by model id: "mlx-community/Qwen3.8-27B-4bit" carries no provider prefix for
+    # `init_chat_model` to infer, so the provider is stated. Threaded through *every* tier
+    # below rather than added to one branch — a ceiling path that omitted it would quietly
+    # build an Anthropic client for a local model and fail at the first call.
+    client = (
+        {
+            "model_provider": "openai",
+            "base_url": settings.base_url,
+            "api_key": settings.endpoint_api_key,
+        }
+        if settings.uses_local_endpoint
+        else {}
+    )
+
+    if settings.max_tokens is not None:
+        return init_chat_model(settings.model, max_tokens=settings.max_tokens, **client)
+
+    model = init_chat_model(settings.model, **client)
     if getattr(model, "profile", None) is not None:
         return model
 
-    logger.warning(
-        "No LangChain model profile for %r — it would otherwise inherit a 4096-token "
-        "ceiling, which extended thinking can exhaust before any text is emitted. Using "
-        "max_tokens=%d instead; set SPEECHWRITER_MAX_TOKENS to override.",
-        settings.model,
-        DEFAULT_MAX_TOKENS,
-    )
-    return init_chat_model(settings.model, max_tokens=DEFAULT_MAX_TOKENS)
+    if settings.uses_local_endpoint:
+        # Expected, not a typo: LangChain profiles hosted ids, and a locally served one is
+        # not in that table. It still takes the floor rather than ChatOpenAI's own `None`
+        # (= "let the server decide"), because an unbounded ceiling on a *reasoning* model is
+        # the same trap tier 3 exists for. Qwen3.8-27B defaults to `reasoning_effort: xhigh`
+        # and will happily spend a thousand tokens deliberating before it writes a line.
+        logger.info(
+            "No LangChain model profile for %r served at %s — expected for a local "
+            "endpoint. Pinning max_tokens=%d; set SPEECHWRITER_MAX_TOKENS to override.",
+            settings.model,
+            settings.base_url,
+            DEFAULT_MAX_TOKENS,
+        )
+    else:
+        logger.warning(
+            "No LangChain model profile for %r — it would otherwise inherit a 4096-token "
+            "ceiling, which extended thinking can exhaust before any text is emitted. Using "
+            "max_tokens=%d instead; set SPEECHWRITER_MAX_TOKENS to override.",
+            settings.model,
+            DEFAULT_MAX_TOKENS,
+        )
+    return init_chat_model(settings.model, max_tokens=DEFAULT_MAX_TOKENS, **client)
 
 
 def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:

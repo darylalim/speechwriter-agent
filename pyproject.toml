@@ -10,6 +10,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "deepagents>=0.6.12,<0.8",
     "langchain-anthropic>=1.4.8",
+    "langchain-openai>=1.6.0",
     "langchain-tavily>=0.2.18",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
