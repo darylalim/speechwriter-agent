@@ -28,10 +28,14 @@ settings = bundle.settings
 
 with st.sidebar:
     with st.container(horizontal=True):
-        if settings.anthropic_api_key:
+        # `model_credentials_present`, not `anthropic_api_key` — the property the chat input
+        # already gates on, and the one `config.py` names as the contract for both front ends.
+        # A model served over SPEECHWRITER_BASE_URL needs no key of ours, so reading the
+        # narrower field flagged a perfectly working local setup as broken.
+        if settings.model_credentials_present:
             st.badge("Ready", icon=":material/check_circle:", color="green")
         else:
-            st.badge("No API key", icon=":material/key_off:", color="red")
+            st.badge("No credentials", icon=":material/key_off:", color="red")
 
         if settings.research_enabled:
             st.badge("Research", icon=":material/travel_explore:", color="blue")

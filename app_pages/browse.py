@@ -14,7 +14,7 @@ import streamlit as st
 
 from speechwriter import workspace
 from speechwriter.config import WORDS_PER_MINUTE
-from speechwriter.webui import documents, get_bundle, spoken_length
+from speechwriter.webui import MEASURE_CACHE_ENTRIES, documents, get_bundle, spoken_length
 
 bundle = get_bundle()
 settings = bundle.settings
@@ -29,6 +29,41 @@ def _humanize(key: str) -> str:
     """
     label = key.removesuffix(".md").replace("-", " ").replace("_", " ").strip()
     return label.title() or key
+
+
+# Ordered, oldest first, and bounded to `MEASURE_CACHE_ENTRIES`. One list rather than a
+# boolean per digest, because the agent revises in place: every rewrite mints a fresh digest,
+# so per-digest keys would accumulate for the life of the session and — worse — outlive the
+# LRU cache they stand for. A flag whose WAV has been evicted sends the next page render
+# straight back into a ~9s synthesis with no button pressed, which is the one thing gating
+# the measurement behind a button was meant to prevent. Bounded to the cache's own size and
+# refreshed on every hit, so the list ages the way the cache does — `st.cache_resource` is LRU
+# and reorders on read, where a list that only ever appended would evict by *first* request.
+# The two still cannot be made identical: that cache is process-global while these flags are
+# per-session, so another tab can evict a WAV this session is flagging. The bound makes that
+# rare and self-correcting rather than unbounded, which is all it is for.
+_MEASURED = "measured"
+
+
+def _measured() -> list[str]:
+    """The drafts this reader has asked to measure, oldest first."""
+    return st.session_state.setdefault(_MEASURED, [])
+
+
+def _remember(flag: str) -> None:
+    """Mark a draft measured — most recently used last — evicting past the cache's bound."""
+    flags = _measured()
+    if flag in flags:
+        flags.remove(flag)
+    flags.append(flag)
+    del flags[:-MEASURE_CACHE_ENTRIES]
+
+
+def _forget(flag: str) -> None:
+    """Drop a flag after a failed measurement, putting the button back."""
+    flags = _measured()
+    if flag in flags:
+        flags.remove(flag)
 
 
 def _measure_flag(document: workspace.Document) -> str:
@@ -53,26 +88,34 @@ def _measure_if_requested(
     wraps its install command across a narrow strip — and that string's whole job is to be
     readable.
 
-    Any failure clears the flag. Without that the page is unrecoverable: `st.cache_data` does
+    Any failure forgets the draft. Without that the page is unrecoverable: `st.cache_data` does
     not cache exceptions, so a sticky flag re-attempts and re-raises on every rerun, and a
     traceback out of here stops the rest of the page rendering. Clearing it puts the button
     back, which is also what you want after installing the extra the first branch complains
     about.
     """
     flag = _measure_flag(document)
-    if not st.session_state.get(flag):
+    if flag not in _measured():
         return None, ""
     try:
-        with st.spinner("Synthesising the draft…"):
-            return spoken_length(document.text), ""
+        # `show_time` because this is the one wait in the app long enough to look hung — a
+        # three-minute speech is ~9s of synthesis, and the cache declares `show_spinner=False`,
+        # so this is the only progress the reader gets.
+        with st.spinner("Synthesising the draft…", show_time=True):
+            measured = spoken_length(document.text)
+        # That read just refreshed the cache entry, so refresh the flag with it — otherwise
+        # the flag list evicts by first request while the cache evicts by last use, and a
+        # still-flagged draft whose WAV has gone re-synthesises on plain page render.
+        _remember(flag)
+        return measured, ""
     except workspace.AudioUnavailable as exc:
-        st.session_state.pop(flag, None)
+        _forget(flag)
         return None, str(exc)
     except Exception as exc:
         # Broad on purpose. Everything past the import guard is someone else's failure mode —
         # a first-run model download with no network, an HF rate limit, a full disk, mlx
         # raising on a pathological draft — and none of them should take the page down.
-        st.session_state.pop(flag, None)
+        _forget(flag)
         return None, f"Could not measure this draft: {exc}"
 
 
@@ -86,18 +129,35 @@ def _measure_button(document: workspace.Document) -> None:
         icon=":material/graphic_eq:",
         help="Synthesise the draft and time it, instead of estimating from word count.",
     ):
-        st.session_state[flag] = True
+        _remember(flag)
         st.rerun()
 
 
-def document_browser(documents: list[workspace.Document], *, spoken: bool, empty: str) -> None:
-    """Pick-and-read over a list of Markdown documents, newest first."""
+def document_browser(
+    documents: list[workspace.Document], *, kind: str, spoken: bool, empty: str
+) -> None:
+    """Pick-and-read over a list of Markdown documents, newest first.
+
+    ``kind`` keys the picker. Two things follow from it. The key is distinct per view, so a
+    draft chosen under Speeches cannot surface as the selection under Research — a shared key
+    would carry one across, since the key *is* the widget's identity. And with
+    ``persist_state="session"`` the choice survives the widget unmounting: switching views, or
+    stepping over to Write and back, returns to the draft that was open rather than to the
+    top of the list. A selection whose label has since changed — the agent revises in place,
+    and the label carries the mtime — falls back to the newest entry rather than raising.
+    """
     if not documents:
         st.caption(empty)
         return
 
     labels = {f"{doc.slug}  ·  {doc.modified:%b %d, %H:%M}": doc for doc in documents}
-    picked = st.selectbox("Document", list(labels), label_visibility="collapsed")
+    picked = st.selectbox(
+        "Document",
+        list(labels),
+        key=f"document-{kind}",
+        persist_state="session",
+        label_visibility="collapsed",
+    )
     document = labels.get(picked) if isinstance(picked, str) else None
     if document is None:
         return
@@ -136,7 +196,10 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 st.metric(
                     "Measured",
                     f"{measured.minutes:.1f} min",
-                    delta=f"{drift:+.0f}s vs estimate",
+                    delta=f"{drift:+.0f}s",
+                    # The qualifier goes in the parameter built for it, so it renders muted
+                    # and caption-sized beside the number instead of at the delta's weight.
+                    delta_description="vs estimate",
                     delta_color="off",
                     border=True,
                     width="content",
@@ -150,6 +213,10 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 document.text,
                 file_name=document.path.name,
                 icon=":material/download:",
+                # The bytes are already in hand and nothing here changes state, so the default
+                # rerun buys nothing and costs a re-stat of the folder plus — for a draft
+                # already measured — a "Synthesising…" spinner flashed over a cache hit.
+                on_click="ignore",
             )
 
     if notice:
@@ -179,16 +246,24 @@ st.title("Workspace")
 # top-level pages read as a pair.
 st.caption("Speeches, research notes, and the speaker voices the agent has learned.")
 
+# `required` so the lit segment cannot be clicked off: without it a second click returns None,
+# which matches no branch below and lands in the `else` — rendering Speeches with nothing
+# selected, the control and the page disagreeing. It also makes the return `str` rather than
+# `str | None`, so the branches below are total by construction.
 view = st.segmented_control(
     "View",
     ["Speeches", "Research", "Memory"],
     default="Speeches",
+    required=True,
+    key="workspace-view",
+    persist_state="session",
     label_visibility="collapsed",
 )
 
 if view == "Research":
     document_browser(
         documents(workspace.research_dir(settings)),
+        kind="research",
         spoken=False,
         empty="No research notes yet. They appear here when the researcher subagent runs.",
     )
@@ -212,6 +287,7 @@ elif view == "Memory":
 else:
     document_browser(
         documents(workspace.speeches_dir(settings)),
+        kind="speeches",
         spoken=True,
         empty="No speeches yet. Commission one on the Write page.",
     )

@@ -23,6 +23,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
@@ -40,6 +41,11 @@ _THREAD = "thread_id"
 _PENDING = "turn_in_flight"
 
 _PREVIEW_LEN = 110
+
+# How many measured drafts `spoken_length` keeps. Exported because `browse.py` bounds its
+# "already measured" flags to the same number: a flag that outlives its cache entry sends the
+# next page render straight back into a ~9s synthesis, which is what the button exists to stop.
+MEASURE_CACHE_ENTRIES = 8
 
 # Material Symbols, coloured via Streamlit's Markdown directives rather than CSS.
 _CALL_ICON = ":blue[:material/bolt:]"
@@ -103,12 +109,21 @@ def documents(directory: Path) -> list[workspace.Document]:
     rewritten. Without this, every rerun on the Workspace page — picking a different draft,
     switching views — re-read and re-parsed every file in the folder just to show one.
     """
-    signature = (
-        tuple(sorted((path.name, path.stat().st_mtime) for path in directory.glob("*.md")))
-        if directory.is_dir()
-        else ()
-    )
-    return _parse_documents(str(directory), signature)
+    stamps: list[tuple[str, float]] = []
+    if directory.is_dir():
+        for path in directory.glob("*.md"):
+            try:
+                stamps.append((path.name, path.stat().st_mtime))
+            except OSError:
+                # The agent writes into this folder while the page renders, so a file can go
+                # unreadable between the glob and the stat. `workspace.load_documents` re-globs
+                # and tolerates the same race, so it may still parse a file this stat could not
+                # reach — which is why the name is recorded with a sentinel rather than
+                # dropped. Omitting it would mint the exact signature of a folder that never
+                # held the file, and hand back a cached parse that disagrees with the read.
+                # Raising, meanwhile, would take the whole Workspace page down over a race.
+                stamps.append((path.name, -1.0))
+    return _parse_documents(str(directory), tuple(sorted(stamps)))
 
 
 # `cache_resource`, not `cache_data`: each entry carries the synthesised WAV — roughly 2.9 MB
@@ -116,7 +131,7 @@ def documents(directory: Path) -> list[workspace.Document]:
 # rerun of the page would unpickle ~8.6 MB of audio just to render one decimal. `cache_resource`
 # hands back the object itself, which is safe here because `SpokenLength` is frozen and its
 # payload is immutable bytes. Bounded so the store cannot grow with every draft measured.
-@st.cache_resource(show_spinner=False, max_entries=8)
+@st.cache_resource(show_spinner=False, max_entries=MEASURE_CACHE_ENTRIES)
 def spoken_length(text: str) -> workspace.SpokenLength:
     """Measured delivery time for a draft, synthesised once per distinct text.
 
@@ -201,9 +216,12 @@ def run_turn(bundle: SpeechwriterAgent, prompt: str) -> Turn:
                     _render_event(event, status, prose)
     except Exception as exc:
         turn.error = f"{type(exc).__name__}: {exc}"
-        status.update(label="Run failed", state="error", expanded=False)
-    else:
-        status.update(label=_activity_label(turn.events), state="complete", expanded=False)
+
+    # Through `_status_shape` rather than inline, for the same reason `_render_event` is
+    # shared: `render_turn` draws this header again on replay, and the two computing it
+    # separately is exactly how a live turn and its replay drift.
+    label, state = _status_shape(turn)
+    status.update(label=label, state=state, expanded=False)
 
     # The turn finished (cleanly or with a caught error); it is no longer in-flight. Only a
     # stop leaves _PENDING set, and only that triggers a thread rotation next turn — matching
@@ -221,11 +239,8 @@ def render_turn(turn: Turn) -> None:
         st.markdown(turn.prompt)
 
     with st.chat_message("assistant"):
-        status = st.status(
-            _activity_label(turn.events) if not turn.error else "Run failed",
-            state="error" if turn.error else "complete",
-            expanded=False,
-        )
+        label, state = _status_shape(turn)
+        status = st.status(label, state=state, expanded=False)
         prose = st.container()
         for event in turn.events:
             _render_event(event, status, prose)
@@ -283,7 +298,13 @@ def _render_event(event: Event, status: DeltaGenerator, prose: DeltaGenerator) -
         icon = _CALL_ICON
     else:
         icon = _OK_ICON if event.ok else _ERROR_ICON
-    status.markdown(f"{icon} **{event.name}** `{_preview(event.text)}`")
+    # A tool result can legitimately be empty — deepagents forwards an empty `status="success"`
+    # when a subagent spends its whole ceiling thinking and emits no text, which is precisely
+    # the failure `TruncationWarner` exists to surface. Wrapped unconditionally, that renders
+    # as two bare backticks: an empty code span that reads as a glitch rather than as the
+    # signal it is.
+    body = _preview(event.text)
+    status.markdown(f"{icon} **{event.name}** " + (f"`{body}`" if body else "_no output_"))
 
 
 def _render_footnotes(turn: Turn, bundle: SpeechwriterAgent, prose: DeltaGenerator) -> None:
@@ -297,6 +318,13 @@ def _render_footnotes(turn: Turn, bundle: SpeechwriterAgent, prose: DeltaGenerat
         )
     if turn.error:
         prose.error(turn.error, icon=":material/error:")
+
+
+def _status_shape(turn: Turn) -> tuple[str, Literal["complete", "error"]]:
+    """Label and state for a finished turn's activity log — one source for both paths."""
+    if turn.error:
+        return "Run failed", "error"
+    return _activity_label(turn.events), "complete"
 
 
 def _activity_label(events: list[Event]) -> str:

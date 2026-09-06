@@ -372,8 +372,9 @@ def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
 def test_streamlit_config_parses_and_offers_both_theme_modes():
     # AppTest does not parse the project theme config, so a TOML typo or a dropped
     # [theme.dark] table would otherwise reach a human running `streamlit run` — exactly the
-    # manual discovery the rest of this suite exists to pre-empt. This is the only check that
-    # reads .streamlit/config.toml at all: it is not Python, so ruff-ty-gate.sh never sees it.
+    # manual discovery the rest of this suite exists to pre-empt. This and
+    # `test_theme_links_clear_wcag_aa_and_stay_visible_without_color` are the only checks that
+    # read .streamlit/config.toml at all: it is not Python, so ruff-ty-gate.sh never sees it.
     # pytest-gate.sh watches .streamlit/ for that reason, which is what puts this assertion in
     # the inner loop rather than only in CI.
     data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
@@ -385,6 +386,158 @@ def test_streamlit_config_parses_and_offers_both_theme_modes():
     # The security invariant the file's own header comment documents: bind loopback only, so
     # the budget-spending agent is never put on the network by an "External URL".
     assert data["server"]["address"] == "localhost"
+
+
+def _relative_luminance(hex_color: str) -> float:
+    """WCAG 2.x relative luminance for an ``#rrggbb`` string."""
+    channels = [int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+    linear = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in channels]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def _contrast(one: str, other: str) -> float:
+    """WCAG contrast ratio between two ``#rrggbb`` colors, 1.0 to 21.0."""
+    first, second = _relative_luminance(one), _relative_luminance(other)
+    return (max(first, second) + 0.05) / (min(first, second) + 0.05)
+
+
+def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
+    # The palette in .streamlit/config.toml already replaced Solarized Light *for failing AA*
+    # — its body text was 4.13:1 — and the link color then slipped past the same audit at
+    # 3.88:1, because nothing measured it. Both halves are asserted here rather than the hex
+    # literals, so a future repalette is free to pick any colors that pass.
+    data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    theme = data["theme"]
+
+    for mode in ("light", "dark"):
+        palette = theme[mode]
+        link, background, body = (
+            palette["linkColor"],
+            palette["backgroundColor"],
+            palette["textColor"],
+        )
+        # 1.4.3 Contrast (Minimum): link text against the field it is read on.
+        assert _contrast(link, background) >= 4.5, f"{mode} linkColor is under AA"
+        # F73: a link may not be marked by color alone. Either it is underlined, or it stands
+        # 3:1 clear of the prose around it. Underlining satisfies both modes at once, which is
+        # why it is on — #61afef sits 1.11:1 against dark-mode body text.
+        assert theme.get("linkUnderline", True) or _contrast(link, body) >= 3.0
+
+
+def test_the_status_badge_gates_on_credentials_not_an_anthropic_key(monkeypatch, tmp_path):
+    # `config.py` documents `model_credentials_present` as the contract for both front ends,
+    # and the chat input honours it — but the sidebar badge read `anthropic_api_key` directly,
+    # so a model served over SPEECHWRITER_BASE_URL ran perfectly under a red "no key" badge.
+    # Two independent literals with nothing structural tying them, which is what this closes.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+
+    assert not app.exception
+    # Badges render as Markdown directives, so this reads the rendered text rather than a
+    # `st.badge` accessor, which AppTest does not expose.
+    assert any("Ready]" in block.value for block in app.markdown)
+    # And the page must not tell a working local setup to go and find an API key.
+    assert not app.error
+    assert not app.chat_input[0].disabled
+
+
+def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_path):
+    # The pill used to be consumed by *not being rendered* once the transcript filled. A turn
+    # cancelled with the stop button raises a BaseException past `run_turn`, so nothing is
+    # appended, the welcome block draws again with the pill still lit — and the same
+    # commission fired a second time, unasked. This is that exact state: selection present,
+    # transcript empty. Only an `on_change` click may queue a brief now, never a bare rerun.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+    # Taken from the rendered widget rather than restated here, so the test cannot drift from
+    # the page's own suggestion labels.
+    app.session_state["suggestion"] = app.pills[0].options[0]
+    app.session_state["transcript"] = []
+    app.run()
+
+    assert not app.exception
+    assert app.session_state["transcript"] == []
+    assert "queued_prompt" not in app.session_state
+
+
+def test_an_unreadable_file_does_not_forge_the_signature_of_a_smaller_folder(monkeypatch, tmp_path):
+    # The agent writes into this folder while the page renders, so a name can survive the glob
+    # and fail the stat. Skipping it outright would build the exact cache key of a folder that
+    # never held it — and `load_documents` re-globs, so the parse behind that key can disagree
+    # with it. A dangling symlink is the same race, deterministically.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    settings = load_settings()
+    speeches = settings.workspace_dir / config.SPEECHES_SUBDIR
+    _write(speeches / "kept.md", "a draft", mtime=1_000_000)
+
+    seen: list[tuple[tuple[str, float], ...]] = []
+    monkeypatch.setattr(webui, "_parse_documents", lambda _dir, sig: seen.append(sig) or [])
+
+    webui.documents(speeches)
+    (speeches / "racing.md").symlink_to(speeches / "gone.md")
+    webui.documents(speeches)
+
+    # Unreadable must not read as absent, or the second call serves the first call's parse.
+    assert seen[0] != seen[1]
+    assert any(name == "racing.md" for name, _ in seen[1])
+
+
+def test_a_typed_brief_does_not_leave_a_suggestion_queued(monkeypatch, tmp_path):
+    # The first version of the queue read `typed or st.session_state.pop(...)`, and `or` never
+    # evaluates the pop when a typed brief wins — so the suggestion stayed armed and fired as a
+    # second, unasked commission on a later rerun. The two arriving together is not contrived:
+    # Streamlit coalesces a pending rerun with a new one and ships every widget state on each
+    # message, and the chat box stays typeable while a pill's turn is still running.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    commissioned: list[str] = []
+
+    def _record(_bundle, prompt: str) -> webui.Turn:
+        commissioned.append(prompt)
+        return webui.Turn(prompt=prompt)
+
+    # The page re-imports `run_turn` on every run, so patching the module reaches it — and
+    # keeps this test as free and offline as the rest of the suite.
+    monkeypatch.setattr(webui, "run_turn", _record)
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+    app.pills[0].set_value(app.pills[0].options[0])
+    app.chat_input[0].set_value("A toast for Ana")
+    app.run()
+
+    assert not app.exception
+    assert commissioned == ["A toast for Ana"]
+    # The queue must be drained by the run that saw it, whether or not it won.
+    assert "queued_prompt" not in app.session_state
+
+    app.run()  # a plain rerun must not commission anything further
+    assert commissioned == ["A toast for Ana"]
+
+
+def test_the_workspace_view_control_cannot_be_deselected(monkeypatch, tmp_path):
+    # Without `required`, a second click on the lit segment returns None — which matches
+    # neither the "Research" nor the "Memory" branch and falls through to the `else`, drawing
+    # Speeches with no segment highlighted. Asserted on the widget rather than by driving a
+    # deselect, because AppTest's `unselect` bypasses the frontend rule it is testing.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+
+    assert not app.exception
+    assert app.segmented_control[0].proto.required
 
 
 def _without_the_audio_extra(monkeypatch):

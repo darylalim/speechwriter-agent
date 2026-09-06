@@ -27,7 +27,12 @@ address = "localhost"
 # rather than in injected CSS, which is Streamlit's documented preference and keeps the page
 # files free of styling concerns.
 [theme]
-linkUnderline = false
+# Underlined, not colour-only. Restoring the default costs a little quiet and buys the one
+# cue that survives both palettes: a link at #61afef sits 1.11:1 against dark-mode body text
+# (#abb2bf), so on the mode this app is most often read in, colour alone marks nothing — the
+# WCAG F73 failure. Set explicitly rather than deleted, so this block stays a complete
+# typographic contract rather than half-inheriting.
+linkUnderline = true
 showWidgetBorder = true
 showSidebarBorder = true
 baseRadius = "4px"
@@ -50,7 +55,11 @@ codeTextColor = "#383a42"
 borderColor = "#c6c6c8"
 
 primaryColor = "#4078f2"
-linkColor = "#4078f2"
+# The one accent that deliberately leaves the One Light palette. #4078f2 is 3.88:1 on #fafafa
+# — fine for `primaryColor`, which tints widget chrome (1.4.11 wants 3:1), and under AA for
+# link *text*, which wants 4.5:1. #155aef is the same hue two steps darker, at 5.38:1. Dark
+# mode needs no equivalent: #61afef is already 5.92:1 on #282c34.
+linkColor = "#155aef"
 blueColor = "#4078f2"
 greenColor = "#50a14f"
 yellowColor = "#c18401"
