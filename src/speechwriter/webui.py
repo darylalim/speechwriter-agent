@@ -111,9 +111,12 @@ def documents(directory: Path) -> list[workspace.Document]:
     return _parse_documents(str(directory), signature)
 
 
-# Bounded because each entry carries the synthesised WAV — roughly 2.9 MB per spoken minute
-# at 24 kHz mono — so an unbounded cache would grow with every draft measured this session.
-@st.cache_data(show_spinner=False, max_entries=8)
+# `cache_resource`, not `cache_data`: each entry carries the synthesised WAV — roughly 2.9 MB
+# per spoken minute at 24 kHz mono — and `cache_data` returns a *copy* on every hit, so each
+# rerun of the page would unpickle ~8.6 MB of audio just to render one decimal. `cache_resource`
+# hands back the object itself, which is safe here because `SpokenLength` is frozen and its
+# payload is immutable bytes. Bounded so the store cannot grow with every draft measured.
+@st.cache_resource(show_spinner=False, max_entries=8)
 def spoken_length(text: str) -> workspace.SpokenLength:
     """Measured delivery time for a draft, synthesised once per distinct text.
 

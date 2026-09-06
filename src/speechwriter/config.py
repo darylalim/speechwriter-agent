@@ -90,10 +90,13 @@ class Settings:
     # argument after it, so a caller constructing Settings by position would bind their
     # API key here. Explicit output-token override; None defers to the model's profile.
     max_tokens: int | None
-    # Appended for the same reason. An OpenAI-compatible endpoint to use *instead of*
-    # Anthropic; None (the normal case) leaves the Anthropic path untouched.
-    base_url: str | None
-    openai_api_key: str | None
+    # Appended for the same reason, and *defaulted* for the reason `SpeechwriterAgent`
+    # defaults its own added fields: `build_agent(settings)` is the documented library entry
+    # point, so a consumer constructing Settings by hand would otherwise break on an upgrade
+    # that only added an optional capability. An OpenAI-compatible endpoint to use *instead
+    # of* Anthropic; None (the normal case) leaves the Anthropic path untouched.
+    base_url: str | None = None
+    openai_api_key: str | None = None
 
     # -- derived helpers -------------------------------------------------
 
@@ -214,7 +217,11 @@ def load_settings() -> Settings:
         # is how a shell says "unset", and an empty string here would route every call to a
         # nonexistent endpoint while `uses_local_endpoint` still reported True.
         base_url=(os.environ.get("SPEECHWRITER_BASE_URL") or "").strip() or None,
-        openai_api_key=os.environ.get("OPENAI_API_KEY"),
+        # Normalised the same way, and for the same reason: a blank or whitespace-only value
+        # is how a shell says "unset", and left as-is it is *truthy* — so `endpoint_api_key`
+        # would send "   " as the bearer token and a hosted endpoint would 401 far from the
+        # typo, instead of falling back to the placeholder.
+        openai_api_key=(os.environ.get("OPENAI_API_KEY") or "").strip() or None,
         anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         project_root=project_root,

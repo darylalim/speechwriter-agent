@@ -354,6 +354,9 @@ def test_a_graded_runs_temp_home_can_build_the_agent_with_its_skills(tmp_path, m
     # this test possible at all.
     shutil.copytree(REPO_ROOT / "skills", tmp_path / "skills")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # SPEECHWRITER_BASE_URL swaps the client for an OpenAI one; a developer who exported
+    # it to drive the local model would otherwise silently run this against ChatOpenAI.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-not-used-offline")
 
     from speechwriter.agent import build_agent

@@ -34,6 +34,9 @@ def test_agent_builds_without_research(monkeypatch, tmp_path):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # SPEECHWRITER_BASE_URL swaps the client for an OpenAI one; a developer who exported
+    # it to drive the local model would otherwise silently run this against ChatOpenAI.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
     settings = load_settings()
     assert settings.research_enabled is False
@@ -140,6 +143,9 @@ def test_max_tokens_rejects_out_of_range_values(monkeypatch, tmp_path):
     # fails at the first API call, with an opaque provider error far from the typo that
     # caused it — so it must be rejected at load time, not forwarded to the client.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # SPEECHWRITER_BASE_URL swaps the client for an OpenAI one; a developer who exported
+    # it to drive the local model would otherwise silently run this against ChatOpenAI.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     for bad in ("0", "-5"):
         monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", bad)
         assert load_settings().max_tokens is None, f"{bad} must not reach the model"
@@ -406,6 +412,9 @@ def test_bundle_owns_the_truncation_warner(monkeypatch, tmp_path):
     # invoking bundle.agent directly — the path the README documents — must not silently
     # lose truncation reporting just because the CLI is not involved.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # SPEECHWRITER_BASE_URL swaps the client for an OpenAI one; a developer who exported
+    # it to drive the local model would otherwise silently run this against ChatOpenAI.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     bundle = build_agent()
 
@@ -852,3 +861,97 @@ def test_tool_pins_agree_wherever_they_are_declared():
         assert len(set(declared.values())) == 1, (
             f"{tool} pin disagrees across sites: {declared}. Bump all four together."
         )
+
+
+def test_a_profiled_id_over_a_local_endpoint_still_gets_a_ceiling(monkeypatch, tmp_path):
+    # Regression. Tier 2 used to ask "is there a profile?", which is the same question as
+    # "was a ceiling resolved?" for ChatAnthropic and emphatically not for ChatOpenAI:
+    # init_chat_model applies a profile's max_tokens only on the Anthropic path. So a
+    # *profiled* id served over SPEECHWRITER_BASE_URL -- `gpt-4o` on LM Studio, LiteLLM or a
+    # hosted OpenAI-compatible service, all of which the README names -- skipped tier 3 and
+    # came back with max_tokens=None: no ceiling at all, which is the unbounded thinking
+    # budget tier 3 exists to prevent, and strictly worse than the 4096 it guards against.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
+
+    model = _build_model(load_settings())
+
+    assert isinstance(model, ChatOpenAI)
+    assert getattr(model, "profile", None) is not None, (
+        "gpt-4o is no longer profiled, so this test no longer exercises the branch it guards"
+    )
+    assert model.max_tokens == config.DEFAULT_MAX_TOKENS
+
+
+def test_an_unprofiled_anthropic_id_does_not_keep_langchains_4096(monkeypatch, tmp_path):
+    # The other half of the same condition, and the reason it cannot be simplified to a bare
+    # max_tokens check: ChatAnthropic *always* carries a max_tokens, and for an unprofiled id
+    # that value is LangChain's silent 4096 fallback -- the original trap. Asserting the
+    # resolved ceiling alone would happily accept it.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+
+    assert getattr(_build_model(load_settings()), "max_tokens", None) == config.DEFAULT_MAX_TOKENS
+
+
+def test_the_resolved_ceiling_reaches_the_request_payload(monkeypatch, tmp_path):
+    # A ceiling set on the client but dropped from the payload is no ceiling at all, and the
+    # two clients do not agree on the key: langchain-openai 1.6 sends `max_completion_tokens`
+    # where langchain-anthropic sends `max_tokens`. Assert the *value* is carried under some
+    # key rather than pinning either spelling, so a rename upstream fails loudly here instead
+    # of silently unbounding a local reasoning model.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "32000")
+
+    for base_url, model_id in (
+        (None, config.DEFAULT_MODEL),
+        ("http://127.0.0.1:8080/v1", "mlx-community/Qwen3.8-27B-4bit"),
+    ):
+        if base_url is None:
+            monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+        else:
+            monkeypatch.setenv("SPEECHWRITER_BASE_URL", base_url)
+        monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
+        model = _build_model(load_settings())
+        # Narrows BaseChatModel for the checker, and pins that each branch built the client
+        # it was meant to — the payload assertion below is vacuous on the wrong one.
+        assert isinstance(model, ChatAnthropic | ChatOpenAI)
+        payload = model._get_request_payload([])
+        carrying = {key for key, value in payload.items() if value == 32000}
+        assert carrying, f"{model_id}: ceiling absent from payload {sorted(payload)}"
+
+
+def test_a_blank_openai_key_falls_back_to_the_placeholder(monkeypatch, tmp_path):
+    # `export OPENAI_API_KEY=` is how a shell says "unset", and an unstripped blank is
+    # truthy -- so it would be sent as the Authorization bearer and a hosted endpoint would
+    # 401 far from the typo. Same normalisation as base_url, which had it from the start.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+
+    for blank in ("", "   "):
+        monkeypatch.setenv("OPENAI_API_KEY", blank)
+        assert load_settings().endpoint_api_key == config.LOCAL_API_KEY_PLACEHOLDER
+
+
+def test_settings_can_still_be_built_without_the_local_model_fields(tmp_path):
+    # `build_agent(settings)` is the documented library entry point, so Settings is part of
+    # the public surface: adding an optional capability must not break a caller that predates
+    # it. Mirrors the defaulting already argued for on SpeechwriterAgent's own added fields.
+    settings = config.Settings(
+        model=config.DEFAULT_MODEL,
+        anthropic_api_key=None,
+        tavily_api_key=None,
+        project_root=tmp_path,
+        workspace_dir=tmp_path,
+        skills_dir=tmp_path,
+        store_path=tmp_path / "store.json",
+        max_research_results=5,
+        max_tokens=None,
+    )
+
+    assert settings.base_url is None
+    assert settings.uses_local_endpoint is False

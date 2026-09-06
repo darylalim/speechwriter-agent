@@ -20,6 +20,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from langgraph.store.base import BaseStore
 
@@ -135,7 +136,12 @@ TTS_VOICE = "af_heart"
 # model is kept per process. A plain dict rather than `functools.lru_cache` because the
 # value is an unhashable, lazily-imported object and this keeps the module's top-level
 # imports exactly as light as they were.
-_TTS_MODELS: dict = {}
+# `Any`, explicitly rather than by omission. A Protocol declaring `generate` would be the
+# precise alternative and it cannot work here: with the extra installed `load_model` returns
+# `nn.Module`, which does not satisfy such a Protocol, while in CI the symbol is unresolvable
+# and satisfies anything — so the annotation would fail in exactly one of the two
+# environments. Same bind as the suppression comment below, one level up.
+_TTS_MODELS: dict[str, Any] = {}
 
 
 class AudioUnavailable(RuntimeError):
@@ -162,7 +168,7 @@ class SpokenLength:
         return self.seconds / 60
 
 
-def _load_tts(model_id: str):
+def _load_tts(model_id: str) -> Any:
     """Load (once per process) the MLX TTS model, or explain why it cannot be loaded."""
     cached = _TTS_MODELS.get(model_id)
     if cached is not None:
@@ -186,6 +192,11 @@ def _load_tts(model_id: str):
     # it — handed a Hub id as a Path it looks for a literal directory, misses the download
     # branch, and raises FileNotFoundError. `get_model_path` is the half that takes a repo-id
     # *string*, downloads if needed, and returns the real snapshot directory.
+    #
+    # To reproduce the type error the collapsed form causes, you must check **with the extra
+    # installed**: ty resolves `import_module` with a literal argument and types `load_model`
+    # precisely. Run it in the CI state instead and mlx_audio is unresolvable, everything is
+    # Any, and the error does not appear — which reads as though the rule were stale.
     #
     # Collapsing these into one `load_model(model_id)` call is the obvious-looking tidy-up and
     # it is a trap: it works at runtime but only type-checks with a suppression, and *that*
@@ -214,17 +225,24 @@ def measure_spoken_length(
 
     Raises :class:`AudioUnavailable` if the ``audio`` extra is not installed.
     """
-    import io
-    import wave
-
-    import numpy as np
-
     _, body = _split_front_matter(text)
     spoken = _spoken_text(body).strip()
     if not spoken:
         return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
 
     segments = list(_load_tts(model_id).generate(text=spoken, voice=voice))
+
+    # Imported *after* the guard above, not at the top of the function. numpy reaches this
+    # project only transitively — through streamlit — so it is neither a declared base
+    # dependency nor part of the `audio` extra. Imported earlier, an install without it would
+    # raise a bare ModuleNotFoundError past the one error type this API promises, and past the
+    # empty-draft return that needs no audio stack at all. Here, `_load_tts` has already
+    # succeeded, so mlx-audio is installed and numpy came with it.
+    import io
+    import wave
+
+    import numpy as np
+
     if not segments:  # pragma: no cover - defensive; the model yields at least one segment
         return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
 

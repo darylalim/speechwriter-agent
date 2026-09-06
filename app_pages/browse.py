@@ -8,6 +8,8 @@ Named `browse.py`, not `workspace.py`, so it is never confused with the
 `speechwriter.workspace` module it imports or the `workspace/` output directory it reads.
 """
 
+import hashlib
+
 import streamlit as st
 
 from speechwriter import workspace
@@ -29,37 +31,63 @@ def _humanize(key: str) -> str:
     return label.title() or key
 
 
-def _measured_length(document: workspace.Document) -> workspace.SpokenLength | None:
-    """The draft's real delivery time, once the reader asks for it.
+def _measure_flag(document: workspace.Document) -> str:
+    """Session key for "the reader asked to measure *this* draft".
 
-    Gated behind a button rather than computed with the page. Synthesis runs at roughly RTF
-    0.06 — about nine seconds for a three-minute speech — which is fine to wait for
-    deliberately and far too slow to pay on every rerun of a page whose whole job is
-    browsing. `webui.spoken_length` caches the result on the draft's text, so re-picking the
-    same document is instant while a revised one is measured again.
+    Keyed on the text's digest, not just the slug. The agent revises a speech **in place**, so
+    a slug-only key stays True across a rewrite — and since `spoken_length` is cached on the
+    text, the next visit would miss the cache and silently run a full ~9s synthesis on page
+    render, which is exactly what gating it behind a button was meant to prevent.
     """
-    flag = f"measured:{document.slug}"
-    if not st.session_state.get(flag):
-        # Rerun on click so the button is *replaced* by the result rather than sitting beside
-        # it; without it the row would show a stale control next to the number it produced.
-        if st.button(
-            "Measure",
-            key=f"measure-{document.slug}",
-            icon=":material/graphic_eq:",
-            help="Synthesise the draft and time it, instead of estimating from word count.",
-        ):
-            st.session_state[flag] = True
-            st.rerun()
-        return None
+    digest = hashlib.sha256(document.text.encode("utf-8")).hexdigest()[:12]
+    return f"measured:{document.slug}:{digest}"
 
+
+def _measure_if_requested(
+    document: workspace.Document,
+) -> tuple[workspace.SpokenLength | None, str]:
+    """Synthesise the draft if asked, returning ``(measurement, notice)``.
+
+    Returns the notice rather than rendering it: this runs *outside* the metric row, because
+    an `st.info` emitted inside a `horizontal=True` container becomes a third flex column and
+    wraps its install command across a narrow strip — and that string's whole job is to be
+    readable.
+
+    Any failure clears the flag. Without that the page is unrecoverable: `st.cache_data` does
+    not cache exceptions, so a sticky flag re-attempts and re-raises on every rerun, and a
+    traceback out of here stops the rest of the page rendering. Clearing it puts the button
+    back, which is also what you want after installing the extra the first branch complains
+    about.
+    """
+    flag = _measure_flag(document)
+    if not st.session_state.get(flag):
+        return None, ""
     try:
-        with st.spinner("Synthesising…"):
-            return spoken_length(document.text)
+        with st.spinner("Synthesising the draft…"):
+            return spoken_length(document.text), ""
     except workspace.AudioUnavailable as exc:
-        # A normal state to explain, not an error to raise at someone: the audio extra is
-        # genuinely optional and the rest of the page works perfectly without it.
-        st.info(str(exc), icon=":material/volume_off:")
-        return None
+        st.session_state.pop(flag, None)
+        return None, str(exc)
+    except Exception as exc:
+        # Broad on purpose. Everything past the import guard is someone else's failure mode —
+        # a first-run model download with no network, an HF rate limit, a full disk, mlx
+        # raising on a pathological draft — and none of them should take the page down.
+        st.session_state.pop(flag, None)
+        return None, f"Could not measure this draft: {exc}"
+
+
+def _measure_button(document: workspace.Document) -> None:
+    """The control that opts into a measurement, rendered inside the metric row."""
+    flag = _measure_flag(document)
+    # Rerun on click so the button is *replaced* by the result rather than sitting beside it.
+    if st.button(
+        "Measure",
+        key=f"button-{flag}",
+        icon=":material/graphic_eq:",
+        help="Synthesise the draft and time it, instead of estimating from word count.",
+    ):
+        st.session_state[flag] = True
+        st.rerun()
 
 
 def document_browser(documents: list[workspace.Document], *, spoken: bool, empty: str) -> None:
@@ -74,7 +102,8 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
     if document is None:
         return
 
-    measured = None
+    # Measured before the row opens: the spinner and any failure notice need full width.
+    measured, notice = _measure_if_requested(document) if spoken else (None, "")
     with st.container(horizontal=True, vertical_alignment="bottom"):
         # The tooltip names what the count leaves out, matching workspace.py: the `---` header
         # block is stripped and bracketed delivery cues (`[pause]`) are dropped as unspoken.
@@ -97,8 +126,9 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 width="content",
                 help=f"Estimated at about {WORDS_PER_MINUTE} words per minute.",
             )
-            measured = _measured_length(document)
-            if measured is not None:
+            if measured is None:
+                _measure_button(document)
+            else:
                 # Showing both is the point: one constant cannot know that this draft is
                 # dense with long words and that one is short and punchy. `delta_color="off"`
                 # because drift in either direction is information, not good or bad news.
@@ -121,6 +151,9 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 file_name=document.path.name,
                 icon=":material/download:",
             )
+
+    if notice:
+        st.info(notice, icon=":material/volume_off:")
 
     # The synthesis already happened, so playing it back costs nothing extra — and hearing a
     # draft is the fastest way to catch what the critic's "speakability" pass can only infer.

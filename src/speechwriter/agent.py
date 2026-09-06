@@ -147,10 +147,17 @@ def _build_model(settings: Settings) -> BaseChatModel:
     """Resolve the model id, settling its output-token ceiling in three tiers.
 
     1. An explicit ``SPEECHWRITER_MAX_TOKENS`` always wins.
-    2. Otherwise a model LangChain can profile keeps **its own** ceiling — 64k-128k for
-       current Claude models.
+    2. Otherwise a client that resolved **its own** ceiling keeps it — 64k-128k for current
+       Claude models, from LangChain's profile table.
     3. Otherwise :data:`~speechwriter.config.DEFAULT_MAX_TOKENS`, because an id with no
        profile would silently inherit 4096.
+
+    Tier 2 tests the **resolved ceiling**, not the presence of a profile. Those are the same
+    question for ``ChatAnthropic`` and emphatically not for ``ChatOpenAI``: ``init_chat_model``
+    applies a profile's ``max_tokens`` only on the Anthropic path, so a *profiled* id served
+    over ``SPEECHWRITER_BASE_URL`` — ``gpt-4o`` on LM Studio or LiteLLM, say — comes back with
+    ``max_tokens=None`` and no ceiling at all. Keying tier 2 on ``profile`` let exactly that
+    case skip tier 3, which is the unbounded-thinking budget tier 3 exists to prevent.
 
     Tier 3 is the one that bites. Extended thinking bills against the same ceiling, so at
     4096 a subagent can spend its entire budget thinking and emit no text at all —
@@ -189,7 +196,13 @@ def _build_model(settings: Settings) -> BaseChatModel:
         return init_chat_model(settings.model, max_tokens=settings.max_tokens, **client)
 
     model = init_chat_model(settings.model, **client)
-    if getattr(model, "profile", None) is not None:
+    # Both halves, guarding opposite failures. Without the profile check an *unprofiled*
+    # ChatAnthropic keeps `max_tokens=4096` — LangChain's silent fallback, and the whole
+    # reason tier 3 exists. Without the ceiling check a *profiled* ChatOpenAI keeps
+    # `max_tokens=None`, because `init_chat_model` reads a profile's ceiling only on the
+    # Anthropic path; that is worse still, being no ceiling at all. Neither test alone is
+    # sufficient and each looks redundant until the other client is considered.
+    if getattr(model, "profile", None) is not None and getattr(model, "max_tokens", None):
         return model
 
     if settings.uses_local_endpoint:
@@ -199,17 +212,20 @@ def _build_model(settings: Settings) -> BaseChatModel:
         # the same trap tier 3 exists for. Qwen3.8-27B defaults to `reasoning_effort: xhigh`
         # and will happily spend a thousand tokens deliberating before it writes a line.
         logger.info(
-            "No LangChain model profile for %r served at %s — expected for a local "
-            "endpoint. Pinning max_tokens=%d; set SPEECHWRITER_MAX_TOKENS to override.",
+            "No output ceiling resolved for %r served at %s — expected for a local "
+            "endpoint, and true even of a *profiled* id here, since init_chat_model "
+            "applies a profile's max_tokens only on the Anthropic path. Pinning "
+            "max_tokens=%d; set SPEECHWRITER_MAX_TOKENS to override.",
             settings.model,
             settings.base_url,
             DEFAULT_MAX_TOKENS,
         )
     else:
         logger.warning(
-            "No LangChain model profile for %r — it would otherwise inherit a 4096-token "
-            "ceiling, which extended thinking can exhaust before any text is emitted. Using "
-            "max_tokens=%d instead; set SPEECHWRITER_MAX_TOKENS to override.",
+            "No output ceiling resolved for %r (no LangChain model profile) — it would "
+            "otherwise inherit a 4096-token ceiling, which extended thinking can exhaust "
+            "before any text is emitted. Using max_tokens=%d instead; set "
+            "SPEECHWRITER_MAX_TOKENS to override.",
             settings.model,
             DEFAULT_MAX_TOKENS,
         )

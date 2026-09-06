@@ -135,10 +135,16 @@ Nothing else changes: the same graph, subagents, skills, sandbox, and memory.
 
 Two things worth knowing:
 
-- **The ceiling resolves through tier 3.** A locally served id has no LangChain profile, so it
-  takes the 32000-token floor. That is the wanted answer here, not a fallback — `ChatOpenAI`'s
-  own default is "let the server decide", which on a reasoning model is an unbounded thinking
-  budget.
+- **The ceiling resolves through tier 3**, and for a second reason besides the obvious one.
+  A locally served id usually has no LangChain profile — but even a *profiled* one (`gpt-4o`
+  on LM Studio or LiteLLM) gets the 32000-token floor here, because `init_chat_model` reads a
+  profile's `max_tokens` only on the Anthropic path. Either way the floor is the wanted
+  answer, not a fallback: `ChatOpenAI`'s own default is "let the server decide", which on a
+  reasoning model is an unbounded thinking budget.
+- **The ceiling travels as `max_completion_tokens`.** That is what `langchain-openai` 1.6
+  sends, and what `mlx_lm.server` reads. Some OpenAI shims accept only the older `max_tokens`
+  and drop unknown fields silently — if a local turn seems to run forever, that is the first
+  thing to check.
 - **Reasoning effort is worth tuning.** Qwen3.8's chat template defaults to
   `reasoning_effort: xhigh`, which spends ~1400 tokens deliberating before it writes a line.
   For prose, `low` is both faster and better; pass it via the server's
@@ -160,6 +166,10 @@ what a "speakability" critique can only infer.
 ```bash
 uv sync --extra audio
 ```
+
+**Apple Silicon (or aarch64 Linux) only** — `mlx` publishes no x86-64 Linux wheels and no
+sdist, so this extra will fail to resolve elsewhere. CI never installs it, so nothing catches
+that for you.
 
 It is off by default because it pulls a torch/spaCy stack that the rest of the project has no
 use for. Everything else works untouched without it; the button explains itself if the extra
