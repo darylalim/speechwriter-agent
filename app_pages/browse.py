@@ -12,7 +12,7 @@ import streamlit as st
 
 from speechwriter import workspace
 from speechwriter.config import WORDS_PER_MINUTE
-from speechwriter.webui import documents, get_bundle
+from speechwriter.webui import documents, get_bundle, spoken_length
 
 bundle = get_bundle()
 settings = bundle.settings
@@ -29,6 +29,39 @@ def _humanize(key: str) -> str:
     return label.title() or key
 
 
+def _measured_length(document: workspace.Document) -> workspace.SpokenLength | None:
+    """The draft's real delivery time, once the reader asks for it.
+
+    Gated behind a button rather than computed with the page. Synthesis runs at roughly RTF
+    0.06 — about nine seconds for a three-minute speech — which is fine to wait for
+    deliberately and far too slow to pay on every rerun of a page whose whole job is
+    browsing. `webui.spoken_length` caches the result on the draft's text, so re-picking the
+    same document is instant while a revised one is measured again.
+    """
+    flag = f"measured:{document.slug}"
+    if not st.session_state.get(flag):
+        # Rerun on click so the button is *replaced* by the result rather than sitting beside
+        # it; without it the row would show a stale control next to the number it produced.
+        if st.button(
+            "Measure",
+            key=f"measure-{document.slug}",
+            icon=":material/graphic_eq:",
+            help="Synthesise the draft and time it, instead of estimating from word count.",
+        ):
+            st.session_state[flag] = True
+            st.rerun()
+        return None
+
+    try:
+        with st.spinner("Synthesising…"):
+            return spoken_length(document.text)
+    except workspace.AudioUnavailable as exc:
+        # A normal state to explain, not an error to raise at someone: the audio extra is
+        # genuinely optional and the rest of the page works perfectly without it.
+        st.info(str(exc), icon=":material/volume_off:")
+        return None
+
+
 def document_browser(documents: list[workspace.Document], *, spoken: bool, empty: str) -> None:
     """Pick-and-read over a list of Markdown documents, newest first."""
     if not documents:
@@ -41,6 +74,7 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
     if document is None:
         return
 
+    measured = None
     with st.container(horizontal=True, vertical_alignment="bottom"):
         # The tooltip names what the count leaves out, matching workspace.py: the `---` header
         # block is stripped and bracketed delivery cues (`[pause]`) are dropped as unspoken.
@@ -63,6 +97,22 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 width="content",
                 help=f"Estimated at about {WORDS_PER_MINUTE} words per minute.",
             )
+            measured = _measured_length(document)
+            if measured is not None:
+                # Showing both is the point: one constant cannot know that this draft is
+                # dense with long words and that one is short and punchy. `delta_color="off"`
+                # because drift in either direction is information, not good or bad news.
+                drift = measured.seconds - document.minutes * 60
+                st.metric(
+                    "Measured",
+                    f"{measured.minutes:.1f} min",
+                    delta=f"{drift:+.0f}s vs estimate",
+                    delta_color="off",
+                    border=True,
+                    width="content",
+                    help="Synthesised with Kokoro. Times the words only — a bracketed cue "
+                    "adds no silence, so this is time-to-say, not time-on-stage.",
+                )
         # Pushed to the far edge so it reads as an action, not a third stat card.
         with st.container(horizontal_alignment="right"):
             st.download_button(
@@ -71,6 +121,11 @@ def document_browser(documents: list[workspace.Document], *, spoken: bool, empty
                 file_name=document.path.name,
                 icon=":material/download:",
             )
+
+    # The synthesis already happened, so playing it back costs nothing extra — and hearing a
+    # draft is the fastest way to catch what the critic's "speakability" pass can only infer.
+    if measured is not None and measured.wav:
+        st.audio(measured.wav, format="audio/wav")
 
     # Rendered as metadata rather than passed through st.markdown: a `---` fence directly
     # after the header's last line would otherwise turn the whole block into one setext H2.

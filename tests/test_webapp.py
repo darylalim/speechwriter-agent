@@ -8,10 +8,12 @@ be discovered by a human opening a browser.
 
 from __future__ import annotations
 
+import importlib
 import os
 import re
 import tomllib
 
+import pytest
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.store.memory import InMemoryStore
@@ -383,3 +385,70 @@ def test_streamlit_config_parses_and_offers_both_theme_modes():
     # The security invariant the file's own header comment documents: bind loopback only, so
     # the budget-spending agent is never put on the network by an "External URL".
     assert data["server"]["address"] == "localhost"
+
+
+def _without_the_audio_extra(monkeypatch):
+    """Make every `mlx_audio` import fail, as it does in CI and any default install."""
+    real = importlib.import_module
+
+    def blocked(name, *args, **kwargs):
+        if name.startswith("mlx_audio"):
+            raise ImportError(f"No module named {name!r}")
+        return real(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib, "import_module", blocked)
+    # The per-process model cache would otherwise satisfy the call before the import runs.
+    monkeypatch.setattr(workspace, "_TTS_MODELS", {})
+
+
+def test_measuring_without_the_audio_extra_names_the_install_command(monkeypatch):
+    # The extra is genuinely optional, so this path is a normal state the UI has to explain.
+    # A bare ImportError escaping here would surface in the browser as a red traceback on a
+    # page whose other five features work fine.
+    _without_the_audio_extra(monkeypatch)
+
+    with pytest.raises(workspace.AudioUnavailable) as excinfo:
+        workspace.measure_spoken_length("Good evening, and thank you all for coming.")
+
+    assert "--extra audio" in str(excinfo.value)
+
+
+def test_measuring_an_unspoken_draft_needs_no_model_at_all(monkeypatch):
+    # A header-only file has nothing to say, and loading a TTS model to discover that would
+    # cost seconds for a guaranteed zero. Asserted with imports blocked, so a regression that
+    # moved the short-circuit below the model load fails here rather than merely getting slow.
+    _without_the_audio_extra(monkeypatch)
+
+    measured = workspace.measure_spoken_length("---\nspeaker: Ana\n---\n\n[pause]\n")
+
+    assert measured.seconds == 0.0
+    assert measured.wav == b""
+
+
+def test_measured_and_estimated_lengths_describe_the_same_words():
+    # The two figures the browser prints side by side must be derived from one corpus, or
+    # they differ for a reason the reader cannot see. This pins the shared-corpus property
+    # without synthesising anything: both go through `_spoken_text`.
+    draft = "---\nspeaker: Ana\n---\n\nGood evening. [pause] Thank you all for coming.\n"
+    _, body = workspace._split_front_matter(draft)
+
+    assert "[pause]" not in workspace._spoken_text(body)
+    assert workspace.spoken_words(draft) == len(workspace._spoken_text(body).split())
+
+
+@pytest.mark.skipif(
+    not os.environ.get("SPEECHWRITER_TEST_AUDIO"),
+    reason="needs `uv sync --extra audio` and downloads a TTS model; set SPEECHWRITER_TEST_AUDIO=1",
+)
+def test_measured_length_is_in_the_right_ballpark():
+    # Opt-in, because it is the one test here that is neither free nor offline: the first run
+    # downloads Kokoro. Asserts a *range* rather than a figure -- the point is that the
+    # measurement is real and roughly agrees with the words-per-minute estimate, not that a
+    # particular voice hits a particular duration.
+    words = "Good evening, and thank you all for coming out tonight. " * 10
+    measured = workspace.measure_spoken_length(words)
+
+    assert measured.sample_rate > 0
+    assert measured.wav.startswith(b"RIFF")
+    estimate = workspace.spoken_words(words) / config.WORDS_PER_MINUTE * 60
+    assert 0.5 * estimate < measured.seconds < 2.0 * estimate

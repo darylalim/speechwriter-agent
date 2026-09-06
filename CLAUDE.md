@@ -123,6 +123,20 @@ Two reader gotchas the web UI exposed:
 - **`memory.all_items(store)` is the public exhaustive read** — the web UI lists profiles from the live Store through it, not the JSON snapshot. A hand-rolled `store.search(...)` stops at the default limit of 10 and shows a partial memory as whole.
 - **`workspace.py` strips `---` front matter before rendering or counting.** The agent fences its header block with `---`; in CommonMark a `---` line right after a paragraph makes it a setext H2, so raw `st.markdown` renders the header as one run-on heading and its words inflate the spoken-length estimate. Bracketed cues (`[pause]`) are dropped from the word count too — they are delivered, not spoken.
 
+## Measured spoken length is optional, and the optionality shapes the code
+
+`workspace.measure_spoken_length()` synthesises a draft with Kokoro (MLX) and reports its real duration; `browse.py` shows it beside the `WORDS_PER_MINUTE` estimate. It lives behind `[project.optional-dependencies] audio` — `uv sync --extra audio` — because it pulls a torch/spaCy stack nothing else here wants, and CI installs no extras. Five things are load-bearing.
+
+**The `mlx_audio` import is dynamic, and the model is loaded in two steps.** Not style — it is the only source state that type-checks in *both* environments. A static import is `unresolved-import` where the extra is absent (CI); a suppression for that is `unused-ignore-comment` where it is present, and `ty` **exits 1 on that warning** — so neither form is green everywhere, exactly the "state no source satisfies" the tool-pin rule describes. `import_module` sidesteps the import half. The load half is worse than it looks: `load_model` is annotated `model_path: Path` and *means* it — handed a Hub id as a `Path` it looks for a literal directory, misses the download branch and raises `FileNotFoundError` (verified) — so `load_model(model_id)` works at runtime but needs a suppression, and that suppression has no correct form either. `get_model_path(str) -> Path` is the half that resolves a repo id; the two calls chained are correctly typed and need no suppression at all. **Do not collapse them.**
+
+**`_spoken_text()` is the single corpus.** `Document.words` counts it and `measure_spoken_length` synthesises it, so the two figures the browser prints side by side describe the same words. Deriving either from a different string makes them disagree for a reason no reader can see.
+
+**The measured figure is not a corrected estimate.** It times the words at a TTS voice's pace (140–180 wpm measured here) and adds no silence for a `[pause]` cue, laughter, or breath. 130 wpm may be the better guide to time on stage. Report the gap; don't "fix" `WORDS_PER_MINUTE` from it.
+
+**Caching lives in `webui.py`, keyed on the draft's text** — `workspace.py` stays Streamlit-free, and the agent revises in place, so a path key would go stale where the text key does not. It is `max_entries`-bounded because each entry carries a WAV (~2.9 MB per spoken minute).
+
+**The real-synthesis test is opt-in** (`SPEECHWRITER_TEST_AUDIO=1`), because it is the one test here that is neither free nor offline — the first run downloads the model. The default suite skips it and stays ~4s; the rest of the audio behaviour is tested with imports blocked, which needs no extra at all.
+
 ## Invariants to preserve
 
 - **Building the agent must not call the model or the network.** This is what makes the entire test suite free and offline. Anything that would make `build_agent()` hit the wire belongs behind a lazy path.

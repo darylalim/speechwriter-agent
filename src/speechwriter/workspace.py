@@ -95,9 +95,20 @@ class MemoryEntry:
     text: str
 
 
+def _spoken_text(body: str) -> str:
+    """An already-header-stripped body reduced to what is actually said aloud.
+
+    The single corpus definition. :func:`_count_spoken` counts it and
+    :func:`measure_spoken_length` synthesises it, so the estimated and measured figures the
+    browser prints side by side describe the *same* words — two numbers derived from two
+    different strings would differ for a reason the reader could not see.
+    """
+    return _STAGE_DIRECTION.sub(" ", body)
+
+
 def _count_spoken(body: str) -> int:
     """Words said aloud in an already-header-stripped body."""
-    return len(_STAGE_DIRECTION.sub(" ", body).split())
+    return len(_spoken_text(body).split())
 
 
 def spoken_words(text: str) -> int:
@@ -111,6 +122,130 @@ def spoken_words(text: str) -> int:
     """
     _, body = _split_front_matter(text)
     return _count_spoken(body)
+
+
+# Kokoro is small (82M), Apple-Silicon-native via MLX, and runs at roughly RTF 0.06 — a
+# three-minute speech is synthesised in about nine seconds. Named here rather than in
+# `config.py` because, unlike SPEECHES_SUBDIR or WORDS_PER_MINUTE, nothing else in the
+# project consumes them: there is no second subsystem to drift from.
+TTS_MODEL = "mlx-community/Kokoro-82M-bf16"
+TTS_VOICE = "af_heart"
+
+# Loading the weights costs ~0.5s and building the phonemiser pipeline rather more, so the
+# model is kept per process. A plain dict rather than `functools.lru_cache` because the
+# value is an unhashable, lazily-imported object and this keeps the module's top-level
+# imports exactly as light as they were.
+_TTS_MODELS: dict = {}
+
+
+class AudioUnavailable(RuntimeError):
+    """Raised when spoken-length measurement is requested without the ``audio`` extra.
+
+    A distinct type rather than letting ``ImportError`` escape: the caller is a UI that must
+    tell the reader *how to fix it*, and catching bare ``ImportError`` around a call this
+    deep would also swallow a genuine broken install inside the TTS stack.
+    """
+
+
+@dataclass(frozen=True)
+class SpokenLength:
+    """A draft's *measured* delivery time, plus the audio it was measured from."""
+
+    seconds: float
+    wav: bytes
+    """Complete RIFF/WAVE bytes — playable as-is, so the synthesis is not thrown away."""
+
+    sample_rate: int
+
+    @property
+    def minutes(self) -> float:
+        return self.seconds / 60
+
+
+def _load_tts(model_id: str):
+    """Load (once per process) the MLX TTS model, or explain why it cannot be loaded."""
+    cached = _TTS_MODELS.get(model_id)
+    if cached is not None:
+        return cached
+    # Resolved by name at call time rather than imported at module scope: `mlx_audio` is an
+    # optional extra pulling a torch/spacy stack, and a top-level import would charge every
+    # `import speechwriter` for it — the same lazy-import discipline `__init__.py` applies to
+    # the langchain stack.
+    try:
+        from importlib import import_module
+
+        generate = import_module("mlx_audio.tts.generate")
+        hub = import_module("mlx_audio.utils")
+    except ImportError as exc:  # pragma: no cover - exercised only without the extra
+        raise AudioUnavailable(
+            "Measuring spoken length needs the optional audio extra. "
+            "Install it with: uv sync --extra audio"
+        ) from exc
+
+    # Resolved in two steps on purpose. `load_model` is annotated `model_path: Path` and means
+    # it — handed a Hub id as a Path it looks for a literal directory, misses the download
+    # branch, and raises FileNotFoundError. `get_model_path` is the half that takes a repo-id
+    # *string*, downloads if needed, and returns the real snapshot directory.
+    #
+    # Collapsing these into one `load_model(model_id)` call is the obvious-looking tidy-up and
+    # it is a trap: it works at runtime but only type-checks with a suppression, and *that*
+    # has no correct form. With the extra installed the suppression is required; in CI, which
+    # installs no extras, the same comment is an unused-suppression warning and `ty` exits 1.
+    # Two correctly-typed calls need no suppression, so both environments stay green.
+    model = generate.load_model(hub.get_model_path(model_id))
+    _TTS_MODELS[model_id] = model
+    return model
+
+
+def measure_spoken_length(
+    text: str, *, model_id: str = TTS_MODEL, voice: str = TTS_VOICE
+) -> SpokenLength:
+    """Synthesise a draft and report how long it actually takes to say.
+
+    ``WORDS_PER_MINUTE`` is a single constant standing in for pace, and it cannot know that
+    one draft is dense with long words while another is short and punchy. This measures the
+    real thing — at the cost of running a TTS model, which is why the caller decides when to
+    pay it rather than it happening on every page render.
+
+    Measured over the same corpus :attr:`Document.words` counts (header block and bracketed
+    delivery cues removed), so the two figures are comparable. The consequence worth knowing:
+    a ``[pause]`` contributes *no* silence here, so this is the time to say the words, not
+    the time the performance runs.
+
+    Raises :class:`AudioUnavailable` if the ``audio`` extra is not installed.
+    """
+    import io
+    import wave
+
+    import numpy as np
+
+    _, body = _split_front_matter(text)
+    spoken = _spoken_text(body).strip()
+    if not spoken:
+        return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
+
+    segments = list(_load_tts(model_id).generate(text=spoken, voice=voice))
+    if not segments:  # pragma: no cover - defensive; the model yields at least one segment
+        return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
+
+    sample_rate = int(segments[0].sample_rate)
+    pcm = np.concatenate([np.asarray(segment.audio, dtype=np.float32) for segment in segments])
+
+    # Kokoro emits float samples nominally in [-1, 1]; clip before the int16 cast so an
+    # overshoot wraps to the opposite rail as a loud click instead of silently inverting.
+    ints = (np.clip(pcm, -1.0, 1.0) * 32767).astype(np.int16)
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(sample_rate)
+        wav.writeframes(ints.tobytes())
+
+    return SpokenLength(
+        seconds=len(pcm) / sample_rate,
+        wav=buffer.getvalue(),
+        sample_rate=sample_rate,
+    )
 
 
 def load_documents(directory: Path) -> list[Document]:

@@ -111,6 +111,23 @@ def documents(directory: Path) -> list[workspace.Document]:
     return _parse_documents(str(directory), signature)
 
 
+# Bounded because each entry carries the synthesised WAV — roughly 2.9 MB per spoken minute
+# at 24 kHz mono — so an unbounded cache would grow with every draft measured this session.
+@st.cache_data(show_spinner=False, max_entries=8)
+def spoken_length(text: str) -> workspace.SpokenLength:
+    """Measured delivery time for a draft, synthesised once per distinct text.
+
+    Keyed on the draft's own text rather than its path or slug, so a revised speech — which
+    the agent rewrites *in place* — measures again while a mere rerun does not. That matters
+    more here than for :func:`documents`: this costs a TTS pass (~9s for a three-minute
+    speech), where that costs a file read.
+
+    The caching lives here rather than in :mod:`speechwriter.workspace` for the usual reason:
+    that module stays free of any Streamlit import.
+    """
+    return workspace.measure_spoken_length(text)
+
+
 def init_session() -> None:
     """Ensure this browser session has a transcript, a seen-set, and its own thread."""
     st.session_state.setdefault(_TRANSCRIPT, [])

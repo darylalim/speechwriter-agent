@@ -96,7 +96,7 @@ uv run streamlit run streamlit_app.py
 A two-page web app reading the same `.env` — no separate configuration:
 
 - **Write** — commission a speech and watch the agent plan, research, draft, and self-critique in a live activity log; each finished turn is snapshotted immediately (a closed tab runs no shutdown hook, so waiting until exit would usually mean never).
-- **Workspace** — browse saved drafts (with a spoken-length estimate), research notes, and the voice profiles the agent has learned, read straight from the live Store.
+- **Workspace** — browse saved drafts (with a spoken-length estimate, and a **Measure** button that synthesizes the draft for a real one), research notes, and the voice profiles the agent has learned, read straight from the live Store.
 
 It binds to `localhost` only by default; the agent spends your API budget and reads your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
 
@@ -147,6 +147,40 @@ Two things worth knowing:
 Sizing, on 32GB unified memory: the 4-bit 27B weighs 15GB on disk and peaks at ~15.5GB
 resident, generating ~21 tok/s on an M2 Max — comfortably inside the ~24GB macOS allows the
 GPU by default, with headroom left for the KV cache.
+
+### Measuring spoken length for real
+
+`WORDS_PER_MINUTE` is one constant standing in for pace, and it cannot know that one draft is
+dense with long words while another is short and punchy. With the optional `audio` extra, the
+Workspace page grows a **Measure** button that synthesizes the draft with
+[Kokoro](https://huggingface.co/mlx-community/Kokoro-82M-bf16) and reports the real duration
+next to the estimate — and plays it back, since hearing a draft is the fastest way to catch
+what a "speakability" critique can only infer.
+
+```bash
+uv sync --extra audio
+```
+
+It is off by default because it pulls a torch/spaCy stack that the rest of the project has no
+use for. Everything else works untouched without it; the button explains itself if the extra
+is missing. Synthesis runs at about RTF 0.06 — roughly nine seconds for a three-minute speech
+— which is why it is a button rather than something the page computes on load.
+
+**Read the two numbers as different things, not as right-and-wrong.** Measured against the
+three drafts in this repo, Kokoro comes in consistently *shorter* than the estimate:
+
+| Draft | Words | Estimated | Measured | Effective rate |
+|---|---|---|---|---|
+| `marguerite-okonkwo-retirement-toast` | 366 | 169s | 158s | 139 wpm |
+| `sam-priya-wedding-toast` | 272 | 126s | 93s | 175 wpm |
+| `sam-priya-rehearsal-dinner-toast` | 108 | 50s | 36s | 180 wpm |
+
+None of those drafts contains a single `[pause]` cue, so this is not stripped silence — it is
+that a TTS voice reads at 140–180 wpm and does not stop for laughter, applause, or breath.
+130 wpm may well be the better guide to *time on stage*; the measurement is the better guide
+to *time to say the words*. The gap between them is the interesting part.
+
+---
 
 ## Using it as a library
 
