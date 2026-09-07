@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from typing import TypedDict
 
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
@@ -29,13 +30,39 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
-from speechwriter.config import DEFAULT_MAX_TOKENS, Settings, load_settings
+from speechwriter.config import (
+    DEFAULT_LOCAL_CONTEXT_WINDOW,
+    DEFAULT_MAX_TOKENS,
+    Settings,
+    load_settings,
+)
 from speechwriter.memory import load_store, save_store
 from speechwriter.observability import TruncationWarner
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
 
 logger = logging.getLogger(__name__)
+
+
+class _ClientKwargs(TypedDict, total=False):
+    """The ``init_chat_model`` arguments that select and shape a *local* client.
+
+    Typed rather than left as ``dict[str, object]`` for the same reason
+    :func:`~speechwriter.subagents.build_subagents` returns ``list[SubAgent]``: every key here
+    is load-bearing and silently optional. ``init_chat_model`` takes ``**kwargs: Any``, so a
+    misspelled ``"profiles"`` or ``"base_urls"`` would be accepted and forwarded into the
+    client constructor's own ``**kwargs``, and the only symptom would be a local model quietly
+    running against Anthropic or never compacting. Spelled out, ``ty`` rejects the typo.
+
+    It also keeps the ``**client`` unpack matching ``init_chat_model``'s overloads: an
+    inferred ``dict`` widens its value type to a union covering ``profile``'s nested mapping,
+    which no longer satisfies the declared ``model_provider: str | None``.
+    """
+
+    model_provider: str
+    base_url: str | None
+    api_key: str
+    profile: dict[str, int]
 
 
 @dataclass
@@ -53,6 +80,18 @@ class SpeechwriterAgent:
     # `bundle.agent` directly — the path the README documents — would otherwise get no
     # truncation signal at all, which is precisely what this warner exists to prevent.
     warner: TruncationWarner = field(default_factory=TruncationWarner)
+    # Appended, not inserted — the rule `config.Settings` states, and this field first broke.
+    # A default is not sufficient on its own: a consumer constructing the bundle positionally
+    # would have had their warner bound to *this* field instead, losing every truncation
+    # signal and raising from `ceiling_label` on the first comparison.
+    #
+    # What the model itself says it can emit, when LangChain profiles it — kept beside the
+    # resolved ceiling so a front end can say when an explicit override asks for *more* than
+    # the model will accept. That pairing only became reachable when the model became
+    # switchable: `SPEECHWRITER_MAX_TOKENS` is tier 1 and global, so an override set for one
+    # model (128k, sized for Opus) silently follows a switch to another (Haiku, whose real
+    # ceiling is 64k) and is rejected at the first turn, far from the switch that caused it.
+    profiled_max_tokens: int | None = None
 
     def persist(self) -> int:
         """Snapshot the learned speaker voice profiles to disk; returns the item count.
@@ -74,6 +113,28 @@ class SpeechwriterAgent:
         UI, and a banner that re-derives this by hand is a banner that can quietly lie.
         """
         return f"{self.max_tokens:,}" if self.max_tokens is not None else "model default"
+
+    @property
+    def ceiling_exceeds_model(self) -> bool:
+        """Whether the resolved ceiling asks for more output than the model will accept.
+
+        Reachable only because the model became switchable: ``SPEECHWRITER_MAX_TOKENS`` is
+        tier 1 and global, so an override sized for one model (128k, for Opus) follows a
+        switch to another (Haiku, whose real ceiling is 64k) and is rejected at the first turn,
+        far from the switch that caused it.
+
+        A property of its own rather than a suffix on :attr:`ceiling_label`, which is where it
+        started: both front ends interpolate that label into a sentence telling the reader to
+        *raise* ``SPEECHWRITER_MAX_TOKENS``, so folding the warning in produced "raise
+        SPEECHWRITER_MAX_TOKENS (currently 128,000 — above this model's 64,000)" — advice that
+        contradicts itself. The label answers "what is the ceiling"; this answers "is it
+        usable", and the two questions belong in different sentences.
+        """
+        return (
+            self.max_tokens is not None
+            and self.profiled_max_tokens is not None
+            and self.max_tokens > self.profiled_max_tokens
+        )
 
     def turn_config(self, thread_id: str) -> RunnableConfig:
         """Build the config for one invocation: thread to resume + truncation detection.
@@ -182,11 +243,25 @@ def _build_model(settings: Settings) -> BaseChatModel:
     # `init_chat_model` to infer, so the provider is stated. Threaded through *every* tier
     # below rather than added to one branch — a ceiling path that omitted it would quietly
     # build an Anthropic client for a local model and fail at the first call.
-    client = (
+    #
+    # `profile` is not about the output ceiling — `init_chat_model` reads a profile's
+    # `max_tokens` only on the Anthropic path, so this leaves the tiers below untouched and a
+    # local model still resolves through tier 3. It is about *input*: deepagents sizes its
+    # context-compaction trigger from the model's profile, and an unprofiled id — which every
+    # locally served id is — gets a flat 170k-token trigger instead of a fraction of its real
+    # window. No local server has a 170k window, so without this the conversation outgrows the
+    # window and the server errors before compaction ever fires. See
+    # `config.DEFAULT_LOCAL_CONTEXT_WINDOW`. Only `max_input_tokens` is carried: a
+    # `max_output_tokens` key here would be inert, and would imply a ceiling mechanism that
+    # does not exist on this path.
+    client: _ClientKwargs = (
         {
             "model_provider": "openai",
             "base_url": settings.base_url,
             "api_key": settings.endpoint_api_key,
+            "profile": {
+                "max_input_tokens": settings.context_window or DEFAULT_LOCAL_CONTEXT_WINDOW
+            },
         }
         if settings.uses_local_endpoint
         else {}
@@ -265,9 +340,14 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         name="speechwriter",
     )
 
+    profile = getattr(model, "profile", None)
     return SpeechwriterAgent(
         agent=agent,
         store=store,
         settings=settings,
         max_tokens=getattr(model, "max_tokens", None),
+        # `.get` on a mapping we did not build: a profile is third-party data whose shape can
+        # change on a dependency bump, and an absent key here should cost the warning, not the
+        # build. None simply means "nothing to compare against".
+        profiled_max_tokens=profile.get("max_output_tokens") if isinstance(profile, dict) else None,
     )

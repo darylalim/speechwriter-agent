@@ -20,15 +20,63 @@ disk, so it never appears as a real folder — it lives in the persistent Store.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, NamedTuple
 
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+class ModelChoice(NamedTuple):
+    """One selectable model: the id *and* where it is served from, as a single record.
+
+    ``model`` and ``base_url`` travel together because they are not independent choices.
+    :func:`~speechwriter.agent._build_model` keys the *client* off ``base_url``, never off
+    the id — so a locally served id paired with ``base_url=None`` builds an **Anthropic**
+    client and raises ``ValueError: Unable to infer model provider`` inside ``build_agent``,
+    which in Streamlit is a page-level traceback (``get_bundle()`` runs at module scope).
+    Pairing them here makes that combination unrepresentable rather than something every
+    front end has to remember to validate.
+
+    ``context_window`` is the local half's other half: see
+    :data:`DEFAULT_LOCAL_CONTEXT_WINDOW`.
+    """
+
+    label: str
+    model: str
+    base_url: str | None = None
+    context_window: int | None = None
+
+    def is_current(self, settings: Settings) -> bool:
+        """Whether ``settings`` is already running this choice.
+
+        The identity of a choice is the pair, never the label — two entries naming the same
+        model at the same endpoint are the same choice however they are captioned. Spelled out
+        once because both front ends ask this to decide what to mark as current and whether a
+        switch is a no-op, and a comparison that quietly dropped ``base_url`` would call a local
+        model and its Anthropic namesake the same thing.
+        """
+        return self.model == settings.model and self.base_url == settings.base_url
+
+    def applied_to(self, settings: Settings) -> Settings:
+        """``settings`` with this choice in force, ready for ``build_agent``.
+
+        All three fields move together, which is the point: ``base_url`` selects the client and
+        ``context_window`` sizes compaction, so applying the model alone would leave a Claude id
+        pointed at a local server, or a local model compacting for the previous one's window.
+        """
+        return dataclasses.replace(
+            settings,
+            model=self.model,
+            base_url=self.base_url,
+            context_window=self.context_window,
+        )
+
 
 # The workhorse model. Sonnet 5 is a strong writer at sensible cost; override with
 # SPEECHWRITER_MODEL (e.g. "claude-opus-5" for the highest-quality drafting; no ceiling
@@ -66,6 +114,37 @@ WORDS_PER_MINUTE = 130
 # value that shows up in a request log is greppable back to this comment.
 LOCAL_API_KEY_PLACEHOLDER = "local"
 
+# The context window assumed for a locally served model, and the reason `ModelChoice` carries
+# one at all.
+#
+# deepagents sizes its context-compaction trigger from the model's LangChain profile: a
+# profiled id compacts at a *fraction* of its real window, but an unprofiled one — which every
+# locally served id is — gets a flat 170k-token trigger. No plausible local server has a
+# 170k window, so the plan/draft/critique/revise rhythm outgrows the window and the server
+# errors before compaction ever fires. `agent._build_model` therefore hands the local client a
+# minimal profile built from this, so the trigger scales to the window the model actually has.
+#
+# 32768 is the conservative floor across the local servers this repo documents; a roster entry
+# that knows better overrides it per model via `ModelChoice.context_window`. Deliberately not
+# an environment variable: a `SPEECHWRITER_*` name is a contract with `.env.example`
+# (`test_env_example_documents_every_setting`), and this is a property of a *chosen model*
+# rather than a setting for the machine.
+DEFAULT_LOCAL_CONTEXT_WINDOW = 32768
+
+# The models the front ends offer. Anthropic ids only, on purpose — see `model_choices()`,
+# which widens this with whatever pair the environment actually names.
+#
+# Every entry here must be an id LangChain profiles, so it keeps its own 64k-128k ceiling
+# rather than falling to `DEFAULT_MAX_TOKENS`; that is not merely a convention but an
+# assertion (`test_every_anthropic_model_choice_is_profiled_above_the_floor`). Three rather
+# than all thirteen profiled ids: this is a writing tool, and the choice worth offering is
+# quality-versus-cost, not a catalogue of dated snapshots.
+MODEL_CHOICES: tuple[ModelChoice, ...] = (
+    ModelChoice("Sonnet 5", DEFAULT_MODEL),
+    ModelChoice("Opus 5", "claude-opus-5"),
+    ModelChoice("Haiku 4.5", "claude-haiku-4-5"),
+)
+
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
 _PKG_DIR = Path(__file__).resolve().parent
 
@@ -97,6 +176,12 @@ class Settings:
     # of* Anthropic; None (the normal case) leaves the Anthropic path untouched.
     base_url: str | None = None
     openai_api_key: str | None = None
+    # Appended and defaulted for the same reason as the two above — and, alone among these
+    # fields, never read from the environment. `load_settings()` leaves it None; it is set
+    # only by `dataclasses.replace` when a front end switches to a locally served model, and
+    # is read only by `agent._build_model`. See `DEFAULT_LOCAL_CONTEXT_WINDOW` for what it
+    # buys and why it is not a `SPEECHWRITER_*` knob.
+    context_window: int | None = None
 
     # -- derived helpers -------------------------------------------------
 
@@ -151,6 +236,85 @@ class Settings:
     def workspace_vpath(self) -> str:
         """Virtual dir the agent writes drafts under, e.g. ``/workspace``."""
         return self._vpath(self.workspace_dir)
+
+
+def model_choices(*offered: Settings) -> tuple[ModelChoice, ...]:
+    """The curated roster, widened so every configuration passed in stays selectable.
+
+    This roster is deliberately never authoritative. Streamlit **silently** rewrites a
+    ``session_state`` value that is not among a widget's options to option zero — no
+    exception, no log — so a fixed list would take a reader who configured a local endpoint
+    and retarget them onto the default Claude id, which on a machine with no Anthropic key
+    flips both front ends into their "no credentials" state. Widening means the picker can
+    only ever *add* to what the environment already says.
+
+    It is also how locally served models reach the roster at all: rather than shipping
+    hard-coded endpoints that are dead on any machine that has not started that particular
+    server, the local entry is whatever ``SPEECHWRITER_BASE_URL`` and ``SPEECHWRITER_MODEL``
+    name — correct by construction, because the operator configured it.
+    :func:`speechwriter.endpoints.list_models` widens it further, on demand.
+
+    **Variadic because one configuration is not enough, and passing only the live one is a
+    bug.** Selecting a curated entry sets ``base_url`` to ``None``, so a roster derived from
+    the *current* settings alone would drop the locally served entry the reader came from —
+    the same silent-retarget failure this function exists to prevent, reached by a click
+    instead of by a rerun, and unrecoverable without a restart. On a keyless machine it is
+    worse than losing an option: picking a Claude id there also disables the chat input, so
+    the one entry that still works has just been removed from the list. Callers therefore
+    pass both the configuration the session *started* on and the one now in force.
+    """
+    choices = list(MODEL_CHOICES)
+    seen = {(choice.model, choice.base_url) for choice in choices}
+    for settings in offered:
+        identity = (settings.model, settings.base_url)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        choices.append(
+            ModelChoice(settings.model, settings.model)
+            if settings.base_url is None
+            else local_choice(settings.model, settings.base_url, settings.context_window)
+        )
+    return tuple(choices)
+
+
+def resolve_choice(choices: tuple[ModelChoice, ...], requested: str) -> ModelChoice | None:
+    """Match a typed argument against a roster by position, label, or model id.
+
+    Shared by the REPL's ``/model`` and the eval harness's ``--model`` so the two cannot
+    disagree about what a reader may type — they had the same loop, byte for byte, and only
+    one of them resolved against a roster containing the locally served entry.
+
+    ``isdecimal``, not ``isdigit``: the latter is true for characters ``int()`` refuses ("²",
+    "½"), so an index check built on it raises on a stray keystroke instead of answering.
+    Every character ``isdecimal`` accepts, ``int`` parses.
+    """
+    if requested.isdecimal():
+        index = int(requested)
+        return choices[index - 1] if 1 <= index <= len(choices) else None
+    wanted = requested.casefold()
+    for choice in choices:
+        if wanted in (choice.label.casefold(), choice.model.casefold()):
+            return choice
+    return None
+
+
+def local_choice(model: str, base_url: str, context_window: int | None = None) -> ModelChoice:
+    """A roster entry for ``model`` served at ``base_url``, labelled the one way.
+
+    The label convention lives here, and in exactly one place, because equality decides
+    correctness. ``ModelChoice`` is a ``NamedTuple``, so two entries for the same served model
+    are equal only if their *labels* match too — and a front end that discovers models from a
+    live endpoint has to produce entries indistinguishable from the ones
+    :func:`model_choices` synthesises, or the same model appears twice in the picker and the
+    selected one is not found among the options. Streamlit's response to that is to silently
+    reset the selection to the first entry.
+
+    The ``(local)`` suffix earns its place for the reason the CLI banner prints ``endpoint`` on
+    a line of its own: "which model" and "served from where" fail differently, and an
+    unsuffixed id would read as an Anthropic one.
+    """
+    return ModelChoice(f"{model} (local)", model, base_url, context_window)
 
 
 def load_settings() -> Settings:

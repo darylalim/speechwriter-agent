@@ -34,7 +34,12 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Annotation-only, so the heavy `speechwriter` import this module otherwise defers into
+    # function bodies stays deferred; `from __future__ import annotations` makes it sufficient.
+    from speechwriter.config import ModelChoice
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -115,6 +120,63 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     return RunRecord(text=text, calls=tuple(calls), artifacts=tuple(artifacts))
 
 
+def configured_choice() -> ModelChoice:
+    """The model/endpoint pair the environment currently names, as one record."""
+    from speechwriter.config import ModelChoice, load_settings
+
+    settings = load_settings()
+    return ModelChoice(settings.model, settings.model, settings.base_url, settings.context_window)
+
+
+def apply_model(requested: str) -> None:
+    """Point this run at a chosen model, *before* ``prime_environment`` reads the dotenv.
+
+    Works through ``os.environ`` rather than by passing a ``Settings`` down, because
+    ``invoke_agent`` builds a fresh agent per example inside a temp home and reads the
+    environment each time. ``load_dotenv`` never overrides an already-set variable, so a value
+    put here survives the priming that follows.
+
+    A roster label or id resolves to a whole :class:`~speechwriter.config.ModelChoice`, and the
+    endpoint moves with it. That half is not cosmetic: ``base_url`` — never the id — is what
+    selects the client, so choosing a Claude entry while ``SPEECHWRITER_BASE_URL`` happens to be
+    exported would otherwise send that id to a local server. Anything unrecognised is passed
+    through verbatim as an id the operator means literally, endpoint untouched.
+    """
+    from speechwriter.config import load_settings, model_choices, resolve_choice
+
+    # Against the *full* roster, not just the curated tuple: the label a reader copies out of
+    # `/model` or the sidebar for a local model is "<id> (local)", and matching only
+    # MODEL_CHOICES passed that whole string through as a model id — so the server 404s at the
+    # first turn of every graded example, long after the temp homes are set up.
+    choice = resolve_choice(model_choices(load_settings()), requested)
+    if choice is not None:
+        os.environ["SPEECHWRITER_MODEL"] = choice.model
+        # Set to empty, never popped. Every later `load_settings()` — in `prime_environment`,
+        # in `run_langsmith`, and in the `build_agent()` of every graded example — reloads
+        # the dotenv, and `load_dotenv` only skips keys already present in `os.environ`, so
+        # a popped variable comes straight back. An empty one stays: it is *present*, so the
+        # dotenv will not override it, and `load_settings` normalises `"" -> None` because a
+        # blank value is how a shell says unset.
+        os.environ["SPEECHWRITER_BASE_URL"] = choice.base_url or ""
+        return
+    os.environ["SPEECHWRITER_MODEL"] = requested
+
+
+def model_slug() -> str:
+    """A filename-safe tag for the model in force, for naming an experiment after it.
+
+    Call only after :func:`prime_environment`. The ``-local`` suffix matters as much as the id:
+    the same model id served locally and served by Anthropic are different systems under test,
+    and an experiment name that could not tell them apart would silently pool their results.
+    """
+    from speechwriter.config import load_settings
+
+    settings = load_settings()
+    slug = "".join(char if char.isalnum() else "-" for char in settings.model.casefold())
+    slug = "-".join(part for part in slug.split("-") if part)
+    return f"{slug}-local" if settings.uses_local_endpoint else slug
+
+
 def prime_environment() -> None:
     """Load the real project's settings once, before any ``SPEECHWRITER_HOME`` override.
 
@@ -170,23 +232,43 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
         return record
 
 
-def grade(dataset: str, run: RunRecord, example: dict[str, Any], no_judge: bool) -> list[Score]:
+def grade(
+    dataset: str,
+    run: RunRecord,
+    example: dict[str, Any],
+    no_judge: bool,
+    judge: ModelChoice | None = None,
+) -> list[Score]:
+    """Score one run. ``judge`` pins the grading model when the agent's has been overridden.
+
+    Without it the judge is whatever ``load_settings()`` reports — which is the agent's own
+    model, since both read ``SPEECHWRITER_MODEL``. That is fine while there is one model, and
+    wrong the moment ``--model`` exists: each model would be graded by itself, so a comparison
+    between two of them would measure two different instruments as much as two writers.
+    """
     scores = score_example(dataset, run, example)
     if not no_judge:
         from speechwriter.agent import _build_model
         from speechwriter.config import load_settings
 
-        scores += judge_example(_build_model(load_settings()), dataset, run, example)
+        settings = load_settings()
+        if judge is not None:
+            settings = judge.applied_to(settings)
+        scores += judge_example(_build_model(settings), dataset, run, example)
     return scores
 
 
-def run_one(example: dict[str, Any], no_judge: bool) -> tuple[RunRecord, list[Score]]:
+def run_one(
+    example: dict[str, Any], no_judge: bool, judge: ModelChoice | None = None
+) -> tuple[RunRecord, list[Score]]:
     dataset = example["metadata"]["dataset_type"]
     run = invoke_agent(example["inputs"], example["metadata"]["id"])
-    return run, grade(dataset, run, example, no_judge)
+    return run, grade(dataset, run, example, no_judge, judge)
 
 
-def run_langsmith(dataset: str, limit: int, no_judge: bool) -> int:
+def run_langsmith(
+    dataset: str, limit: int, no_judge: bool, judge: ModelChoice | None = None
+) -> int:
     """Record the run as a LangSmith experiment against the mirrored dataset.
 
     Capped by ``--limit`` on purpose: ``evaluate`` would otherwise sweep every example in the
@@ -223,7 +305,7 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool) -> int:
             "outputs": (example.outputs if example else None) or {},
             "metadata": (example.metadata if example else None) or {},
         }
-        scores = grade(dataset, record, payload, no_judge)
+        scores = grade(dataset, record, payload, no_judge, judge)
         # Unscored rows are dropped from the feedback LangSmith averages and reported as their
         # own metric instead -- folding them in as 1.0 would inflate the pass rate with criteria
         # nothing actually measured.
@@ -239,7 +321,10 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool) -> int:
         target,
         data=examples,
         evaluators=[scorer],
-        experiment_prefix=f"speechwriter-{dataset}",
+        # The model is part of the experiment's identity, not incidental to it: comparing two
+        # models is the reason the model is selectable at all, and a prefix that named only the
+        # dataset would file both runs under one indistinguishable name in the mirror.
+        experiment_prefix=f"speechwriter-{dataset}-{model_slug()}",
         max_concurrency=2,
     )
     print(f"\nrecorded experiment: {getattr(results, 'experiment_name', '(see LangSmith)')}")
@@ -282,19 +367,42 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--no-judge", action="store_true", help="deterministic scorers only")
     p.add_argument("--langsmith", action="store_true", help="record as a LangSmith experiment")
     p.add_argument("--keep", action="store_true", help="leave each run's temp home on disk")
+    p.add_argument(
+        "--model",
+        help="model to grade: a roster label ('Opus 5'), a model id, or omit for the .env one",
+    )
     args = p.parse_args(argv)
 
-    if args.langsmith:
-        if args.dry_run:
-            print("--langsmith and --dry-run are contradictory", file=sys.stderr)
-            return 2
+    if args.dry_run and (args.langsmith or args.model):
+        # `--dry-run` scores a canned record and never calls a model, so both of these would be
+        # silently ignored — and `--model` would still rewrite SPEECHWRITER_MODEL for the
+        # process on its way to doing nothing. Rejected rather than dropped, so the flag that
+        # was going to have no effect says so.
+        other = "--langsmith" if args.langsmith else "--model"
+        print(f"{other} and --dry-run are contradictory", file=sys.stderr)
+        return 2
+
+    # Primed once, here, for every live path. It pops SPEECHWRITER_HOME, reloads the dotenv and
+    # clears the langsmith env cache — an ordering this module is otherwise careful about, so
+    # doing it twice is worth avoiding even where it is harmless.
+    if not args.dry_run:
         prime_environment()
-        return run_langsmith(args.dataset, args.limit, args.no_judge)
+
+    # `--model` moves the system under test; the judge must not move with it. `grade()` builds
+    # its model from `load_settings()`, which reads the same SPEECHWRITER_MODEL, so the pair in
+    # force is captured *after* priming and *before* the override, then pinned for grading.
+    # Otherwise comparing two models would grade each one with itself, changing the instrument
+    # and the subject together.
+    judge: ModelChoice | None = None
+    if args.model:
+        judge = configured_choice()
+        apply_model(args.model)
+
+    if args.langsmith:
+        return run_langsmith(args.dataset, args.limit, args.no_judge, judge)
 
     if args.keep:
         os.environ["SPEECHWRITER_EVAL_KEEP"] = "1"
-    if not args.dry_run:
-        prime_environment()
 
     examples = json.loads((EV / f"{args.dataset}.json").read_text(encoding="utf-8"))[: args.limit]
     print(
@@ -307,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.dry_run:
             scores = score_example(args.dataset, CANNED, example)
         else:
-            _, scores = run_one(example, args.no_judge)
+            _, scores = run_one(example, args.no_judge, judge)
         rows.append(report(args.dataset, example, scores))
 
     total_p = sum(r["passed"] for r in rows)

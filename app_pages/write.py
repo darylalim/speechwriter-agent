@@ -4,6 +4,7 @@ import streamlit as st
 
 from speechwriter.webui import (
     SUGGESTION_KEY,
+    base_settings,
     get_bundle,
     queue_suggestion,
     render_turn,
@@ -92,10 +93,28 @@ if not history:
         )
 
 if not has_key:
+    # Reachable two ways now, and only one of them is a fresh clone: a reader on a keyless
+    # local endpoint who picks a Claude model from the sidebar also lands here, and for them
+    # switching back is the whole fix. Only *they* have somewhere to switch back to, so each
+    # branch below says the true thing for its own reader.
+    #
+    # `bundle.settings.base_url` is not worth testing here: reaching this branch proves it is
+    # None, since a non-None one makes `model_credentials_present` true. Only the *configured*
+    # endpoint can be set, which is exactly the reader who has somewhere to switch back to.
+    recover = (
+        "Pick your locally served model in the sidebar to carry on without one, or add a key "
+        "to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
+        if base_settings().base_url
+        # No endpoint configured, so there is nothing in the picker to fall back to — but the
+        # local route is still open, and pointing at it is what the CLI's setup panel and the
+        # README both do. Dropping it left the two front ends disagreeing about how to start
+        # without a key.
+        else "Add a key to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart "
+        "the app — or run a local model instead by setting `SPEECHWRITER_BASE_URL` to an "
+        "OpenAI-compatible server."
+    )
     st.error(
-        "No `ANTHROPIC_API_KEY` found. Add it to a local `.env` file "
-        "(`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app — or run a local model "
-        "instead by setting `SPEECHWRITER_BASE_URL` to an OpenAI-compatible server.",
+        f"No `ANTHROPIC_API_KEY` found, so the selected model cannot be called. {recover}",
         icon=":material/key_off:",
     )
 

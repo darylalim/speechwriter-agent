@@ -93,7 +93,8 @@ Then just talk to it. Give it as much of the brief as you can — the agent will
 uv run streamlit run streamlit_app.py
 ```
 
-A two-page web app reading the same `.env` — no separate configuration:
+A two-page web app reading the same configuration as the CLI — no separate setup, and the only
+thing it lets you change without a restart is the model:
 
 - **Write** — commission a speech and watch the agent plan, research, draft, and self-critique in a live activity log; each finished turn is snapshotted immediately (a closed tab runs no shutdown hook, so waiting until exit would usually mean never).
 - **Workspace** — browse saved drafts (with a spoken-length estimate, and a **Measure** button that synthesizes the draft for a real one), research notes, and the voice profiles the agent has learned, read straight from the live Store.
@@ -104,13 +105,48 @@ It binds to `localhost` only by default; the agent spends your API budget and re
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SPEECHWRITER_MODEL` | `claude-sonnet-5` | Any Claude model id — `claude-opus-5` for top quality, with no ceiling override needed alongside it (LangChain profiles it at its real 128k). |
+| `SPEECHWRITER_MODEL` | `claude-sonnet-5` | The model to *start* on — any Claude model id, or a locally served one alongside `SPEECHWRITER_BASE_URL`. `claude-opus-5` for top quality, with no ceiling override needed alongside it (LangChain profiles it at its real 128k). Both front ends can switch models mid-session; see [Switching models](#switching-models). |
 | `SPEECHWRITER_MAX_TOKENS` | model's own profile | Overrides the output-token ceiling. Unset, a model LangChain can profile keeps its own ceiling — as of the pinned `langchain-anthropic` every shipped Claude id is profiled at 64k–128k, so the default resolves to **128000**. An id it *cannot* profile (a typo, or one newer than the pin) would silently inherit 4096, so it gets 32000 instead plus a warning. Extended thinking bills against the same ceiling, which is why 4096 is not enough. |
 | `SPEECHWRITER_BASE_URL` | — | Point the agent at an OpenAI-compatible endpoint instead of Anthropic — a local `mlx_lm.server`, vLLM, LM Studio, Ollama. Set it and no `ANTHROPIC_API_KEY` is required. See [Running a local model](#running-a-local-model). |
 | `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a hosted OpenAI-compatible service will need a real one. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |
+
+### Switching models
+
+`SPEECHWRITER_MODEL` sets the model the session *starts* on. Both front ends can change it
+without a restart — the sidebar dropdown in the browser, `/model` in the terminal:
+
+```
+› /model
+   1  Sonnet 5                                claude-sonnet-5
+ › 2  Opus 5                                  claude-opus-5
+   3  Haiku 4.5                               claude-haiku-4-5
+   4  mlx-community/Qwen3.8-27B-4bit (local)  http://127.0.0.1:8080/v1
+Switch with /model <number> or /model <name>.
+```
+
+Three things follow from how the switch works, and they are the same in both front ends.
+
+- **It is a rebuild, not a setting.** The output ceiling is resolved from the constructed
+  client, so it has to be. Learned voice profiles are snapshotted *first* and rehydrated by the
+  rebuild, so they survive; the conversation does not — the new agent has a new checkpointer and
+  cannot resume the old thread, so the thread is rotated and the transcript starts fresh.
+- **The locally served entry is whatever you configured**, not a hard-coded endpoint. It appears
+  once `SPEECHWRITER_BASE_URL` and `SPEECHWRITER_MODEL` name one — which is what makes it
+  correct rather than a guess about which server you happen to be running — and it **stays** in
+  the list after you switch away, so the trip is never one-way. In the browser, **Detect
+  models** asks that endpoint what else it serves and adds the answers; it runs on a click only,
+  never on page load. A model and its endpoint always travel together, so picking a local id can
+  never leave you pointed at Anthropic, nor a Claude id at localhost.
+- **`SPEECHWRITER_MAX_TOKENS` is global and wins over every model.** An override sized for one
+  model follows you to the next, so asking 128000 of Haiku 4.5 — whose real ceiling is 64000 —
+  is rejected at the first turn. The ceiling line says so before you spend one:
+  `Output ceiling — 128,000 — above this model's 64,000`.
+
+The roster is `config.MODEL_CHOICES`, and a test pins every entry to LangChain's profile table
+so an id that has quietly lost its ceiling fails CI rather than a draft.
 
 ### Running a local model
 
@@ -133,8 +169,22 @@ SPEECHWRITER_MODEL=mlx-community/Qwen3.8-27B-4bit
 provider prefix for LangChain to infer, so the endpoint is what makes the choice unambiguous.
 Nothing else changes: the same graph, subagents, skills, sandbox, and memory.
 
-Two things worth knowing:
+A few things worth knowing:
 
+- **Context compaction is sized from an assumed window.** deepagents decides when to summarize
+  from the model's LangChain profile, and an unprofiled id — which every locally served one is —
+  would otherwise get a flat 170000-token trigger. No local server has a window that large, so
+  the conversation would outgrow it and the server would error before compaction ever fired.
+  A locally served model is therefore given a minimal profile built from
+  `DEFAULT_LOCAL_CONTEXT_WINDOW` (32768), and compacts at a fraction of that. There is no
+  environment variable for it, deliberately — it is a property of a *model*, not of the
+  machine, and a new `SPEECHWRITER_*` knob is a documentation contract this does not deserve.
+  A server with a genuinely larger window is declared in code, by giving that entry a
+  `context_window` in `config.MODEL_CHOICES` (or by passing one to `build_agent` directly).
+  Note also that the injected profile *replaces* any the id would otherwise have, which shows
+  up only for a profiled id served locally — `gpt-4o` on LM Studio. That is intended: a local
+  server's model *name* says nothing about the weights it actually loaded, so the conservative
+  floor beats inheriting the hosted model's numbers.
 - **The ceiling resolves through tier 3**, and for a second reason besides the obvious one.
   A locally served id usually has no LangChain profile — but even a *profiled* one (`gpt-4o`
   on LM Studio or LiteLLM) gets the 32000-token floor here, because `init_chat_model` reads a

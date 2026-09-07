@@ -20,6 +20,7 @@ Streamlit's execution model changes two things versus the CLI's ``while True`` l
 
 from __future__ import annotations
 
+import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,8 +29,15 @@ from typing import Literal
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
-from speechwriter import workspace
+from speechwriter import endpoints, workspace
 from speechwriter.agent import SpeechwriterAgent, build_agent
+from speechwriter.config import (
+    ModelChoice,
+    Settings,
+    load_settings,
+    local_choice,
+    model_choices,
+)
 from speechwriter.transcript import Event, clip, iter_events
 
 # Session-state keys. Named constants because two page scripts read them.
@@ -48,6 +56,25 @@ _PREVIEW_LEN = 110
 # otherwise commission a speech, and spend tokens, on the next visit to the page.
 SUGGESTION_KEY = "suggestion"
 _QUEUED = "queued_prompt"
+
+# The model picker's widget key, and the cache of what "Detect models" last found.
+#
+# `MODEL_KEY` holds a whole `ModelChoice`, never a bare id, so the model and the endpoint that
+# serves it can never be set independently — picking a locally served id while `base_url` stays
+# None builds an *Anthropic* client and raises inside `build_agent`, which at module scope in
+# `streamlit_app.py` is a page-level traceback rather than a field error.
+#
+# `_DETECTED` distinguishes three states, which is why it is not simply a list: absent means
+# "never asked", `[]` means "asked, and the server offered nothing", and a populated list is a
+# real answer. Collapsing the first two would make a dead endpoint indistinguishable from one
+# that was never queried.
+MODEL_KEY = "model_choice"
+_DETECTED = "detected_models"
+# Set when a picked model could not be built, so the page can say so after recovering. Held in
+# session state rather than raised, because the raise is what takes the page down.
+_BUILD_ERROR = "model_build_error"
+
+logger = logging.getLogger(__name__)
 
 # How many measured drafts `spoken_length` keeps. Exported because `browse.py` bounds its
 # "already measured" flags to the same number: a flag that outlives its cache entry sends the
@@ -84,8 +111,159 @@ def get_bundle() -> SpeechwriterAgent:
     the same instant would pool their truncation counts. That is acceptable for a local
     single-user app and is the honest trade for routing observability through
     ``turn_config()`` instead of hand-building a per-session config.
+
+    The picked model is read from session state *inside* the body rather than taken as an
+    argument, and that is load-bearing. ``st.cache_resource`` keys on arguments, so a
+    ``get_bundle(choice)`` would keep one bundle **per model** alive at once — each with its own
+    ``InMemoryStore``, all snapshotting to the same JSON file, where ``save_store`` rewrites the
+    whole file rather than merging. Switching away and back would then silently delete whatever
+    the other bundle had learned. Zero-arg plus an explicit :func:`switch_model` invalidation
+    keeps exactly one bundle alive, which is the only shape that shares one snapshot safely.
     """
-    return build_agent()
+    choice = selected_choice()
+    if choice is None:
+        return build_agent()
+    try:
+        return build_agent(choice.applied_to(load_settings()))
+    except Exception as exc:
+        # The browser's version of the guard `cli._switch_model` already has, and it matters
+        # more here: `get_bundle()` runs at module scope in `streamlit_app.py`, *above* the
+        # sidebar, so an unbuildable pick takes the page down before the picker that would let
+        # the reader undo it is ever drawn — and the pick survives in session state, so every
+        # rerun raises again. Recovery would mean clearing browser state.
+        #
+        # `init_chat_model` raises at construction for an id whose provider it cannot infer and
+        # for an OpenAI-family id with no key, both reachable from a detected entry served by
+        # something that lists ids it will not accept. Fall back to the environment's model and
+        # let the page render, so the picker is available to choose again.
+        logger.warning("Could not build %r: %s: %s", choice.label, type(exc).__name__, exc)
+        st.session_state[_BUILD_ERROR] = f"{choice.label}: {type(exc).__name__}: {exc}"
+        st.session_state.pop(MODEL_KEY, None)
+        return build_agent()
+
+
+def build_error() -> str | None:
+    """The model pick that failed to build, if the last one did. Cleared once reported."""
+    return st.session_state.pop(_BUILD_ERROR, None)
+
+
+@st.cache_resource(show_spinner=False)
+def base_settings() -> Settings:
+    """The configuration the app started on, before any in-session model pick.
+
+    Cached so the dotenv is read once rather than on every rerun, and — unlike
+    :func:`get_bundle` — deliberately *not* invalidated by :func:`switch_model`: this is what
+    the environment says, which a pick does not change. It is the second configuration
+    :func:`~speechwriter.config.model_choices` needs, so that selecting a Claude entry (which
+    clears ``base_url``) cannot delete the locally served entry the reader came from.
+    """
+    return load_settings()
+
+
+def selected_choice() -> ModelChoice | None:
+    """The model this session picked, or ``None`` while the environment's is still in force."""
+    choice = st.session_state.get(MODEL_KEY)
+    return choice if isinstance(choice, ModelChoice) else None
+
+
+def available_choices(settings: Settings) -> tuple[ModelChoice, ...]:
+    """Everything the picker offers: the curated roster, the configured pair, and detections.
+
+    Detected ids are built through :func:`~speechwriter.config.local_choice` — the same
+    constructor :func:`~speechwriter.config.model_choices` uses — so a model that is both
+    configured and detected produces one entry, not two near-identical ones. Deduplication is
+    on ``(model, base_url)`` rather than on the label for the same reason: the pair is the
+    identity, the label is presentation.
+    """
+    configured = base_settings()
+    # Order is fixed — curated, configured, detections, then anything the selection adds — so
+    # the dropdown does not reshuffle under the reader. Building it as
+    # `model_choices(configured, settings)` first put the *selected* pair ahead of the
+    # remaining detections, so picking one detected model reordered the rest of them on the
+    # next render, and `index=choices.index(current)` named a different position each time.
+    choices = list(model_choices(configured))
+    seen = {(choice.model, choice.base_url) for choice in choices}
+
+    # Detections belong to the endpoint they were made against — the *configured* one, not
+    # whatever is selected now. Reading `settings.base_url` here would drop them the moment a
+    # Claude entry was picked, which is the same one-way trip `model_choices` guards against.
+    endpoint = configured.base_url
+    if endpoint:
+        for model in sorted(st.session_state.get(_DETECTED) or ()):
+            if (model, endpoint) in seen:
+                continue
+            seen.add((model, endpoint))
+            choices.append(local_choice(model, endpoint, configured.context_window))
+
+    # Last, and usually a no-op: whatever is selected is normally already above. It matters
+    # only for a selection nothing else offers — a detection made against an endpoint that has
+    # since changed, say — which must still be present or Streamlit resets the widget.
+    for extra in model_choices(settings):
+        if (extra.model, extra.base_url) not in seen:
+            seen.add((extra.model, extra.base_url))
+            choices.append(extra)
+    return tuple(choices)
+
+
+def detected() -> list[str] | None:
+    """What "Detect models" last found: ``None`` if never asked, possibly empty if it was."""
+    found = st.session_state.get(_DETECTED)
+    return found if isinstance(found, list) else None
+
+
+def detect_models() -> None:
+    """Ask the configured endpoint what it serves. Runs as the Detect button's ``on_click``.
+
+    On a click only — never on render. ``build_agent()`` must not touch the network, and the
+    Streamlit app is rendered headlessly dozens of times per CI run; a probe on the render path
+    would put a socket into both. :mod:`speechwriter.endpoints` swallows every failure, so this
+    cannot raise into the page.
+    """
+    # The *configured* endpoint, not the selected model's: the button asks "what else does my
+    # server have?", and that question keeps its meaning while a Claude model is selected.
+    settings = base_settings()
+    if not settings.base_url:
+        return
+    st.session_state[_DETECTED] = endpoints.list_models(
+        settings.base_url, api_key=settings.endpoint_api_key
+    )
+
+
+def switch_model() -> None:
+    """Rebuild the agent on the newly picked model. Runs as the picker's ``on_change``.
+
+    The order of the three steps is the whole correctness argument:
+
+    1. ``persist()`` **first**. ``build_agent`` rehydrates a brand-new ``InMemoryStore`` from the
+       on-disk snapshot, so every voice profile learned since the last save is dropped by the
+       rebuild unless it is written first. Reversing these two lines loses data silently.
+    2. ``get_bundle.clear()``, not ``st.cache_resource.clear()``. The global form evicts *every*
+       ``cache_resource`` cache, including :func:`spoken_length`'s synthesised WAVs — while
+       ``browse.py``'s per-session "already measured" flags survive, which sends the next render
+       of a flagged draft straight back into a ~9s synthesis with no button pressed.
+    3. ``reset_conversation()``. ``build_agent`` also mints a fresh ``MemorySaver``, so the old
+       ``thread_id`` names a checkpoint the new graph has never seen. Without this the page keeps
+       displaying a conversation the agent cannot remember.
+
+    Runs as a callback, which fires *before* the script body — so the rebuild is already
+    invalidated by the time ``streamlit_app.py`` calls ``get_bundle()`` at module scope, and the
+    sidebar's model and ceiling captions describe the model that was actually built.
+    """
+    if selected_choice() is None:
+        return
+    # No "is this already running?" guard, deliberately. It looked free and was not: the guard
+    # asked `get_bundle()`, which reads the *new* choice out of session state, so on a cold
+    # cache — another tab having just switched, or Streamlit invalidating the function after an
+    # edit — it built the new model, matched itself, and returned before `reset_conversation()`.
+    # The page then kept a transcript whose thread names a checkpoint the freshly-minted
+    # `MemorySaver` has never seen, which is the exact state step 3 exists to prevent.
+    #
+    # Nothing is lost by dropping it: Streamlit fires `on_change` only when the value actually
+    # changes (verified — re-picking the same option does not call back), so the case the guard
+    # defended against cannot reach here.
+    get_bundle().persist()
+    get_bundle.clear()
+    reset_conversation()
 
 
 # `max_entries` bounds the cache: the key includes each file's mtime, and the agent revises a

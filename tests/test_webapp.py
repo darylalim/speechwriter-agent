@@ -12,6 +12,7 @@ import importlib
 import os
 import re
 import tomllib
+from dataclasses import replace
 
 import pytest
 import streamlit as st
@@ -300,7 +301,7 @@ def test_both_pages_render(monkeypatch, tmp_path):
 
     app.switch_page("app_pages/browse.py").run()
     assert not app.exception
-    assert any("ana-toast" in str(option) for option in app.selectbox[0].options)
+    assert any("ana-toast" in str(option) for option in app.main.selectbox[0].options)
 
 
 def test_markdown_link_label_counts_as_spoken_words(monkeypatch, tmp_path):
@@ -476,6 +477,217 @@ def test_the_status_badge_gates_on_credentials_not_an_anthropic_key(monkeypatch,
     assert bare.chat_input[0].disabled
 
 
+def _picked(app) -> config.ModelChoice:
+    """The whole ``ModelChoice`` the sidebar picker is showing.
+
+    The isinstance check is the point as well as the narrowing: the widget carries the model and
+    the endpoint as one record, and a refactor that reduced it to a bare id string would take
+    the two apart — which is exactly the state ``ModelChoice`` exists to make unrepresentable.
+    """
+    value = app.sidebar.selectbox[0].value
+    assert isinstance(value, config.ModelChoice), value
+    return value
+
+
+def test_the_sidebar_picker_rebuilds_the_agent_on_the_chosen_model(monkeypatch, tmp_path):
+    # The whole feature, end to end. Picking a model has to *rebuild* the bundle, not merely
+    # record a preference: the resolved output ceiling is read off the constructed client, so if
+    # the rebuild does not happen the caption keeps quoting the previous model's. Haiku 4.5 is
+    # the discriminating pick — Sonnet 5 and Opus 5 are both profiled at 128k, so a switch
+    # between those two would pass with no rebuild at all.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+
+    assert not app.exception
+    picker = app.sidebar.selectbox[0]
+    assert list(picker.options) == [choice.label for choice in config.MODEL_CHOICES]
+    assert _picked(app).model == config.DEFAULT_MODEL
+    assert "128,000" in app.sidebar.caption[0].value
+
+    app.sidebar.selectbox[0].select("Haiku 4.5").run()
+
+    assert not app.exception
+    assert _picked(app).model == "claude-haiku-4-5"
+    assert "64,000" in app.sidebar.caption[0].value
+
+
+def test_switching_models_in_the_browser_saves_before_it_invalidates(monkeypatch, tmp_path):
+    # The web half of the persist-before-rebuild order. CLAUDE.md claims this is asserted from
+    # both front ends; before this test only the CLI's was, and deleting `bundle.persist()` from
+    # `switch_model` passed the entire suite — the exact silent data loss the ordering exists to
+    # prevent, uncovered.
+    #
+    # Driven through `webui` directly rather than through AppTest, because the callback runs
+    # between reruns and the widget only reports where it ended up, not what it did on the way.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    st.cache_resource.clear()
+
+    # Warm the cache *before* the pick is recorded, which is the real sequence: the callback
+    # fires while the bundle for the previous model is still cached. Setting the choice first
+    # would make `get_bundle()` build the new model inside `switch_model`, and the guard against
+    # switching to what is already running would (correctly) return early.
+    webui.get_bundle()
+
+    order: list[str] = []
+    monkeypatch.setattr(webui.SpeechwriterAgent, "persist", lambda self: order.append("persist"))
+    monkeypatch.setattr(
+        type(webui.get_bundle), "clear", lambda self, *a, **k: order.append("invalidate")
+    )
+    monkeypatch.setattr(webui, "reset_conversation", lambda: order.append("reset"))
+
+    st.session_state[webui.MODEL_KEY] = config.MODEL_CHOICES[2]
+    try:
+        webui.switch_model()
+    finally:
+        st.session_state.pop(webui.MODEL_KEY, None)
+
+    assert order == ["persist", "invalidate", "reset"], (
+        "the switch must save the Store before the rebuild reloads it from disk, and rotate the "
+        "thread after — `build_agent` mints a fresh Store and a fresh checkpointer"
+    )
+
+
+def test_switching_models_resets_even_when_the_bundle_is_not_cached(monkeypatch, tmp_path):
+    # `switch_model` used to ask `get_bundle()` whether the pick was already running. That
+    # reads the *new* choice out of session state, so on a cold cache it built the new model,
+    # matched itself, and returned before `reset_conversation()` — leaving the page showing a
+    # transcript whose thread names a checkpoint the freshly-minted MemorySaver never saw.
+    #
+    # A cold cache at callback time is ordinary, not exotic: `cache_resource` is app-global, so
+    # one tab switching clears it for every other tab, and Streamlit also drops it after an edit.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    st.cache_resource.clear()
+
+    order: list[str] = []
+    monkeypatch.setattr(webui.SpeechwriterAgent, "persist", lambda self: order.append("persist"))
+    monkeypatch.setattr(
+        type(webui.get_bundle), "clear", lambda self, *a, **k: order.append("invalidate")
+    )
+    monkeypatch.setattr(webui, "reset_conversation", lambda: order.append("reset"))
+
+    # No `get_bundle()` first: the cache is cold, exactly as it is for a second tab.
+    st.session_state[webui.MODEL_KEY] = config.MODEL_CHOICES[2]
+    try:
+        webui.switch_model()
+    finally:
+        st.session_state.pop(webui.MODEL_KEY, None)
+
+    assert order == ["persist", "invalidate", "reset"], (
+        "a cold cache must not skip the thread rotation — the transcript would outlive the "
+        "checkpoint it belongs to"
+    )
+
+
+def test_a_model_that_cannot_be_built_leaves_the_page_usable(monkeypatch, tmp_path):
+    # `get_bundle()` runs at module scope in streamlit_app.py, *above* the sidebar, so an
+    # unbuildable pick would take the page down before the picker that would let the reader undo
+    # it is ever drawn — and the pick survives in session state, so every rerun raises again.
+    # The CLI already guards the identical call; this is the browser's half.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    st.cache_resource.clear()
+
+    # An id whose provider cannot be inferred: `init_chat_model` raises at *construction*.
+    st.session_state[webui.MODEL_KEY] = config.ModelChoice("Broken", "no-such-provider-model")
+    try:
+        bundle = webui.get_bundle()
+        reported = webui.build_error()
+    finally:
+        st.session_state.pop(webui.MODEL_KEY, None)
+
+    # Fell back to the environment's model rather than raising...
+    assert bundle.settings.model == config.DEFAULT_MODEL
+    # ...told the page which pick failed, exactly once...
+    assert reported is not None and "Broken" in reported
+    assert webui.build_error() is None
+    # ...and dropped the bad selection, so the next rerun does not raise again.
+    assert webui.selected_choice() is None
+
+
+def test_detected_models_join_the_roster_exactly_once(monkeypatch, tmp_path):
+    # `available_choices` is the dedup that stops Streamlit silently resetting the selection:
+    # `ModelChoice` is a NamedTuple, so a detected entry that differed from the synthesised one
+    # by so much as its label would appear twice *and* leave the selected value unfindable
+    # among the options. Nothing exercised it before.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
+    st.cache_resource.clear()
+
+    settings = load_settings()
+    # As if "Detect models" had answered: the configured model, plus one the reader has not seen.
+    st.session_state["detected_models"] = ["local/qwen", "local/granite"]
+    try:
+        offered = webui.available_choices(settings)
+    finally:
+        st.session_state.pop("detected_models", None)
+
+    labels = [choice.label for choice in offered]
+    assert labels.count("local/qwen (local)") == 1, labels
+    assert "local/granite (local)" in labels
+
+    # Order is fixed, and stays fixed once a detected model is the one selected. Building the
+    # list as `model_choices(configured, settings)` first promoted the *current* pair ahead of
+    # the remaining detections, so picking one reshuffled the rest on the next render — and
+    # `index=choices.index(current)` named a different position each time.
+    on_granite = replace(settings, model="local/granite")
+    assert [c.label for c in webui.available_choices(on_granite)] == labels
+    # Detected entries carry the endpoint they were found at, or picking one would build an
+    # Anthropic client for a model only that server has.
+    granite = next(c for c in offered if c.model == "local/granite")
+    assert granite.base_url == "http://localhost:1234/v1"
+
+
+def test_a_configured_local_model_survives_a_rerun(monkeypatch, tmp_path):
+    # Streamlit replaces a `session_state` value that is not among a widget's options with
+    # option zero, raising nothing — so a roster that did not carry the configured pair would
+    # take a reader on a keyless local endpoint and silently retarget them onto claude-sonnet-5,
+    # flipping a working app into "No credentials".
+    #
+    # Both runs matter, and not equally: the first proves the configured pair is offered at all,
+    # the second that a *stored* selection is not then silently overwritten — a state the widget
+    # can only reach once it has a value, and one the existing badge test (which runs once)
+    # cannot see.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+    assert _picked(app).model == "local/qwen"
+
+    app.run()
+
+    assert not app.exception
+    assert _picked(app).model == "local/qwen"
+    assert _picked(app).base_url == "http://localhost:1234/v1"
+    assert any("Ready]" in block.value for block in app.markdown)
+    # Detect is offered only against a configured endpoint, and it must not have *run* on
+    # render: the suite is offline by construction and CI renders this page dozens of times.
+    # Asserted through the caption the sidebar only draws once an answer exists, not through
+    # `webui.detected()` — that reads this process's session state rather than the rendered
+    # app's, so it returns None either way and the check passed with detection wired to render.
+    assert [button.label for button in app.sidebar.button] == ["Detect models", "New conversation"]
+    captions = [caption.value for caption in app.sidebar.caption]
+    assert not any("listed no models" in caption for caption in captions), captions
+    assert not any("Found" in caption for caption in captions), captions
+
+
 def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_path):
     # The pill used to be consumed by *not being rendered* once the transcript filled. A turn
     # cancelled with the stop button raises a BaseException past `run_turn`, so nothing is
@@ -597,8 +809,8 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
     app.run().switch_page("app_pages/browse.py").run()
 
-    for option in list(app.selectbox[0].options):
-        app.selectbox[0].select(option).run()
+    for option in list(app.main.selectbox[0].options):
+        app.main.selectbox[0].select(option).run()
         _click_measure(app)
 
     assert not app.exception
@@ -613,8 +825,8 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
     # appended would evict by *first* request and drop a draft whose WAV is still warm.
     oldest = app.session_state["measured"][0]
     slug = oldest.split(":")[1]
-    revisited = next(option for option in app.selectbox[0].options if option.startswith(slug))
-    app.selectbox[0].select(revisited).run()
+    revisited = next(option for option in app.main.selectbox[0].options if option.startswith(slug))
+    app.main.selectbox[0].select(revisited).run()
 
     assert app.session_state["measured"][-1] == oldest, "a read must refresh the flag"
 
@@ -624,7 +836,7 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
         raise workspace.AudioUnavailable("install the audio extra")
 
     monkeypatch.setattr(webui, "spoken_length", _unavailable)
-    app.selectbox[0].select(app.selectbox[0].options[0]).run()
+    app.main.selectbox[0].select(app.main.selectbox[0].options[0]).run()
     _click_measure(app)
 
     assert not app.exception

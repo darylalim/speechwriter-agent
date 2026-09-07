@@ -188,6 +188,121 @@ def test_sync_strips_the_split_langsmith_injects_but_refuses_a_local_one(tmp_pat
         sync.load_local("unkeyed", path=unkeyed)
 
 
+def _harness_module():
+    """Import ``evals/run_experiment.py`` by path — it has no module-level side effects."""
+    path = REPO_ROOT / "evals" / "run_experiment.py"
+    spec = importlib.util.spec_from_file_location("speechwriter_run_experiment", path)
+    assert spec and spec.loader, f"cannot load {path}"
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_the_eval_judge_does_not_follow_the_model_under_test(monkeypatch, tmp_path):
+    # `--model` moves the system under test; the judge must stay put. `grade()` builds its model
+    # from `load_settings()`, which reads the same SPEECHWRITER_MODEL that `apply_model` sets —
+    # so without the pinned pair, comparing two models grades each one with *itself*, changing
+    # the instrument and the subject together and making the comparison meaningless.
+    #
+    # This exists because the bug shipped: the `judge` parameter was threaded into
+    # `run_langsmith` and not into the plain live path, and nothing noticed.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-haiku-4-5")
+    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
+    # who exported it to drive the local model would otherwise turn this test red.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+
+    harness = _harness_module()
+    graded_with: list[tuple[str, str | None]] = []
+
+    def spy_build(settings):
+        graded_with.append((settings.model, settings.base_url))
+        return object()
+
+    monkeypatch.setattr("speechwriter.agent._build_model", spy_build)
+    monkeypatch.setattr(harness, "score_example", lambda *a, **k: [])
+    monkeypatch.setattr(harness, "judge_example", lambda *a, **k: [])
+
+    pinned = config.ModelChoice("Opus 5", "claude-opus-5")
+    harness.grade("final_response", harness.CANNED, {}, no_judge=False, judge=pinned)
+
+    assert graded_with == [("claude-opus-5", None)], (
+        "the judge followed SPEECHWRITER_MODEL instead of the pinned pair, so every model "
+        "would be graded by itself"
+    )
+
+    # And with no override in play the judge is the configured model, exactly as before.
+    graded_with.clear()
+    harness.grade("final_response", harness.CANNED, {}, no_judge=False)
+    assert graded_with == [("claude-haiku-4-5", None)]
+
+
+def test_every_live_grading_path_pins_the_judge_when_the_model_is_overridden():
+    # The mechanical half of the bug above: it was not that `grade()` ignored its argument, it
+    # was that one of the two call sites never passed one. Read the source rather than the
+    # behaviour, because the second path (`--langsmith`) needs a network to exercise.
+    source = (REPO_ROOT / "evals" / "run_experiment.py").read_text(encoding="utf-8")
+    calls = re.findall(r"\b(run_one|run_langsmith)\((.*?)\)", source)
+    invocations = [(name, args) for name, args in calls if "args." in args]
+
+    assert invocations, "neither live path is called — this test is watching the wrong names"
+    for name, args in invocations:
+        # Split and compare whole arguments rather than searching the text: `args.no_judge` is
+        # passed to both paths and *contains* "judge", so a substring check passes even on the
+        # unfixed source. It did — this assertion was vacuous on its first mutation run.
+        passed = {argument.strip() for argument in args.split(",")}
+        assert "judge" in passed, (
+            f"{name}({args}) does not pass the pinned judge, so --model would make that path "
+            f"grade every model with itself"
+        )
+
+
+def test_the_model_flag_accepts_the_label_the_front_ends_actually_show(monkeypatch, tmp_path):
+    # `--model` is documented as taking "a roster label", and the roster a reader sees in
+    # `/model` or the sidebar is `model_choices(...)` — which labels a locally served entry
+    # "<id> (local)". Resolved against the curated tuple alone, that whole string was passed
+    # through as a literal model id, so the server 404s at the first turn of every graded
+    # example, long after the temp homes and the dotenv priming are done.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+
+    harness = _harness_module()
+    harness.apply_model("mlx-community/Qwen3.8-27B-4bit (local)")
+
+    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Qwen3.8-27B-4bit"
+    assert os.environ["SPEECHWRITER_BASE_URL"] == "http://127.0.0.1:8080/v1"
+
+    # An id nothing on the roster matches is still passed through verbatim — the operator may
+    # mean a model the environment has never named.
+    harness.apply_model("claude-opus-4-8")
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-4-8"
+
+
+def test_selecting_a_hosted_model_clears_the_endpoint_so_a_reload_cannot_restore_it(
+    monkeypatch, tmp_path
+):
+    # `apply_model` must not *delete* SPEECHWRITER_BASE_URL, because deleting it does not stick:
+    # `prime_environment`, `run_langsmith` and the `build_agent()` of every graded example each
+    # call `load_settings()`, which reloads the dotenv — and `load_dotenv` skips only keys
+    # already present in os.environ, so a popped variable comes straight back and a curated
+    # Claude id gets sent to the local server. An empty string is present, so it survives, and
+    # `load_settings` normalises it to None because blank is how a shell says unset.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
+
+    harness = _harness_module()
+    harness.apply_model("Opus 5")
+
+    assert os.environ.get("SPEECHWRITER_BASE_URL") == "", (
+        "the endpoint was removed rather than blanked, so the next dotenv load restores it"
+    )
+    assert config.load_settings().base_url is None
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-5"
+
+
 def _evaluators_module():
     """Import ``evals/evaluators.py`` by path — pure scorers, no model and no wire."""
     path = REPO_ROOT / "evals" / "evaluators.py"
