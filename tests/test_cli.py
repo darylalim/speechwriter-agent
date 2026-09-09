@@ -265,3 +265,20 @@ def test_reporting_the_endpoint_does_not_discard_what_it_found(repl, monkeypatch
     assert "local/qwen (local)" in out, "a bare or rejected /endpoint dropped the detections"
     # Neither of the two non-probing commands went near the network.
     assert probes == ["http://127.0.0.1:8080/v1"], probes
+
+
+def test_a_withheld_credential_is_not_reported_as_a_dead_server(repl, monkeypatch, capsys):
+    # `endpoint_api_key_for` withholds OPENAI_API_KEY from a host that is not the configured
+    # one, by design — so a hosted gateway typed here answers 401 and `list_models` returns [].
+    # Reported as "listed no models. Is the server running?" alone, that sends the reader to
+    # debug a server answering perfectly correctly. The sidebar says so beside its own button;
+    # the two front ends must not disagree about the same fact.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-gateway")
+    monkeypatch.setattr(cli.endpoints, "list_models", lambda url, **kw: [])
+    repl("/endpoint https://gateway.example.com/v1", "exit")
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "listed no models" in out
+    assert "No credential sent" in out, out

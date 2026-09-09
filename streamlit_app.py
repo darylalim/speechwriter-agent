@@ -99,6 +99,14 @@ with st.sidebar:
             # Reported next to the picker that caused it, not at the top of the page: the reader
             # needs to see which entry failed and choose again in one glance.
             st.caption(f":red[Could not switch — {failed_pick}]")
+        if settings.uses_local_endpoint:
+            # Beside the ceiling, not inside the fold below: this names where the model that is
+            # *running* is served, which the endpoint field does not — that field holds whatever
+            # server the reader is currently pointing Detect at, and the two differ the moment
+            # they go looking at a second one. A local server that is simply not running looks
+            # like a hung turn unless the UI said where it pointed, which is the same reason the
+            # CLI banner gives `endpoint` a line of its own.
+            st.caption(f"Endpoint — `{settings.base_url}`")
         st.caption(f"Output ceiling — {bundle.ceiling_label}")
         if bundle.ceiling_exceeds_model:
             # Its own line, not a suffix on the caption above: the ceiling is a number, this is
@@ -159,8 +167,6 @@ with st.sidebar:
                 # Distinct from "never asked": an endpoint that answered with nothing is a real
                 # result, and reads as a broken button if it renders the same as silence.
                 st.caption("That endpoint listed no models — is the server running?")
-            if target and settings.uses_local_endpoint and settings.base_url == target:
-                st.caption("Serving the selected model.")
             withheld = (
                 target and configured.openai_api_key and not configured.endpoint_api_key_for(target)
             )
@@ -168,8 +174,8 @@ with st.sidebar:
                 # Otherwise a hosted endpoint 401s and renders as "listed no models", which
                 # sends the reader to check a server that is answering perfectly well.
                 st.caption(
-                    ":orange[No credential sent — `OPENAI_API_KEY` goes only to the "
-                    "configured endpoint.]"
+                    ":orange[No credential sent — `OPENAI_API_KEY` reaches only the endpoint "
+                    "set in the environment.]"
                 )
 
     # The two on-disk locations are diagnostic, not glanceable, and long absolute paths

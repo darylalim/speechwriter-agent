@@ -372,11 +372,24 @@ def resolve_choice(choices: tuple[ModelChoice, ...], requested: str) -> ModelCho
     if requested.isdecimal():
         index = int(requested)
         return choices[index - 1] if 1 <= index <= len(choices) else None
+    matched = matching_choices(choices, requested)
+    return matched[0] if len(matched) == 1 else None
+
+
+def matching_choices(choices: tuple[ModelChoice, ...], requested: str) -> list[ModelChoice]:
+    """Every entry ``requested`` names by label or model id — usually none, or one.
+
+    Split out of :func:`resolve_choice` because ``None`` there answers two different questions
+    and one caller has to tell them apart. The eval harness passes an unrecognised ``--model``
+    through verbatim as an id the operator means literally, which is right for "no such entry"
+    and wrong for "two entries by that name": it would set ``SPEECHWRITER_MODEL`` while leaving
+    ``SPEECHWRITER_BASE_URL`` alone, which is precisely the id-without-its-endpoint mispairing
+    :class:`ModelChoice` exists to make unrepresentable.
+    """
     wanted = requested.casefold()
-    matched = [
+    return [
         choice for choice in choices if wanted in (choice.label.casefold(), choice.model.casefold())
     ]
-    return matched[0] if len(matched) == 1 else None
 
 
 def local_choice(model: str, base_url: str, context_window: int | None = None) -> ModelChoice:
@@ -457,8 +470,7 @@ def load_settings() -> Settings:
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
         max_tokens=_optional_int_env("SPEECHWRITER_MAX_TOKENS"),
-        # Normalised, not just stripped, so the configured endpoint and a detected one
-        # naming the same server dedupe to a single roster entry. See `_configured_endpoint`.
+        # Verbatim, deliberately — see `_configured_endpoint` for what normalising it broke.
         base_url=_configured_endpoint(),
         # Normalised the same way, and for the same reason: a blank or whitespace-only value
         # is how a shell says "unset", and left as-is it is *truthy* — so `endpoint_api_key`
@@ -476,28 +488,28 @@ def load_settings() -> Settings:
 
 
 def _configured_endpoint() -> str | None:
-    """``SPEECHWRITER_BASE_URL``, in the same normal form a typed endpoint is put into.
+    """``SPEECHWRITER_BASE_URL``, stripped and nothing more.
 
-    Normalising here is what stops one server appearing twice in the picker. A dotenv holding
-    ``http://127.0.0.1:8080/v1/`` works perfectly — :func:`~speechwriter.endpoints.list_models`
-    rstrips it — but the *detected* entries for that same server are normalised without the
-    trailing slash, and roster deduplication is on ``(model, base_url)``. Two strings, one
-    server: the reader gets two rows both labelled ``qwen (local)``, indistinguishable in the
-    picker and, in the REPL, matched by label so ``resolve_choice`` returns whichever came
-    first. Measured before this function existed.
+    It is named rather than inlined because what it *does not* do is the point, and a previous
+    version got this wrong. It normalised the value — to stop one server appearing twice in the
+    picker when a dotenv carried a trailing slash — and thereby rewrote endpoints that worked:
+    an Azure deployment URL lost the ``?api-version=`` query it requires, and a LiteLLM or
+    reverse-proxy front end serving the OpenAI API at the **root** gained a ``/v1`` that 404s.
+    Both measured. ``build_agent`` never probes, so each failed at the first turn, far from the
+    configuration that caused it, with no log line.
 
-    A value that does **not** normalise is kept verbatim rather than dropped, and that is the
-    conservative half: ``file:///…`` and other junk keep exactly the behaviour they have today
-    — ``uses_local_endpoint`` still True, refused at the point of use — instead of silently
-    becoming "no endpoint configured" and building an Anthropic client. Widening what a
-    *configured* endpoint may be is not this change's business.
+    A configured endpoint is an operator's deliberate string and every character of it may be
+    load-bearing, so it reaches ``ChatOpenAI`` exactly as written. The duplicate that
+    normalisation was reaching for is prevented on the other side instead:
+    :func:`speechwriter.endpoints.usable_endpoint` reads a seeded value back *unchanged*, so
+    detections against a configured server carry the same string the configured pair does, and
+    dedup on ``(model, base_url)`` collapses them.
 
-    The empty case is unchanged and still deliberate: an exported-but-blank
-    ``SPEECHWRITER_BASE_URL`` is how a shell says "unset", and an empty string here would route
-    every call to a nonexistent endpoint while ``uses_local_endpoint`` still reported True.
+    The empty case is deliberate: an exported-but-blank ``SPEECHWRITER_BASE_URL`` is how a
+    shell says "unset", and an empty string here would route every call to a nonexistent
+    endpoint while ``uses_local_endpoint`` still reported True.
     """
-    raw = (os.environ.get("SPEECHWRITER_BASE_URL") or "").strip()
-    return endpoints.normalize_endpoint(raw) or raw or None
+    return (os.environ.get("SPEECHWRITER_BASE_URL") or "").strip() or None
 
 
 def _optional_int_env(name: str, *, minimum: int = 1) -> int | None:

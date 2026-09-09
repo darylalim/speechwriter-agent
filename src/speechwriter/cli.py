@@ -258,10 +258,23 @@ def _set_endpoint(
     found = endpoints.list_models(target, api_key=configured.endpoint_api_key_for(target))
     if not found:
         console.print(f"[yellow]{target} listed no models.[/] [dim]Is the server running?[/]")
+        if configured.openai_api_key and configured.endpoint_api_key_for(target) is None:
+            # The browser says this beside its own Detect button. Without it a *deliberately*
+            # withheld credential looks identical to a dead server, and the reader goes off to
+            # debug one that is answering 401 perfectly correctly.
+            console.print(
+                "[dim]No credential sent — OPENAI_API_KEY reaches only the endpoint set in "
+                "the environment.[/]"
+            )
         return target, []
 
     console.print(f"[dim]Found {len(found)} model(s) at {target}. Switch with [bold]/model[/].[/]")
-    return target, [local_choice(model, target) for model in found]
+    # `configured.context_window` passed exactly as `webui.detect_models` passes it. It is
+    # always None today — the field is never read from the environment — but `ModelChoice`
+    # equality covers all four fields, so the day it is settable an omission here would
+    # make the two front ends disagree about the same server and put two rows in the
+    # roster, which is Streamlit's silent option-zero reset again.
+    return target, [local_choice(model, target, configured.context_window) for model in found]
 
 
 def _switch_model(

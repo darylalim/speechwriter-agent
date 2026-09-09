@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # Annotation-only, so the heavy `speechwriter` import this module otherwise defers into
     # function bodies stays deferred; `from __future__ import annotations` makes it sufficient.
-    from speechwriter.config import ModelChoice
+    from speechwriter.config import ModelChoice, Settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -128,6 +128,25 @@ def configured_choice() -> ModelChoice:
     return ModelChoice(settings.model, settings.model, settings.base_url, settings.context_window)
 
 
+def configured_settings() -> Settings:
+    """The whole configuration in force right now — what the judge must be built from.
+
+    A :class:`~speechwriter.config.ModelChoice` is not enough, and used to be what was captured
+    here. ``ModelChoice.applied_to`` moves the *credential* along with the pair now, dropping
+    ``openai_api_key`` unless the choice names the endpoint the settings were configured with —
+    so applying the captured judge to a ``load_settings()`` read *after* :func:`apply_model` has
+    blanked ``SPEECHWRITER_BASE_URL`` compares the judge's endpoint against ``None``, decides it
+    is a stranger, and sends the placeholder bearer instead of the real key. Every judge call
+    then 401s, and only when ``--model`` is used, which is the one path that has a judge to pin.
+
+    Capturing the settings whole sidesteps the question: the judge is built from exactly the
+    configuration that was in force before the override, credential included.
+    """
+    from speechwriter.config import load_settings
+
+    return load_settings()
+
+
 def apply_model(requested: str) -> None:
     """Point this run at a chosen model, *before* ``prime_environment`` reads the dotenv.
 
@@ -142,13 +161,30 @@ def apply_model(requested: str) -> None:
     exported would otherwise send that id to a local server. Anything unrecognised is passed
     through verbatim as an id the operator means literally, endpoint untouched.
     """
-    from speechwriter.config import load_settings, model_choices, resolve_choice
+    from speechwriter.config import (
+        load_settings,
+        matching_choices,
+        model_choices,
+        resolve_choice,
+    )
 
     # Against the *full* roster, not just the curated tuple: the label a reader copies out of
     # `/model` or the sidebar for a local model is "<id> (local)", and matching only
     # MODEL_CHOICES passed that whole string through as a model id — so the server 404s at the
     # first turn of every graded example, long after the temp homes are set up.
-    choice = resolve_choice(model_choices(load_settings()), requested)
+    roster = model_choices(load_settings())
+    choice = resolve_choice(roster, requested)
+    if choice is None and len(matching_choices(roster, requested)) > 1:
+        # `resolve_choice` answers None for "no such entry" *and* for "two entries by that
+        # name", and the pass-through below is only right for the first. One id served both by
+        # Anthropic and by a local proxy makes the second reachable — and passing it through
+        # would set the id while leaving SPEECHWRITER_BASE_URL alone, sending a Claude id to a
+        # local server and 404ing at the first turn of every graded example.
+        raise SystemExit(
+            f"--model {requested!r} names more than one roster entry. Use the label instead, "
+            f"e.g. one of: "
+            + ", ".join(repr(match.label) for match in matching_choices(roster, requested))
+        )
     if choice is not None:
         os.environ["SPEECHWRITER_MODEL"] = choice.model
         # Set to empty, never popped. Every later `load_settings()` — in `prime_environment`,
@@ -237,7 +273,7 @@ def grade(
     run: RunRecord,
     example: dict[str, Any],
     no_judge: bool,
-    judge: ModelChoice | None = None,
+    judge: Settings | None = None,
 ) -> list[Score]:
     """Score one run. ``judge`` pins the grading model when the agent's has been overridden.
 
@@ -251,24 +287,23 @@ def grade(
         from speechwriter.agent import _build_model
         from speechwriter.config import load_settings
 
-        settings = load_settings()
-        if judge is not None:
-            settings = judge.applied_to(settings)
+        # The pinned judge is used *as captured*, never re-applied to the current environment:
+        # `apply_model` has since blanked SPEECHWRITER_BASE_URL, and `applied_to` would read
+        # that as "this endpoint is a stranger" and withhold the endpoint credential.
+        settings = judge if judge is not None else load_settings()
         scores += judge_example(_build_model(settings), dataset, run, example)
     return scores
 
 
 def run_one(
-    example: dict[str, Any], no_judge: bool, judge: ModelChoice | None = None
+    example: dict[str, Any], no_judge: bool, judge: Settings | None = None
 ) -> tuple[RunRecord, list[Score]]:
     dataset = example["metadata"]["dataset_type"]
     run = invoke_agent(example["inputs"], example["metadata"]["id"])
     return run, grade(dataset, run, example, no_judge, judge)
 
 
-def run_langsmith(
-    dataset: str, limit: int, no_judge: bool, judge: ModelChoice | None = None
-) -> int:
+def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | None = None) -> int:
     """Record the run as a LangSmith experiment against the mirrored dataset.
 
     Capped by ``--limit`` on purpose: ``evaluate`` would otherwise sweep every example in the
@@ -393,9 +428,9 @@ def main(argv: list[str] | None = None) -> int:
     # force is captured *after* priming and *before* the override, then pinned for grading.
     # Otherwise comparing two models would grade each one with itself, changing the instrument
     # and the subject together.
-    judge: ModelChoice | None = None
+    judge: Settings | None = None
     if args.model:
-        judge = configured_choice()
+        judge = configured_settings()
         apply_model(args.model)
 
     if args.langsmith:

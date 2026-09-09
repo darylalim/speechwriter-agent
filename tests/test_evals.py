@@ -758,3 +758,58 @@ def test_the_judge_is_given_the_examples_own_grading_notes():
         "the example's grading notes did not reach the judge, so a documented soft pass is "
         "graded against criteria written for the other branch"
     )
+
+
+def test_an_ambiguous_model_flag_is_refused_rather_than_sent_to_the_wrong_server(
+    monkeypatch, tmp_path
+):
+    # `apply_model` passes an unrecognised `--model` through verbatim, which is right for "no
+    # such entry" and wrong for "two entries by that name" — it sets SPEECHWRITER_MODEL while
+    # leaving SPEECHWRITER_BASE_URL alone, so a Claude id goes to a local server and 404s at the
+    # first turn of every graded example. One id served both by Anthropic and by a local proxy
+    # makes that reachable, and it became reachable when `resolve_choice` started answering None
+    # on ambiguity instead of silently returning whichever entry was merged first.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+
+    harness = _harness_module()
+    with pytest.raises(SystemExit) as refused:
+        harness.apply_model("claude-sonnet-5")
+
+    # It names both spellings, because the way out is to type the unambiguous one.
+    assert "Sonnet 5" in str(refused.value)
+    assert "claude-sonnet-5 (local)" in str(refused.value)
+    # And nothing was changed on the way out: a half-applied override is worse than none.
+    assert os.environ["SPEECHWRITER_BASE_URL"] == "http://127.0.0.1:8080/v1"
+
+    # The label still resolves, which is what the message tells the reader to use.
+    harness.apply_model("Sonnet 5")
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-sonnet-5"
+    assert os.environ["SPEECHWRITER_BASE_URL"] == ""
+
+
+def test_the_pinned_judge_keeps_the_credential_its_endpoint_needs(monkeypatch, tmp_path):
+    # The judge is captured before `--model` moves the system under test, and it used to be
+    # captured as a ModelChoice and re-applied to a fresh `load_settings()` at grading time.
+    # That broke when `applied_to` began moving the *credential* with the pair: by then
+    # `apply_model` has blanked SPEECHWRITER_BASE_URL, so the judge's endpoint is compared
+    # against None, judged a stranger, and stripped of the key — every judge call 401s, on the
+    # one path that has a judge to pin. Capturing the settings whole sidesteps the question.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-gateway")
+
+    harness = _harness_module()
+    judge = harness.configured_settings()
+    harness.apply_model("Opus 5")
+
+    # The judge still names the pair that was in force, and still holds its bearer token.
+    assert judge.model == "gpt-4o"
+    assert judge.base_url == "https://gateway.example.com/v1"
+    assert judge.endpoint_api_key == "sk-real-gateway", (
+        "the pinned judge lost the credential its endpoint needs, so every judge call 401s"
+    )
+    # ...while the system under test really did move, which is what --model is for.
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-5"

@@ -208,17 +208,18 @@ def detections() -> list[ModelChoice] | None:
 def session_endpoint() -> str | None:
     """The endpoint this session's Detect button asks, normalised; ``None`` if it has none.
 
-    Read on the render path — the sidebar consults it every rerun — so
-    :func:`~speechwriter.endpoints.normalize_endpoint` must never raise, and does not. A
-    ``ValueError`` escaping here would not be a bad caption but a page that throws on *every*
-    rerun with the offending text still in session state, which is the unrecoverable shape
-    :func:`get_bundle`'s own ``except`` exists to prevent.
+    Reads through :func:`~speechwriter.endpoints.usable_endpoint`, which *accepts or rejects*
+    and never rewrites — not :func:`~speechwriter.endpoints.normalize_endpoint`, which is for
+    what a reader types. The field is seeded from ``SPEECHWRITER_BASE_URL``, and normalising on
+    read therefore rewrote the operator's own endpoint: an Azure URL lost its required
+    ``?api-version=`` query and a root-served proxy gained a ``/v1``. Editing is the reader's
+    act and normalises; reading is not and does not.
 
-    Normalising on read as well as in :func:`apply_endpoint` is not redundant: the value
-    :func:`init_session` seeds from the environment never passes through the callback. The
-    function is idempotent, so the second pass is a no-op on anything the first produced.
+    Neither function raises, which matters here because this runs on the render path — the
+    sidebar consults it every rerun, so a ``ValueError`` escaping would not be a bad caption but
+    a page that throws on *every* rerun with the offending text still in session state.
     """
-    return endpoints.normalize_endpoint(st.session_state.get(ENDPOINT_KEY) or "")
+    return endpoints.usable_endpoint(st.session_state.get(ENDPOINT_KEY) or "")
 
 
 def apply_endpoint() -> None:
@@ -230,19 +231,31 @@ def apply_endpoint() -> None:
     exactly as typed, so a typo stays legible and correctable instead of being rewritten into
     something confidently wrong.
 
-    Detections are dropped rather than kept, and that is the cheap half of the endpoint-binding
-    rule: they describe a server this session is no longer pointed at. Keeping them would put
-    two rows labelled ``qwen (local)`` in the picker — identical text, different endpoints — of
-    which :func:`~speechwriter.config.resolve_choice` matches the first by label.
+    Detections are dropped when — and only when — the target actually moved, which is the cheap
+    half of the endpoint-binding rule: they describe a server this session is no longer pointed
+    at. Keeping them across a real change would put two rows labelled ``qwen (local)`` in the
+    picker — identical text, different endpoints. Dropping them across a *no-op* edit is the
+    opposite mistake, and costs a second probe of a server that never stopped answering.
 
     Deliberately **not** a model switch: no persist, no cache invalidation, no thread rotation.
     Editing this field changes which server is *asked what it has*, never which model is
     running. The three steps of :func:`switch_model` belong to the picker alone.
     """
-    tidied = session_endpoint()
+    # `normalize_endpoint`, not `session_endpoint()`: this is the one place a value is the
+    # reader's own fresh input, so it is the one place the tidying edits belong. Reading goes
+    # through `usable_endpoint`, which never rewrites.
+    tidied = endpoints.normalize_endpoint(st.session_state.get(ENDPOINT_KEY) or "")
     if tidied is not None:
         st.session_state[ENDPOINT_KEY] = tidied
-    st.session_state.pop(DETECTED_KEY, None)
+    # Cleared only when the server actually changed. The callback runs *after* the widget's
+    # value has moved, so "what was it before?" cannot be read from the field — but it does not
+    # need to be: every detection carries the endpoint it was found at, which is the whole point
+    # of storing pairs. An edit landing on that same target (pasting the URL back, a trailing
+    # slash, a stray space) keeps them, rather than making the reader sit through another probe
+    # of a server that never stopped answering.
+    answered = next((choice.base_url for choice in detections() or ()), None)
+    if tidied != answered:
+        st.session_state.pop(DETECTED_KEY, None)
 
 
 def detect_models() -> None:

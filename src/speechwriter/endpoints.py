@@ -63,7 +63,12 @@ class _CredentialSafeRedirects(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         following = super().redirect_request(req, fp, code, msg, headers, newurl)
-        if following is not None and _origin(newurl) != _origin(req.full_url):
+        # Through `same_origin`, not `_origin` directly: `urlsplit` raises on an unclosed IPv6
+        # bracket, and a `Location:` header is attacker-shaped input. The raise was survivable
+        # — `list_models`' blanket `except` turns it into `[]` — but the handler would never
+        # reach the decision below, so the module would hold two different answers to "is this
+        # the same server", one total and one not.
+        if following is not None and not same_origin(newurl, req.full_url):
             following.remove_header("Authorization")
         return following
 
@@ -97,32 +102,56 @@ def same_origin(url: str, other: str | None) -> bool:
         return False
 
 
-def normalize_endpoint(text: str) -> str | None:
-    """Read what a person typed as an OpenAI-compatible root, or ``None`` if it is not one.
+def usable_endpoint(text: str) -> str | None:
+    """``text`` unchanged if it is already an endpoint we could call, otherwise ``None``.
 
-    Two edits, each measured against what this repo's own servers actually answer:
+    The **read** half of the pair, and the distinction from :func:`normalize_endpoint` is the
+    whole point. A value being *read back* — one seeded from ``SPEECHWRITER_BASE_URL``, say —
+    was written deliberately by an operator, and every character of it may be load-bearing:
+    an Azure deployment URL carries a required ``?api-version=`` query, and a LiteLLM or
+    reverse-proxy front end commonly serves the OpenAI API at the **root**, where appending
+    ``/v1`` produces a 404. Rewriting those was a measured regression, not a hypothetical.
+
+    So reading only *accepts or rejects*. Editing is the reader's own act, and only that goes
+    through :func:`normalize_endpoint`.
+    """
+    raw = text.strip()
+    if not raw:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
+        return None
+    return raw
+
+
+def normalize_endpoint(text: str) -> str | None:
+    """Read what a person **typed** as an OpenAI-compatible root, or ``None`` if it is not one.
+
+    Applied to input the reader just entered, never to a value read back — see
+    :func:`usable_endpoint` for why that asymmetry exists. Three edits, each measured against
+    what this repo's own servers actually answer:
 
     * **A missing scheme becomes ``http``.** ``localhost:8080`` is what a reader types, and
       ``urllib.request.Request`` raises at *construction* on a scheme-less URL — which
       :func:`list_models` files under "could not list", reporting a healthy server as dead.
     * **An empty path becomes ``/v1``.** ``http://127.0.0.1:8080`` is equally likely, and
-      ``mlx_lm.server``, vLLM, LM Studio and Ollama all serve the OpenAI API under ``/v1``,
-      never at the root. Measured: the bare form returns ``[]`` from a server listing eight
-      models, again indistinguishable from one that is down.
+      ``mlx_lm.server``, vLLM and LM Studio all serve the OpenAI API under ``/v1``. Measured:
+      the bare form returns ``[]`` from a server listing eight models. A path that is already
+      there is never replaced, so a root-served proxy typed as ``http://h/`` keeps its root.
+    * **The host is lower-cased**, because ``LocalHost`` and ``localhost`` are one server and
+      roster deduplication compares the string. Skipped when the netloc carries userinfo,
+      where case is significant. Query and fragment are preserved for the reason above.
 
-    The test is ``"://" in raw``, not ``urlsplit(raw).scheme``, because ``urlsplit`` reads the
-    two spellings of the same typo differently — ``"localhost:8080"`` parses as scheme
+    The test is ``"://" in raw``, **not** ``urlsplit(raw).scheme``, because ``urlsplit`` reads
+    the two spellings of one typo differently — ``"localhost:8080"`` parses as scheme
     ``"localhost"`` while ``"127.0.0.1:8080"`` parses as no scheme at all.
 
-    Never raises. It is called on the render path (the sidebar reads it every rerun), so a
-    ``ValueError`` here is not a bad caption but a page that throws on *every* rerun with the
-    offending text still in session state — the unrecoverable state
-    :func:`speechwriter.webui.get_bundle`'s own try/except exists to prevent.
-
-    Normalising is not a second security boundary: a rejected scheme returns ``None`` here and
-    is refused again in :func:`list_models`, which is where the test pins it. The value of
-    returning ``None`` is that the caller can say "that is not an endpoint" instead of
-    "found nothing", which are different facts.
+    Never raises. It runs wherever a reader's keystrokes land, including a Streamlit callback,
+    and a ``ValueError`` escaping there is not a bad caption but a page that throws on every
+    subsequent rerun with the offending text still in session state.
     """
     raw = text.strip()
     if not raw:
@@ -135,11 +164,13 @@ def normalize_endpoint(text: str) -> str | None:
         return None
     if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
         return None
+    netloc = parts.netloc if "@" in parts.netloc else parts.netloc.lower()
     # `rstrip`, then a default: this is what makes the function idempotent, which the callers
-    # rely on — the sidebar normalises the *seeded* environment value as well as the typed one,
-    # so anything already in normal form must survive a second pass unchanged.
+    # rely on — a value it produced must survive a second pass unchanged.
     path = parts.path.rstrip("/")
-    return f"{parts.scheme.lower()}://{parts.netloc}{path or '/v1'}"
+    tail = f"?{parts.query}" if parts.query else ""
+    tail += f"#{parts.fragment}" if parts.fragment else ""
+    return f"{parts.scheme.lower()}://{netloc}{path or '/v1'}{tail}"
 
 
 # Built once. The scheme check above is what keeps `file://` and `ftp://` out — `build_opener`

@@ -1174,3 +1174,54 @@ def test_detect_says_nothing_about_a_server_it_never_contacted(monkeypatch, tmp_
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
     detect = next(b for b in app.sidebar.button if b.label == "Detect models")
     assert detect.disabled, "Detect is clickable with no endpoint to ask"
+
+
+def test_a_no_op_edit_keeps_the_models_already_found(monkeypatch, tmp_path):
+    # `apply_endpoint` dropped detections on any text change at all. An edit that lands on the
+    # same server — pasting the URL back, a trailing slash, a stray space — then emptied the
+    # roster and made the reader sit through another probe (up to DEFAULT_TIMEOUT) of a server
+    # that never stopped answering. Only a change of *target* may clear them.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    st.cache_resource.clear()
+    found = [config.local_choice("qwen", "http://localhost:8080/v1")]
+
+    st.session_state[webui.ENDPOINT_KEY] = "http://localhost:8080/v1"
+    st.session_state[webui.DETECTED_KEY] = found
+    try:
+        # Same server, spelled differently.
+        st.session_state[webui.ENDPOINT_KEY] = "  http://localhost:8080/v1/  "
+        webui.apply_endpoint()
+        assert st.session_state[webui.ENDPOINT_KEY] == "http://localhost:8080/v1"
+        assert webui.detections() == found, "a no-op edit re-probed a server that was answering"
+
+        # A different server does clear them, which is the half that must keep working.
+        st.session_state[webui.ENDPOINT_KEY] = "http://localhost:1234/v1"
+        webui.apply_endpoint()
+        assert webui.detections() is None
+    finally:
+        st.session_state.pop(webui.ENDPOINT_KEY, None)
+        st.session_state.pop(webui.DETECTED_KEY, None)
+
+
+def test_the_sidebar_names_where_the_running_model_is_served(monkeypatch, tmp_path):
+    # The endpoint field holds whatever server Detect is pointed at, which is not necessarily
+    # where the *running* model is served — they differ the moment the reader goes looking at a
+    # second one. With the old "Serving the selected model." caption gone in that state and the
+    # label carrying no host, nothing on the page named the endpoint being called. That is the
+    # affordance the CLI banner gives its own line: a local server that is simply not running
+    # looks like a hung turn unless the UI said where it pointed.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    st.cache_resource.clear()
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
+    captions = [caption.value for caption in app.sidebar.caption]
+    assert any("http://127.0.0.1:8080/v1" in caption for caption in captions), captions
+
+    # Still named after the reader points the field somewhere else entirely.
+    app.sidebar.text_input[0].set_value("http://127.0.0.1:1234/v1").run()
+    captions = [caption.value for caption in app.sidebar.caption]
+    assert any("http://127.0.0.1:8080/v1" in caption for caption in captions), captions

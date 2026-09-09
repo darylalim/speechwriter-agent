@@ -5,6 +5,7 @@ import streamlit as st
 from speechwriter.webui import (
     SUGGESTION_KEY,
     base_settings,
+    detections,
     get_bundle,
     queue_suggestion,
     render_turn,
@@ -99,12 +100,15 @@ if not has_key:
     # branch below says the true thing for its own reader.
     #
     # `bundle.settings.base_url` is not worth testing here: reaching this branch proves it is
-    # None, since a non-None one makes `model_credentials_present` true. Only the *configured*
-    # endpoint can be set, which is exactly the reader who has somewhere to switch back to.
+    # None, since a non-None one makes `model_credentials_present` true. The question is whether
+    # a *local entry* is on the roster to switch back to — which used to mean only a configured
+    # endpoint, and no longer does: a reader who typed one this session and detected against it
+    # has entries too, and telling them to go and point at a server they already pointed at is
+    # advice to redo what they did.
     recover = (
         "Pick your locally served model in the sidebar to carry on without one, or add a key "
         "to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
-        if base_settings().base_url
+        if base_settings().base_url or detections()
         # No endpoint configured, so there is nothing in the picker *yet* — but the local route
         # is open without a restart now, and naming the control that opens it is what the CLI's
         # setup panel does. This used to say "restart the app", which the endpoint field

@@ -1269,7 +1269,12 @@ def test_listing_models_never_raises_on_a_url_it_cannot_parse():
     # be typed. Asserted here rather than left to the caller because the promise is this
     # module's, and both front ends were written against it.
     assert endpoints.list_models("http://[::1") == []
-    assert endpoints.list_models("http://[::1]:8080/v1", timeout=0.2) == []
+    assert endpoints.list_models("[::1") == []
+    # Deliberately no well-formed-but-unreachable address here. An earlier version asserted on
+    # `http://[::1]:8080/v1`, which opens a real TCP connection — breaking the suite's offline
+    # invariant, and going red for any contributor running the `mlx_lm.server --port 8080` the
+    # README recommends, since a listening server answers and the result is no longer `[]`.
+    # The unclosed bracket is the whole point: it raises inside `urlsplit`, before any socket.
 
 
 def test_the_key_configured_for_one_endpoint_is_not_sent_to_another(monkeypatch, tmp_path):
@@ -1364,28 +1369,92 @@ def test_one_model_served_by_two_machines_will_not_resolve_by_name(monkeypatch, 
     assert config.resolve_choice(roster, "opus 5") == config.MODEL_CHOICES[1]
 
 
+def test_reading_an_endpoint_back_never_rewrites_it(monkeypatch, tmp_path):
+    # Two functions on purpose. `normalize_endpoint` edits what a reader *typed*, because a
+    # missing scheme or a missing /v1 reports a healthy server as dead. `usable_endpoint` only
+    # accepts or rejects, because the value it reads was written deliberately by an operator —
+    # and normalising on read is what dropped Azure's required `?api-version=` and appended a
+    # 404-producing `/v1` to a proxy serving the OpenAI API at its root.
+    deliberate = [
+        "https://x.openai.azure.com/openai/deployments/gpt4?api-version=2024-02-01",
+        "http://127.0.0.1:4000",
+        "http://127.0.0.1:8080/v1/",
+    ]
+    for written in deliberate:
+        assert endpoints.usable_endpoint(f"  {written}  ") == written
+    # It still refuses what cannot be called, and still never raises on an unclosed bracket.
+    for junk in ("", "   ", "file:///Users/you/private", "localhost:8080", "http://[::1"):
+        assert endpoints.usable_endpoint(junk) is None, junk
+
+    # And the typed side lower-cases the host, because "LocalHost" and "localhost" are one
+    # server while roster dedup compares the string -- two rows, identical labels, and
+    # `same_origin` disagreeing with the dedup key about what "the same server" means.
+    assert endpoints.normalize_endpoint("http://LocalHost:8080/v1") == "http://localhost:8080/v1"
+    # Userinfo is left alone, where case is significant.
+    assert endpoints.normalize_endpoint("http://user:Pa55@h/v1") == "http://user:Pa55@h/v1"
+    # A typed URL keeps its query too, for the same reason a configured one does.
+    azure = "https://x.openai.azure.com/deployments/g?api-version=2024-02-01"
+    assert endpoints.normalize_endpoint(azure) == azure
+
+
+def test_an_ambiguous_model_name_is_refused_rather_than_passed_through():
+    # `resolve_choice` answers None for "no such entry" and for "two entries by that name", and
+    # the eval harness's pass-through is only right for the first: it sets SPEECHWRITER_MODEL
+    # while leaving SPEECHWRITER_BASE_URL alone, which sends a Claude id to a local server.
+    # `matching_choices` is what lets a caller tell the two Nones apart.
+    laptop = config.local_choice("qwen", "http://127.0.0.1:8080/v1")
+    roster = config.MODEL_CHOICES + (laptop,)
+
+    assert config.matching_choices(roster, "nonesuch") == []
+    assert config.matching_choices(roster, "qwen (local)") == [laptop]
+    assert len(config.matching_choices(roster, "claude-opus-5")) == 1
+
+    ambiguous = config.MODEL_CHOICES + (config.local_choice("claude-sonnet-5", "http://h/v1"),)
+    assert len(config.matching_choices(ambiguous, "claude-sonnet-5")) == 2
+    assert config.resolve_choice(ambiguous, "claude-sonnet-5") is None
+
+
+def test_a_configured_endpoint_reaches_the_client_exactly_as_written(monkeypatch, tmp_path):
+    # An earlier version normalised SPEECHWRITER_BASE_URL to stop one server appearing twice in
+    # the picker, and rewrote endpoints that worked: an Azure deployment URL lost the
+    # `?api-version=` query it requires, and a proxy serving the OpenAI API at the root gained a
+    # `/v1` that 404s. Both measured. `build_agent` never probes, so each failed at the first
+    # turn with no log line. A configured endpoint is an operator's deliberate string.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
+    for written in (
+        "https://x.openai.azure.com/openai/deployments/gpt4?api-version=2024-02-01",
+        "http://127.0.0.1:4000",
+        "http://127.0.0.1:8080/v1/",
+        "http://LocalHost:8080/v1",
+    ):
+        monkeypatch.setenv("SPEECHWRITER_BASE_URL", f"  {written}  ")
+        settings = load_settings()
+        assert settings.base_url == written, f"{written} was rewritten to {settings.base_url}"
+        model = _build_model(settings)
+        assert isinstance(model, ChatOpenAI)
+        assert model.openai_api_base == written
+
+
 def test_a_configured_endpoint_and_a_detected_one_are_the_same_row(monkeypatch, tmp_path):
-    # `SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1/` works perfectly — `list_models` rstrips
-    # it — but a detection against that same server is normalised without the trailing slash,
-    # and roster dedup is on `(model, base_url)`. Two strings, one server: the reader gets two
-    # rows both labelled "qwen (local)", indistinguishable in the picker and, in the REPL,
-    # matched by label so `resolve_choice` returns whichever came first. Measured before
-    # `load_settings` normalised the configured value.
+    # The duplicate normalisation used to prevent, prevented on the read side instead. A dotenv
+    # holding a trailing slash works fine — `list_models` rstrips it — but if the endpoint field
+    # rewrote the value it was seeded with, detections would carry the tidied spelling while the
+    # configured pair carried the raw one. Roster dedup is on `(model, base_url)`, so that is two
+    # strings for one server: two rows both labelled "qwen (local)", indistinguishable in the
+    # picker and, in the REPL, ambiguous by label. `usable_endpoint` accepts a seeded value
+    # without touching it, so both sides name the server the same way.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "  http://127.0.0.1:8080/v1/  ")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1/")
     settings = load_settings()
 
-    assert settings.base_url == "http://127.0.0.1:8080/v1"
-    detected = [config.local_choice("local/qwen", "http://127.0.0.1:8080/v1")]
+    seeded = endpoints.usable_endpoint(settings.base_url or "")
+    assert seeded == settings.base_url, "reading the configured endpoint back rewrote it"
+
+    detected = [config.local_choice("local/qwen", seeded or "")]
     labels = [choice.label for choice in config.model_choices(settings, detected=detected)]
     assert labels.count("local/qwen (local)") == 1, labels
-
-    # A value that does not normalise is kept verbatim rather than dropped, so junk keeps the
-    # behaviour it has today — refused at the point of use — instead of silently becoming "no
-    # endpoint configured" and building an Anthropic client for a locally served id.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "file:///Users/you/private")
-    assert load_settings().base_url == "file:///Users/you/private"
 
 
 def test_listing_models_speaks_only_http(tmp_path):
