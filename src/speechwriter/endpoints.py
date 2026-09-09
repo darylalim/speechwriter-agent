@@ -74,6 +74,74 @@ def _origin(url: str) -> tuple[str, str]:
     return parts.scheme.lower(), parts.netloc.lower()
 
 
+def same_origin(url: str, other: str | None) -> bool:
+    """Whether two URLs name the same server — scheme and authority, nothing else.
+
+    The public half of what :class:`_CredentialSafeRedirects` already decides privately, and
+    it is the same question for the same reason. That handler protects the *second* hop; this
+    protects the *first*, which stopped being safe the moment an endpoint could be typed into
+    a text box rather than written into a dotenv by the operator. ``list_models``' docstring
+    licenses forwarding the reader's key with "the chat client already sends the very same
+    credential to this very same host" — an argument that holds only while the host is the
+    configured one, and this is how a caller checks that it still is.
+
+    Total by construction: ``other`` is routinely ``None`` (nothing configured), and
+    ``urlsplit`` raises on an unclosed IPv6 bracket. Both answer ``False`` — "not the server
+    we hold a credential for" is the safe reading of every input this cannot parse.
+    """
+    if not other:
+        return False
+    try:
+        return _origin(url) == _origin(other)
+    except ValueError:
+        return False
+
+
+def normalize_endpoint(text: str) -> str | None:
+    """Read what a person typed as an OpenAI-compatible root, or ``None`` if it is not one.
+
+    Two edits, each measured against what this repo's own servers actually answer:
+
+    * **A missing scheme becomes ``http``.** ``localhost:8080`` is what a reader types, and
+      ``urllib.request.Request`` raises at *construction* on a scheme-less URL — which
+      :func:`list_models` files under "could not list", reporting a healthy server as dead.
+    * **An empty path becomes ``/v1``.** ``http://127.0.0.1:8080`` is equally likely, and
+      ``mlx_lm.server``, vLLM, LM Studio and Ollama all serve the OpenAI API under ``/v1``,
+      never at the root. Measured: the bare form returns ``[]`` from a server listing eight
+      models, again indistinguishable from one that is down.
+
+    The test is ``"://" in raw``, not ``urlsplit(raw).scheme``, because ``urlsplit`` reads the
+    two spellings of the same typo differently — ``"localhost:8080"`` parses as scheme
+    ``"localhost"`` while ``"127.0.0.1:8080"`` parses as no scheme at all.
+
+    Never raises. It is called on the render path (the sidebar reads it every rerun), so a
+    ``ValueError`` here is not a bad caption but a page that throws on *every* rerun with the
+    offending text still in session state — the unrecoverable state
+    :func:`speechwriter.webui.get_bundle`'s own try/except exists to prevent.
+
+    Normalising is not a second security boundary: a rejected scheme returns ``None`` here and
+    is refused again in :func:`list_models`, which is where the test pins it. The value of
+    returning ``None`` is that the caller can say "that is not an endpoint" instead of
+    "found nothing", which are different facts.
+    """
+    raw = text.strip()
+    if not raw:
+        return None
+    if "://" not in raw:
+        raw = f"http://{raw}"
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
+        return None
+    # `rstrip`, then a default: this is what makes the function idempotent, which the callers
+    # rely on — the sidebar normalises the *seeded* environment value as well as the typed one,
+    # so anything already in normal form must survive a second pass unchanged.
+    path = parts.path.rstrip("/")
+    return f"{parts.scheme.lower()}://{parts.netloc}{path or '/v1'}"
+
+
 # Built once. The scheme check above is what keeps `file://` and `ftp://` out — `build_opener`
 # re-adds every default handler whose class was not passed in, so this cannot do that job.
 _OPENER = urllib.request.build_opener(_CredentialSafeRedirects)
@@ -94,12 +162,17 @@ def list_models(
     OpenAI-compatible service needs it to answer at all.
     """
     url = f"{base_url.rstrip('/')}/models"
-    scheme = urllib.parse.urlsplit(url).scheme.lower()
-    if scheme not in _ALLOWED_SCHEMES:
-        logger.info("Refusing to list models at %s: %r is not an HTTP scheme.", url, scheme)
-        return []
-
     try:
+        # Reading the scheme is inside the `try` for the same reason the Request build is, and
+        # it was outside until an endpoint could be *typed*: `urlsplit` raises
+        # `ValueError: Invalid IPv6 URL` on an unclosed bracket ("http://[::1"), so the one
+        # line that decides whether to open a socket at all could itself escape as an
+        # exception — the one thing this function promises never to do. Unreachable while the
+        # endpoint came only from a dotenv the operator wrote; one keystroke away now.
+        scheme = urllib.parse.urlsplit(url).scheme.lower()
+        if scheme not in _ALLOWED_SCHEMES:
+            logger.info("Refusing to list models at %s: %r is not an HTTP scheme.", url, scheme)
+            return []
         # Building the Request is inside the `try` deliberately, not merely tidily: a
         # `base_url` with no scheme raises `ValueError: unknown url type` from the constructor,
         # before any socket is opened. Left outside, a typo'd endpoint would escape this

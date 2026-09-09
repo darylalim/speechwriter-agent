@@ -23,11 +23,14 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, NamedTuple
 
 from dotenv import load_dotenv
+
+from speechwriter import endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -69,12 +72,33 @@ class ModelChoice(NamedTuple):
         All three fields move together, which is the point: ``base_url`` selects the client and
         ``context_window`` sizes compaction, so applying the model alone would leave a Claude id
         pointed at a local server, or a local model compacting for the previous one's window.
+
+        A **fourth** field moves with them, and it is the one that is easy to miss:
+        ``openai_api_key`` is dropped unless this choice names the endpoint ``settings`` was
+        configured with. :meth:`Settings.endpoint_api_key_for` draws that boundary for the
+        ``/v1/models`` probe, and drawing it only there was a hole rather than a guard — the
+        probe withheld the key while the *chat client* went on sending it to the same typed host
+        on every turn, which is where it actually matters. Measured on the wire: one turn
+        against a typed endpoint carried ``Authorization: Bearer <the reader's real key>``.
+
+        ``settings`` must therefore be the **configured** pair, not the one now in force. Both
+        callers pass it — ``webui.get_bundle`` applies to a fresh ``load_settings()`` and
+        ``cli._switch_model`` to the ``configured`` it already holds — and applying to either is
+        otherwise identical, since the only fields that differ are the three replaced here.
         """
         return dataclasses.replace(
             settings,
             model=self.model,
             base_url=self.base_url,
             context_window=self.context_window,
+            openai_api_key=(
+                settings.openai_api_key
+                # A curated entry needs no endpoint credential at all — the Anthropic client
+                # never reads it — so it is carried unchanged rather than dropped, or a detour
+                # through Claude would strip the key the configured endpoint still needs.
+                if self.base_url is None or endpoints.same_origin(self.base_url, settings.base_url)
+                else None
+            ),
         )
 
 
@@ -113,6 +137,12 @@ WORDS_PER_MINUTE = 130
 # is not an option; a local `mlx_lm.server` never reads it. Named rather than inlined so the
 # value that shows up in a request log is greppable back to this comment.
 LOCAL_API_KEY_PLACEHOLDER = "local"
+
+# What the endpoint field offers when a reader has configured nothing. A guess about the port,
+# but a cheap one: it is only ever a *placeholder*, never a value — the field starts empty and
+# nothing is probed until a click, so being wrong costs a retype rather than a dead roster entry.
+# `mlx_lm.server`'s own default port, which is also the one the README's local-model recipe uses.
+DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8080/v1"
 
 # The context window assumed for a locally served model, and the reason `ModelChoice` carries
 # one at all.
@@ -222,6 +252,26 @@ class Settings:
         """
         return self.openai_api_key or LOCAL_API_KEY_PLACEHOLDER
 
+    def endpoint_api_key_for(self, target: str) -> str | None:
+        """The bearer to send when asking ``target`` what it serves — ``None`` unless it is
+        the configured server.
+
+        :func:`~speechwriter.endpoints.list_models` licenses forwarding the reader's key with
+        "no new disclosure: the chat client already sends the very same credential to this very
+        same host". That argument is exact, and it stops holding the moment the host is *typed*
+        rather than configured: a reader with a real ``OPENAI_API_KEY`` for a hosted gateway who
+        types a colleague's laptop address would hand that key to a machine the operator never
+        named, over plaintext HTTP, on the very first request — before
+        :class:`~speechwriter.endpoints._CredentialSafeRedirects`, which guards only the
+        *second* hop, can see it.
+
+        So the credential boundary is the same for both hops: the configured origin, and
+        nothing else. The cost is a typed hosted endpoint answering 401, which the sidebar
+        reports as "no credential sent" rather than as silence — different facts deserve
+        different captions.
+        """
+        return self.endpoint_api_key if endpoints.same_origin(target, self.base_url) else None
+
     def _vpath(self, path: Path) -> str:
         """Map a real path under ``project_root`` to the agent's virtual path."""
         rel = path.resolve().relative_to(self.project_root.resolve()).as_posix()
@@ -238,7 +288,9 @@ class Settings:
         return self._vpath(self.workspace_dir)
 
 
-def model_choices(*offered: Settings) -> tuple[ModelChoice, ...]:
+def model_choices(
+    *offered: Settings, detected: Iterable[ModelChoice] = ()
+) -> tuple[ModelChoice, ...]:
     """The curated roster, widened so every configuration passed in stays selectable.
 
     This roster is deliberately never authoritative. Streamlit **silently** rewrites a
@@ -262,9 +314,29 @@ def model_choices(*offered: Settings) -> tuple[ModelChoice, ...]:
     worse than losing an option: picking a Claude id there also disables the chat input, so
     the one entry that still works has just been removed from the list. Callers therefore
     pass both the configuration the session *started* on and the one now in force.
+
+    ``detected`` carries whatever a live endpoint was asked for — see
+    :func:`speechwriter.endpoints.list_models`. Two things about it are load-bearing.
+
+    They arrive as whole :class:`ModelChoice` records, **never as bare ids**, because the
+    endpoint they were found at is the half that cannot be re-derived later. A caller handing
+    over ids and letting this function attach an endpoint would attach *some* endpoint — the
+    configured one, or whatever a text field says now — and a pair naming the wrong server
+    builds a client pointed at it. Detected as a pair, stored as a pair, offered as a pair.
+
+    And they are merged **before** ``offered``, which is ordering rather than taste: ``offered``
+    varies with what is *selected* and ``detected`` does not, so a detection placed after it
+    would change position the moment it was picked — "picking one detected model reordered the
+    rest of them", which the picker cannot survive, since ``index=choices.index(current)`` names
+    a row number that must mean the same thing on the next render.
     """
     choices = list(MODEL_CHOICES)
     seen = {(choice.model, choice.base_url) for choice in choices}
+    for choice in detected:
+        if (choice.model, choice.base_url) in seen:
+            continue
+        seen.add((choice.model, choice.base_url))
+        choices.append(choice)
     for settings in offered:
         identity = (settings.model, settings.base_url)
         if identity in seen:
@@ -288,15 +360,23 @@ def resolve_choice(choices: tuple[ModelChoice, ...], requested: str) -> ModelCho
     ``isdecimal``, not ``isdigit``: the latter is true for characters ``int()`` refuses ("²",
     "½"), so an index check built on it raises on a stray keystroke instead of answering.
     Every character ``isdecimal`` accepts, ``int`` parses.
+
+    **An ambiguous name is not an answer, so it resolves to ``None``.** One model id can be
+    served by two machines — the same ``mlx-community/…`` weights on a laptop and a workstation,
+    or an identical Ollama tag — and :func:`local_choice` labels both ``<id> (local)`` because
+    the label has to stay a pure function of the pair. Returning the first match silently pointed
+    the agent at whichever server happened to be merged earlier. The caller prints the roster on
+    ``None``, and that table carries ``base_url`` in a column of its own, so the reader can see
+    the two apart and pick by number — which is the one input that is never ambiguous.
     """
     if requested.isdecimal():
         index = int(requested)
         return choices[index - 1] if 1 <= index <= len(choices) else None
     wanted = requested.casefold()
-    for choice in choices:
-        if wanted in (choice.label.casefold(), choice.model.casefold()):
-            return choice
-    return None
+    matched = [
+        choice for choice in choices if wanted in (choice.label.casefold(), choice.model.casefold())
+    ]
+    return matched[0] if len(matched) == 1 else None
 
 
 def local_choice(model: str, base_url: str, context_window: int | None = None) -> ModelChoice:
@@ -377,10 +457,9 @@ def load_settings() -> Settings:
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
         max_tokens=_optional_int_env("SPEECHWRITER_MAX_TOKENS"),
-        # `or None` rather than a bare `.get`: an exported-but-empty SPEECHWRITER_BASE_URL
-        # is how a shell says "unset", and an empty string here would route every call to a
-        # nonexistent endpoint while `uses_local_endpoint` still reported True.
-        base_url=(os.environ.get("SPEECHWRITER_BASE_URL") or "").strip() or None,
+        # Normalised, not just stripped, so the configured endpoint and a detected one
+        # naming the same server dedupe to a single roster entry. See `_configured_endpoint`.
+        base_url=_configured_endpoint(),
         # Normalised the same way, and for the same reason: a blank or whitespace-only value
         # is how a shell says "unset", and left as-is it is *truthy* — so `endpoint_api_key`
         # would send "   " as the bearer token and a hosted endpoint would 401 far from the
@@ -394,6 +473,31 @@ def load_settings() -> Settings:
         store_path=store_path,
         max_research_results=_int_env("SPEECHWRITER_MAX_RESEARCH_RESULTS", 5),
     )
+
+
+def _configured_endpoint() -> str | None:
+    """``SPEECHWRITER_BASE_URL``, in the same normal form a typed endpoint is put into.
+
+    Normalising here is what stops one server appearing twice in the picker. A dotenv holding
+    ``http://127.0.0.1:8080/v1/`` works perfectly — :func:`~speechwriter.endpoints.list_models`
+    rstrips it — but the *detected* entries for that same server are normalised without the
+    trailing slash, and roster deduplication is on ``(model, base_url)``. Two strings, one
+    server: the reader gets two rows both labelled ``qwen (local)``, indistinguishable in the
+    picker and, in the REPL, matched by label so ``resolve_choice`` returns whichever came
+    first. Measured before this function existed.
+
+    A value that does **not** normalise is kept verbatim rather than dropped, and that is the
+    conservative half: ``file:///…`` and other junk keep exactly the behaviour they have today
+    — ``uses_local_endpoint`` still True, refused at the point of use — instead of silently
+    becoming "no endpoint configured" and building an Anthropic client. Widening what a
+    *configured* endpoint may be is not this change's business.
+
+    The empty case is unchanged and still deliberate: an exported-but-blank
+    ``SPEECHWRITER_BASE_URL`` is how a shell says "unset", and an empty string here would route
+    every call to a nonexistent endpoint while ``uses_local_endpoint`` still reported True.
+    """
+    raw = (os.environ.get("SPEECHWRITER_BASE_URL") or "").strip()
+    return endpoints.normalize_endpoint(raw) or raw or None
 
 
 def _optional_int_env(name: str, *, minimum: int = 1) -> int | None:

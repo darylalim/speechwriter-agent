@@ -105,13 +105,14 @@ if not has_key:
         "Pick your locally served model in the sidebar to carry on without one, or add a key "
         "to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
         if base_settings().base_url
-        # No endpoint configured, so there is nothing in the picker to fall back to — but the
-        # local route is still open, and pointing at it is what the CLI's setup panel and the
-        # README both do. Dropping it left the two front ends disagreeing about how to start
-        # without a key.
-        else "Add a key to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart "
-        "the app — or run a local model instead by setting `SPEECHWRITER_BASE_URL` to an "
-        "OpenAI-compatible server."
+        # No endpoint configured, so there is nothing in the picker *yet* — but the local route
+        # is open without a restart now, and naming the control that opens it is what the CLI's
+        # setup panel does. This used to say "restart the app", which the endpoint field
+        # falsifies; leaving it would have the two front ends disagreeing again about how to
+        # start without a key.
+        else "Open **Local endpoint** in the sidebar and point it at an OpenAI-compatible "
+        "server to run a model locally — or add a key to a local dotenv file "
+        "(`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
     )
     st.error(
         f"No `ANTHROPIC_API_KEY` found, so the selected model cannot be called. {recover}",

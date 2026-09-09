@@ -62,10 +62,15 @@ def test_dispatch_reads_commands_and_leaves_commissions_alone():
     assert cli._dispatch("/model 2") == cli.Command("model", "2")
     assert cli._dispatch("/MODEL Opus 5") == cli.Command("model", "Opus 5")
 
+    assert cli._dispatch("/endpoint") == cli.Command("endpoint", "")
+    assert cli._dispatch("/endpoint 127.0.0.1:8080") == cli.Command("endpoint", "127.0.0.1:8080")
+    assert cli._dispatch("/ENDPOINT http://h/v1") == cli.Command("endpoint", "http://h/v1")
+
     assert cli._dispatch("Write a toast for Ana.") is None
     # Not a command: a commission may legitimately open with these letters, and swallowing it
     # would spend the turn printing a model table instead of writing the speech.
     assert cli._dispatch("/modelling the audience as sceptics") is None
+    assert cli._dispatch("/endpoints of the argument are what matter") is None
     assert cli._dispatch("exit interviews are the subject of this speech") is None
 
 
@@ -153,3 +158,110 @@ def test_an_unknown_model_leaves_the_session_on_the_one_it_had(repl, capsys, mon
     # One build: the startup one. A rejected argument must not mint a second agent.
     assert len(rebuilt) == 1
     assert "claude-sonnet-5" in printed
+
+
+def test_a_keyless_session_reaches_the_command_that_fixes_it(repl, monkeypatch, capsys):
+    # `main` used to print a setup panel and `raise SystemExit(1)` when no model could be
+    # called — and that panel's own advice was to run a local server. So the one reader it
+    # addressed could act on it only by editing a dotenv and starting again, which is exactly
+    # what `/endpoint` exists to remove. Exiting before the loop would leave the terminal half
+    # of this feature unreachable for the reader it is for.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(
+        cli.endpoints, "list_models", lambda url, **kw: ["local/qwen", "local/granite"]
+    )
+    repl("/endpoint 127.0.0.1:8080", "/model", "/model 5", "exit")
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "No model configured yet" in out, out
+    # Normalised on the way in, so what the reader typed reaches the server as a URL it answers.
+    assert "http://127.0.0.1:8080/v1" in out
+    # On the roster the *next* command reads, which is the whole point of handing the models
+    # back to `main` rather than leaving them inside `_set_endpoint`.
+    assert "local/granite (local)" in out
+    # And selectable by the number printed beside them: 1-3 are curated, so the detections
+    # start at 4 and the second of them is 5. Picking one leaves a session that can actually
+    # run — the banner reprints with the endpoint on its own line.
+    assert "endpoint" in out and "local http://127.0.0.1:8080/v1" in out
+
+
+def test_a_commission_is_refused_while_no_model_can_be_called(repl, monkeypatch, capsys):
+    # The other half of relaxing that gate. Letting the loop start must not let a brief through
+    # to a model that cannot be called — the turn would fail deep in the graph with an auth
+    # error rather than at the prompt, and `_run_turn` is where tokens start being spent.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_run_turn", lambda *a, **k: calls.append("turn") or False)
+    repl("Write a toast for Ana.", "exit")
+
+    cli.main()
+
+    assert calls == [], "a commission ran with no callable model"
+    assert "No model can be called yet" in capsys.readouterr().out
+
+
+def test_pointing_at_a_server_is_not_a_model_switch(repl, monkeypatch, capsys):
+    # `/endpoint` sits one branch away from `/model`, whose three steps (persist, rebuild,
+    # rotate the thread) are load-bearing — so the tempting mistake is to run them here too.
+    # Pointing at a server changes what may be *offered*; it must not drop the conversation.
+    monkeypatch.setattr(cli.endpoints, "list_models", lambda url, **kw: ["local/qwen"])
+    built: list[str] = []
+    monkeypatch.setattr(cli, "build_agent", _counting(built))
+    repl("/endpoint 127.0.0.1:8080", "exit")
+
+    cli.main()
+
+    assert built == ["initial"], f"pointing at a server rebuilt the agent: {built}"
+
+
+def _counting(log: list[str]):
+    """`build_agent`, wrapped so a test can count how many agents a session actually built."""
+    real = cli.build_agent
+
+    def wrapper(settings=None):
+        log.append("initial" if settings is None else "rebuild")
+        return real(settings) if settings is not None else real()
+
+    return wrapper
+
+
+def test_a_junk_endpoint_answers_rather_than_ending_the_session(repl, monkeypatch, capsys):
+    # Same rule `resolve_choice` follows: whatever the reader typed, the REPL must *answer*.
+    # An exception here propagates out of the loop and ends the session over a keystroke, and
+    # `urlsplit` raises on an unclosed IPv6 bracket — which is one keystroke away now that an
+    # endpoint is typed rather than configured.
+    probes: list[str] = []
+    monkeypatch.setattr(cli.endpoints, "list_models", lambda url, **kw: probes.append(url) or [])
+    repl("/endpoint http://[::1", "/endpoint file:///etc", "/endpoint", "exit")
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "is not an HTTP endpoint" in out
+    # And neither reached the network: refusing before the probe is what makes the message
+    # "that is not an endpoint" rather than "that endpoint answered nothing".
+    assert probes == [], probes
+
+
+def test_reporting_the_endpoint_does_not_discard_what_it_found(repl, monkeypatch, capsys):
+    # `_set_endpoint` returned `[]` from both of its non-probing branches, which read as tidy and
+    # was a bug: a bare `/endpoint`, documented as only reporting, silently emptied the roster
+    # the reader had just built — and so did a typo, leaving them to re-probe a server that had
+    # never stopped answering. Only a real probe may replace the list.
+    probes: list[str] = []
+
+    def listing(url, **kwargs):
+        probes.append(url)
+        return ["local/qwen"]
+
+    monkeypatch.setattr(cli.endpoints, "list_models", listing)
+    repl("/endpoint 127.0.0.1:8080", "/endpoint", "/endpoint nonsense://x", "/model", "exit")
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "local/qwen (local)" in out, "a bare or rejected /endpoint dropped the detections"
+    # Neither of the two non-probing commands went near the network.
+    assert probes == ["http://127.0.0.1:8080/v1"], probes

@@ -133,13 +133,15 @@ Three things follow from how the switch works, and they are the same in both fro
   client, so it has to be. Learned voice profiles are snapshotted *first* and rehydrated by the
   rebuild, so they survive; the conversation does not — the new agent has a new checkpointer and
   cannot resume the old thread, so the thread is rotated and the transcript starts fresh.
-- **The locally served entry is whatever you configured**, not a hard-coded endpoint. It appears
-  once `SPEECHWRITER_BASE_URL` and `SPEECHWRITER_MODEL` name one — which is what makes it
-  correct rather than a guess about which server you happen to be running — and it **stays** in
-  the list after you switch away, so the trip is never one-way. In the browser, **Detect
-  models** asks that endpoint what else it serves and adds the answers; it runs on a click only,
-  never on page load. A model and its endpoint always travel together, so picking a local id can
-  never leave you pointed at Anthropic, nor a Claude id at localhost.
+- **Locally served entries are never hard-coded.** They are whatever *you* point at, which is
+  what makes them correct rather than a guess about which server you happen to be running. Two
+  ways in, and both **stay** in the list after you switch away, so the trip is never one-way.
+  Configure `SPEECHWRITER_BASE_URL` and `SPEECHWRITER_MODEL` and that pair is offered from the
+  first render; or point at a server without configuring anything — **Local endpoint** in the
+  browser sidebar, `/endpoint <url>` in the REPL — and everything it serves joins the list for
+  this session. Either way the probe runs on a click (or a command) only, never on page load.
+  A model and its endpoint always travel together, so picking a local id can never leave you
+  pointed at Anthropic, nor a Claude id at localhost.
 - **`SPEECHWRITER_MAX_TOKENS` is global and wins over every model.** An override sized for one
   model follows you to the next, so asking 128000 of Haiku 4.5 — whose real ceiling is 64000 —
   is rejected at the first turn. The ceiling line says so before you spend one:
@@ -155,10 +157,20 @@ the laptop. Any OpenAI-compatible server works; on Apple Silicon, [MLX](https://
 
 ```bash
 uv tool install mlx-lm
-mlx_lm.server --model mlx-community/Qwen3.8-27B-4bit --port 8080
+mlx_lm.server --port 8080          # --model is optional: it serves your whole HF cache
 ```
 
-Then point the agent at it:
+Then point the agent at it, without restarting anything:
+
+- **In the browser** — open **Local endpoint** in the sidebar, type `127.0.0.1:8080`, press
+  **Detect models**, and pick one from the list above it.
+- **In the REPL** — `/endpoint 127.0.0.1:8080`, then `/model` to see what it found.
+
+The URL is tidied as you type it: a missing scheme becomes `http`, and a missing path becomes
+`/v1`, which is where every OpenAI-compatible server actually answers. This is a *session*
+setting — the environment stays the durable one.
+
+To have that model selected from the first render instead, name the pair up front:
 
 ```ini
 SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1
@@ -179,8 +191,11 @@ A few things worth knowing:
   `DEFAULT_LOCAL_CONTEXT_WINDOW` (32768), and compacts at a fraction of that. There is no
   environment variable for it, deliberately — it is a property of a *model*, not of the
   machine, and a new `SPEECHWRITER_*` knob is a documentation contract this does not deserve.
-  A server with a genuinely larger window is declared in code, by giving that entry a
-  `context_window` in `config.MODEL_CHOICES` (or by passing one to `build_agent` directly).
+  A server with a genuinely larger window is declared by giving that roster entry a
+  `context_window` — `config.local_choice(model, base_url, context_window)` — or by passing one
+  to `build_agent` directly. Not in `config.MODEL_CHOICES`: that tuple is Anthropic-only, and
+  `test_every_anthropic_model_choice_is_profiled_above_the_floor` asserts every entry has
+  `base_url is None`, so a local entry cannot live there at all.
   Note also that the injected profile *replaces* any the id would otherwise have, which shows
   up only for a profiled id served locally — `gpt-4o` on LM Studio. That is intended: a local
   server's model *name* says nothing about the weights it actually loaded, so the conservative

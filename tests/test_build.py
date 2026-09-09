@@ -1223,6 +1223,171 @@ def test_the_bundle_still_takes_its_fields_in_the_documented_order():
     assert fields[5:] == ["profiled_max_tokens"], fields
 
 
+def test_a_typed_endpoint_is_read_the_way_a_reader_types_it_and_never_raises():
+    # One table rather than four tests, in the shape of
+    # `test_resolving_a_choice_never_raises_on_a_stray_argument`, and for the same reason: this
+    # now runs on whatever a reader types into a text box, so *answering* matters more than any
+    # single answer. Two of the entries were measured against a live `mlx_lm.server` serving
+    # eight models: without a scheme the Request constructor raises before any socket, and
+    # without `/v1` the path is `/models`, which no OpenAI-compatible server exposes. Both came
+    # back as `[]` — a healthy server reported exactly like a dead one.
+    normalize = endpoints.normalize_endpoint
+    expected = {
+        "127.0.0.1:8080": "http://127.0.0.1:8080/v1",
+        "localhost:8080": "http://localhost:8080/v1",
+        "http://127.0.0.1:8080": "http://127.0.0.1:8080/v1",
+        "  http://h/v1/  ": "http://h/v1",
+        "https://api.example.com/openai/v1": "https://api.example.com/openai/v1",
+        # `urlsplit` reads the two spellings of one typo differently — "localhost:8080" parses
+        # as scheme "localhost", "127.0.0.1:8080" as no scheme at all — which is why the test
+        # for a scheme is `"://" in raw` and not `urlsplit(raw).scheme`.
+        "file:///Users/you/private": None,
+        "ftp://example.invalid/v1": None,
+        "http://": None,
+        "": None,
+        "   ": None,
+        # The one that raises. `configured_endpoint` runs on every Streamlit rerun, so a
+        # ValueError here is not a bad caption but a page that throws on every rerun with the
+        # offending text still in session state.
+        "http://[::1": None,
+        "[::1": None,
+    }
+    for typed, want in expected.items():
+        assert normalize(typed) == want, typed
+
+    # Idempotent, which both callers rely on: the sidebar normalises the value seeded from the
+    # environment as well as the one typed, so a second pass must be a no-op.
+    for produced in filter(None, expected.values()):
+        assert normalize(produced) == produced
+
+
+def test_listing_models_never_raises_on_a_url_it_cannot_parse():
+    # This module's docstring promises "every failure is an empty list, never an exception", and
+    # the line that decides whether to open a socket at all sat *outside* the try: `urlsplit`
+    # raises `ValueError: Invalid IPv6 URL` on an unclosed bracket. Unreachable while an
+    # endpoint could only come from a dotenv the operator wrote; one keystroke away once it can
+    # be typed. Asserted here rather than left to the caller because the promise is this
+    # module's, and both front ends were written against it.
+    assert endpoints.list_models("http://[::1") == []
+    assert endpoints.list_models("http://[::1]:8080/v1", timeout=0.2) == []
+
+
+def test_the_key_configured_for_one_endpoint_is_not_sent_to_another(monkeypatch, tmp_path):
+    # `list_models` licenses forwarding the reader's key with "no new disclosure: the chat
+    # client already sends the very same credential to this very same host". That is exact, and
+    # it stops holding the moment the host is *typed*: a reader with a real OPENAI_API_KEY for a
+    # hosted gateway who types a colleague's laptop address would hand that key over plaintext
+    # HTTP to a machine the operator never named, on the first request — before
+    # `_CredentialSafeRedirects`, which guards only the second hop, can see it.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+    settings = load_settings()
+
+    # The configured server keeps the credential: that is the host it was configured for, and
+    # the chat client sends it there every turn anyway.
+    assert settings.endpoint_api_key_for("http://127.0.0.1:8080/v1") == "sk-real-key"
+    # Same origin, different path — still the same server.
+    assert settings.endpoint_api_key_for("http://127.0.0.1:8080/v2") == "sk-real-key"
+    # Everything else gets nothing: another port is another server, and so is another host.
+    assert settings.endpoint_api_key_for("http://127.0.0.1:1234/v1") is None
+    assert settings.endpoint_api_key_for("http://192.168.1.50:8080/v1") is None
+    assert settings.endpoint_api_key_for("https://127.0.0.1:8080/v1") is None
+    # Total, like `same_origin` itself: an unparseable target is not the configured one.
+    assert settings.endpoint_api_key_for("http://[::1") is None
+
+    # And with nothing configured there is no host to trust, so nothing is sent anywhere.
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    assert load_settings().endpoint_api_key_for("http://127.0.0.1:8080/v1") is None
+
+
+def _client_key(model: ChatOpenAI) -> str | None:
+    """The plain text behind a built client's key field.
+
+    ``ChatOpenAI.openai_api_key`` is typed ``SecretStr | () -> str | () -> Awaitable[str]``,
+    so the attribute alone does not type-check. Unwrapped through ``getattr`` rather than by
+    importing ``pydantic.SecretStr``: pydantic reaches this environment only transitively via
+    langchain, and importing it directly is the undeclared-dependency trap this repo already
+    documents for ``pyyaml``.
+    """
+    getter = getattr(model.openai_api_key, "get_secret_value", None)
+    return getter() if callable(getter) else None
+
+
+def test_the_key_reaches_the_chat_client_only_for_the_configured_endpoint(monkeypatch, tmp_path):
+    # `endpoint_api_key_for` guards the /v1/models probe, and guarding only there was a hole
+    # rather than a boundary: the probe withheld the key while the chat client went on sending
+    # it to the same typed host on *every turn*, over plaintext HTTP, which is where it actually
+    # matters. Measured on the wire before this — one invoke carried `Authorization: Bearer` and
+    # the reader's real gateway key — while the sidebar rendered "No credential sent".
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-gateway-secret")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    configured = load_settings()
+
+    # A model detected at an endpoint the reader typed: not the configured origin, so the key
+    # is dropped and `endpoint_api_key` falls back to the placeholder a local server ignores.
+    typed = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
+    elsewhere = _build_model(typed.applied_to(configured))
+    assert isinstance(elsewhere, ChatOpenAI)
+    assert _client_key(elsewhere) == config.LOCAL_API_KEY_PLACEHOLDER
+
+    # Its own server still gets it, or a configured hosted gateway could never be called.
+    same = config.local_choice("gpt-4o", "https://gateway.example.com/v1")
+    mine = _build_model(same.applied_to(configured))
+    assert isinstance(mine, ChatOpenAI)
+    assert _client_key(mine) == "sk-real-gateway-secret"
+
+    # And a curated entry carries it through untouched: the Anthropic client never reads it, so
+    # clearing it would strip the key on a detour through Claude and not put it back.
+    assert config.MODEL_CHOICES[0].applied_to(configured).openai_api_key == "sk-real-gateway-secret"
+
+
+def test_one_model_served_by_two_machines_will_not_resolve_by_name(monkeypatch, tmp_path):
+    # `local_choice` labels both `<id> (local)` because the label must stay a pure function of
+    # the pair, so a roster holding the same id at two endpoints has two rows a name cannot tell
+    # apart. Returning the first match pointed the agent at whichever was merged earlier, with
+    # nothing said. None is the honest answer: the caller prints the table, whose `base_url`
+    # column distinguishes them, and a row number never is ambiguous.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    laptop = config.local_choice("qwen", "http://127.0.0.1:8080/v1")
+    workstation = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
+    roster = config.model_choices(load_settings(), detected=[laptop, workstation])
+
+    assert config.resolve_choice(roster, "qwen") is None
+    assert config.resolve_choice(roster, "qwen (local)") is None
+    # The number still resolves, and to the right one of the two.
+    assert config.resolve_choice(roster, str(roster.index(workstation) + 1)) == workstation
+    # An unambiguous name is unaffected — this must narrow ambiguity, not matching.
+    assert config.resolve_choice(roster, "opus 5") == config.MODEL_CHOICES[1]
+
+
+def test_a_configured_endpoint_and_a_detected_one_are_the_same_row(monkeypatch, tmp_path):
+    # `SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1/` works perfectly — `list_models` rstrips
+    # it — but a detection against that same server is normalised without the trailing slash,
+    # and roster dedup is on `(model, base_url)`. Two strings, one server: the reader gets two
+    # rows both labelled "qwen (local)", indistinguishable in the picker and, in the REPL,
+    # matched by label so `resolve_choice` returns whichever came first. Measured before
+    # `load_settings` normalised the configured value.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "  http://127.0.0.1:8080/v1/  ")
+    settings = load_settings()
+
+    assert settings.base_url == "http://127.0.0.1:8080/v1"
+    detected = [config.local_choice("local/qwen", "http://127.0.0.1:8080/v1")]
+    labels = [choice.label for choice in config.model_choices(settings, detected=detected)]
+    assert labels.count("local/qwen (local)") == 1, labels
+
+    # A value that does not normalise is kept verbatim rather than dropped, so junk keeps the
+    # behaviour it has today — refused at the point of use — instead of silently becoming "no
+    # endpoint configured" and building an Anthropic client for a locally served id.
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "file:///Users/you/private")
+    assert load_settings().base_url == "file:///Users/you/private"
+
+
 def test_listing_models_speaks_only_http(tmp_path):
     # `urlopen`'s default opener installs FileHandler, FTPHandler and DataHandler, so a
     # `SPEECHWRITER_BASE_URL` of `file:///Users/you/private` would make the Detect button read

@@ -24,14 +24,25 @@ from rich.panel import Panel
 from rich.rule import Rule
 from rich.table import Table
 
+from speechwriter import endpoints
 from speechwriter.agent import SpeechwriterAgent, build_agent
-from speechwriter.config import ModelChoice, Settings, model_choices, resolve_choice
+from speechwriter.config import (
+    DEFAULT_LOCAL_ENDPOINT,
+    ModelChoice,
+    Settings,
+    local_choice,
+    model_choices,
+    resolve_choice,
+)
 from speechwriter.transcript import clip, iter_events
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
 # The REPL's only other instruction. Slash-prefixed so it cannot collide with a commission —
 # every other line typed here is a speech to write, and "model" alone is a plausible brief.
 _MODEL_COMMAND = "/model"
+# The second instruction, and slash-prefixed for the same reason: "endpoint" alone is a
+# plausible word in a brief about infrastructure.
+_ENDPOINT_COMMAND = "/endpoint"
 _PREVIEW_LEN = 90
 
 
@@ -128,7 +139,8 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
             f"[dim]speeches[/]   {s.workspace_dir / 'speeches'}\n"
             f"[dim]memory[/]     {s.store_path}\n\n"
             f"Describe your speech (speaker, audience, occasion, goal, length).\n"
-            f"Type [bold]/model[/] to list or switch models, [bold]exit[/] to save and quit.",
+            f"Type [bold]/model[/] to list or switch models, [bold]/endpoint <url>[/] to add a\n"
+            f"local server's models to that list, [bold]exit[/] to save and quit.",
             border_style="magenta",
             padding=(1, 2),
         )
@@ -138,7 +150,7 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
 class Command(NamedTuple):
     """One line of input read as an instruction rather than as a commission."""
 
-    name: Literal["exit", "model"]
+    name: Literal["exit", "model", "endpoint"]
     argument: str = ""
 
 
@@ -156,38 +168,108 @@ def _dispatch(user_text: str) -> Command | None:
         return Command("exit")
     # An exact match or a match followed by an argument — never a bare prefix, or a commission
     # beginning "/modelling the audience…" would be swallowed as a command.
-    if lowered == _MODEL_COMMAND:
-        return Command("model")
-    if lowered.startswith(f"{_MODEL_COMMAND} "):
-        return Command("model", stripped[len(_MODEL_COMMAND) :].strip())
+    for word, name in ((_MODEL_COMMAND, "model"), (_ENDPOINT_COMMAND, "endpoint")):
+        if lowered == word:
+            return Command(name)
+        if lowered.startswith(f"{word} "):
+            return Command(name, stripped[len(word) :].strip())
     return None
 
 
-def _roster(configured: Settings, bundle: SpeechwriterAgent) -> tuple[ModelChoice, ...]:
-    """What ``/model`` offers: the curated entries, the configured pair, and the current one.
+def _roster(
+    configured: Settings, bundle: SpeechwriterAgent, detected: list[ModelChoice]
+) -> tuple[ModelChoice, ...]:
+    """What ``/model`` offers: the curated entries, anything ``/endpoint`` found, and both pairs.
 
     ``configured`` is the pair the session *started* on, and passing it is what keeps a
     locally served model reachable: selecting a curated entry clears ``base_url``, so a roster
     built from the live bundle alone would drop the local entry and leave no way back to it.
+
+    The argument list is composed exactly as :func:`speechwriter.webui.available_choices`
+    composes it, which is what keeps the two front ends offering the same rows in the same
+    order. Both go through one :func:`~speechwriter.config.model_choices` call for that reason;
+    an order assembled twice is an order that can drift.
     """
-    return model_choices(configured, bundle.settings)
+    return model_choices(configured, bundle.settings, detected=detected)
 
 
-def _model_table(configured: Settings, bundle: SpeechwriterAgent) -> Table:
+def _model_table(
+    configured: Settings, bundle: SpeechwriterAgent, detected: list[ModelChoice]
+) -> Table:
     """The roster, with the model currently in force marked."""
     settings = bundle.settings
     table = Table(box=None, pad_edge=False, show_header=False)
     table.add_column(justify="right", style="dim")
     table.add_column()
     table.add_column(style="dim")
-    for index, choice in enumerate(_roster(configured, bundle), start=1):
+    for index, choice in enumerate(_roster(configured, bundle, detected), start=1):
         mark = "[bold magenta]›[/]" if choice.is_current(settings) else " "
         table.add_row(f"{mark} {index}", choice.label, choice.base_url or choice.model)
     return table
 
 
+def _set_endpoint(
+    console: Console,
+    configured: Settings,
+    endpoint: str | None,
+    detected: list[ModelChoice],
+    requested: str,
+) -> tuple[str | None, list[ModelChoice]]:
+    """Point ``/endpoint`` at a server and ask what it serves. Returns the endpoint and its models.
+
+    The REPL's half of the same capability the sidebar's endpoint field provides, and the
+    terminal is where it matters most: :func:`main` used to *exit* when no model could be
+    called, so the reader this feature exists for — a local server, no Anthropic key, nothing
+    configured — could never reach the command that would fix it.
+
+    With no argument this only reports, mirroring bare ``/model``. The models found are handed
+    back rather than stored, because :func:`main` owns session state; they reach the picker
+    through :func:`_roster`, already carrying the endpoint that answered.
+
+    The branches that do not probe return ``detected`` **unchanged**, which is why it is a
+    parameter rather than something this function invents. Returning ``[]`` from them read as
+    tidy and was a bug: a bare ``/endpoint``, documented as only reporting, silently emptied the
+    roster the reader had just built, and so did a typo — leaving them to re-probe a server that
+    had never stopped answering. Only a real probe replaces the list.
+
+    Nothing here can raise: :func:`~speechwriter.endpoints.normalize_endpoint` is total and
+    :func:`~speechwriter.endpoints.list_models` promises a list. That is not tidiness — an
+    exception propagates out of the REPL loop and ends the session over a keystroke, which is
+    the failure :func:`~speechwriter.config.resolve_choice` is written to avoid as well.
+    """
+    if not requested:
+        current = endpoint or "[dim]none[/]"
+        console.print(f"[dim]endpoint[/]   {current}")
+        console.print(
+            f"[dim]Point at a server with [bold]/endpoint <url>[/] "
+            f"(e.g. [bold]{DEFAULT_LOCAL_ENDPOINT}[/]).[/]"
+        )
+        return endpoint, detected
+
+    target = endpoints.normalize_endpoint(requested)
+    if target is None:
+        console.print(f"[yellow]{requested!r} is not an HTTP endpoint.[/]")
+        return endpoint, detected
+
+    # Said before the probe, because a slow answer with no explanation reads as a hang — and
+    # `mlx_lm.server` answers by walking the whole HuggingFace cache, which genuinely takes
+    # seconds on a machine with a lot of models.
+    console.print(f"[dim]… asking {target} what it serves[/]")
+    found = endpoints.list_models(target, api_key=configured.endpoint_api_key_for(target))
+    if not found:
+        console.print(f"[yellow]{target} listed no models.[/] [dim]Is the server running?[/]")
+        return target, []
+
+    console.print(f"[dim]Found {len(found)} model(s) at {target}. Switch with [bold]/model[/].[/]")
+    return target, [local_choice(model, target) for model in found]
+
+
 def _switch_model(
-    console: Console, configured: Settings, bundle: SpeechwriterAgent, requested: str
+    console: Console,
+    configured: Settings,
+    bundle: SpeechwriterAgent,
+    requested: str,
+    detected: list[ModelChoice],
 ) -> tuple[SpeechwriterAgent, bool]:
     """Rebuild on the requested model. Returns the bundle to use and whether it changed.
 
@@ -200,16 +282,16 @@ def _switch_model(
     rewrites that file wholesale rather than merging, so reversing these two lines writes the
     *new* bundle's freshly-loaded state over everything the old one learned this session.
     """
-    choices = _roster(configured, bundle)
+    choices = _roster(configured, bundle, detected)
     if not requested:
-        console.print(_model_table(configured, bundle))
+        console.print(_model_table(configured, bundle, detected))
         console.print("[dim]Switch with [bold]/model <number>[/] or [bold]/model <name>[/].[/]")
         return bundle, False
 
     chosen = resolve_choice(choices, requested)
     if chosen is None:
         console.print(f"[yellow]No model matches {requested!r}.[/]")
-        console.print(_model_table(configured, bundle))
+        console.print(_model_table(configured, bundle, detected))
         return bundle, False
 
     if chosen.is_current(bundle.settings):
@@ -218,7 +300,12 @@ def _switch_model(
 
     saved = bundle.persist()
     try:
-        switched = build_agent(chosen.applied_to(bundle.settings))
+        # Applied to `configured`, not to the live settings: `applied_to` decides whether
+        # this endpoint may carry the reader's OPENAI_API_KEY by comparing against the
+        # *configured* origin, and after one switch `bundle.settings.base_url` is already
+        # the previous pick's. Otherwise identical — the only fields that differ are the
+        # ones `applied_to` replaces.
+        switched = build_agent(chosen.applied_to(configured))
     except Exception as exc:
         # Reachable from a typo, and not only in theory: `init_chat_model` raises at
         # *construction* for an id whose provider it cannot infer, and for an OpenAI-family id
@@ -245,23 +332,29 @@ def main() -> None:
 
     # Not `anthropic_api_key` directly: a locally served model needs no key of ours, and
     # demanding one would refuse to start a configuration that runs fine.
+    #
+    # A warning rather than `SystemExit`, now that `/endpoint` exists. This gate used to end the
+    # process here, and the panel it printed pointed at a local server as the way out — advice
+    # the reader could act on only by editing a dotenv and starting again. The way out is a
+    # command now, so exiting before the loop would refuse entry to the very reader the panel is
+    # addressed to. Commissions are still refused below until a model can actually be called;
+    # what is allowed through is the two commands that fix it.
     if not bundle.settings.model_credentials_present:
         console.print(
             Panel(
-                "[bold red]No ANTHROPIC_API_KEY found.[/]\n\n"
-                "Set it before running, e.g. add a line to a local [bold].env[/] file:\n"
+                "[bold yellow]No ANTHROPIC_API_KEY found.[/]\n\n"
+                "Run a local model instead — point the agent at any OpenAI-compatible\n"
+                "server and no Anthropic key is needed. Start one, then:\n"
+                f"  [bold]/endpoint {DEFAULT_LOCAL_ENDPOINT}[/]\n"
+                "  [bold]/model[/]  [dim]to pick from what it serves[/]\n\n"
+                "Or set a key in a local dotenv file and restart:\n"
                 "  [dim]ANTHROPIC_API_KEY=sk-ant-...[/]\n"
-                "and (for live research) [dim]TAVILY_API_KEY=tvly-...[/]\n\n"
-                "Or run a local model instead — point the agent at any OpenAI-compatible\n"
-                "server and no Anthropic key is needed:\n"
-                "  [dim]SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1[/]\n"
-                "  [dim]SPEECHWRITER_MODEL=mlx-community/Qwen3.8-27B-4bit[/]",
-                border_style="red",
-                title="Setup needed",
+                "and (for live research) [dim]TAVILY_API_KEY=tvly-...[/]",
+                border_style="yellow",
+                title="No model configured yet",
                 padding=(1, 2),
             )
         )
-        raise SystemExit(1)
 
     _banner(console, bundle)
 
@@ -273,6 +366,11 @@ def main() -> None:
     # here rather than re-read, so `/model` keeps offering a locally served model after a
     # detour through a Claude one — otherwise the switch is a one-way trip off the local setup.
     configured = bundle.settings
+    # This session's endpoint and whatever it last listed, the terminal's equivalent of the two
+    # session-state keys the browser holds. Locals rather than module state for the reason
+    # `_dispatch` is pure: everything the REPL remembers should be visible in one function.
+    endpoint = configured.base_url
+    detected: list[ModelChoice] = []
 
     try:
         while True:
@@ -286,10 +384,20 @@ def main() -> None:
             if command is not None:
                 if command.name == "exit":
                     break
+                if command.name == "endpoint":
+                    # Deliberately not a switch: no persist, no rebuild, no thread rotation.
+                    # Pointing at a server changes what `/model` may offer, never what is
+                    # running — the model in force changes only when `/model` says so.
+                    endpoint, detected = _set_endpoint(
+                        console, configured, endpoint, detected, command.argument
+                    )
+                    continue
                 # Rebinding `bundle` here is what makes the exit-time `persist()` in the
                 # `finally` below save the *current* agent's store — which is safe only because
                 # `_switch_model` already persisted the outgoing one.
-                bundle, switched = _switch_model(console, configured, bundle, command.argument)
+                bundle, switched = _switch_model(
+                    console, configured, bundle, command.argument, detected
+                )
                 if switched:
                     # The rebuild minted a fresh checkpointer, so the old thread names a
                     # checkpoint the new graph has never seen. Same rotation as after an
@@ -298,6 +406,16 @@ def main() -> None:
                     seen_ids.clear()
                     _banner(console, bundle)
                     console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")
+                continue
+            if not bundle.settings.model_credentials_present:
+                # The startup panel no longer exits, so this is what stops a commission being
+                # spent on a model that cannot be called. Refusing the turn rather than the
+                # session is the whole point: `/endpoint` and `/model` are still reachable, and
+                # they are what turns this branch off.
+                console.print(
+                    "[yellow]No model can be called yet.[/] [dim]Point at a local server with "
+                    "[bold]/endpoint <url>[/], then choose one with [bold]/model[/].[/]"
+                )
                 continue
             console.print(Rule(style="dim"))
             bundle.warner.reset()
