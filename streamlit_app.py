@@ -57,14 +57,15 @@ failed_pick = build_error()
 
 with st.sidebar:
     with st.container(horizontal=True):
-        # `model_credentials_present`, not `anthropic_api_key` — the property the chat input
-        # already gates on, and the one `config.py` names as the contract for both front ends.
-        # A model served over SPEECHWRITER_BASE_URL needs no key of ours, so reading the
-        # narrower field flagged a perfectly working local setup as broken.
-        if settings.model_credentials_present:
+        # `model_endpoint_usable`, the property the chat input also gates on and the one
+        # `config.py` names as the contract for both front ends. It replaced
+        # `model_credentials_present` when the hosted client left: a locally served model needs
+        # no credential of ours, so "is a key present" became true for every configuration —
+        # a badge that is always green is a badge that has stopped reporting.
+        if settings.model_endpoint_usable:
             st.badge("Ready", icon=":material/check_circle:", color="green")
         else:
-            st.badge("No credentials", icon=":material/key_off:", color="red")
+            st.badge("Endpoint unusable", icon=":material/link_off:", color="red")
 
         if settings.research_enabled:
             st.badge("Research", icon=":material/travel_explore:", color="blue")
@@ -99,28 +100,29 @@ with st.sidebar:
             # Reported next to the picker that caused it, not at the top of the page: the reader
             # needs to see which entry failed and choose again in one glance.
             st.caption(f":red[Could not switch — {failed_pick}]")
-        if settings.uses_local_endpoint:
-            # Beside the ceiling, not inside the fold below: this names where the model that is
-            # *running* is served, which the endpoint field does not — that field holds whatever
-            # server the reader is currently pointing Detect at, and the two differ the moment
-            # they go looking at a second one. A local server that is simply not running looks
-            # like a hung turn unless the UI said where it pointed, which is the same reason the
-            # CLI banner gives `endpoint` a line of its own.
-            st.caption(f"Endpoint — `{settings.base_url}`")
+        # Beside the ceiling, not inside the fold below: this names where the model that is
+        # *running* is served, which the endpoint field does not — that field holds whatever
+        # server the reader is currently pointing Detect at, and the two differ the moment they
+        # go looking at a second one. A local server that is simply not running looks like a
+        # hung turn unless the UI said where it pointed, which is the same reason the CLI banner
+        # gives `endpoint` a line of its own. Unconditional now that there is one kind of
+        # endpoint, and most useful in exactly the case that used to hide it: with nothing
+        # configured this is the documented default, which the reader has never seen.
+        st.caption(f"Endpoint — `{settings.base_url}`")
         st.caption(f"Output ceiling — {bundle.ceiling_label}")
-        if bundle.ceiling_exceeds_model:
+        if bundle.ceiling_crowds_context:
             # Its own line, not a suffix on the caption above: the ceiling is a number, this is
-            # "that number will be refused at the first turn". Only reachable since the model
-            # became switchable, because SPEECHWRITER_MAX_TOKENS is global and outlives the
-            # model it was sized for.
+            # "that number cannot be honoured". SPEECHWRITER_MAX_TOKENS is global and outlives
+            # the model it was sized for, and served locally the output shares one window with
+            # the prompt — so an override sized for a roomier model starves the input here.
             st.caption(
-                f":red[Above this model's {bundle.profiled_max_tokens:,} — "
-                f"unset `SPEECHWRITER_MAX_TOKENS` or pick a larger model.]"
+                f":red[Over half this model's {bundle.context_window:,}-token window, leaving "
+                f"little room for the prompt — unset `SPEECHWRITER_MAX_TOKENS`.]"
             )
 
         # Always drawn, and that is the point of it: an endpoint that could only be reached
         # when `SPEECHWRITER_BASE_URL` was already set left the one reader this is for — the
-        # one running a local server and no Anthropic key — editing a dotenv and restarting.
+        # one whose server is on some other port — editing a dotenv and restarting.
         # Folded away rather than inline because it is a setup step, not a per-turn control,
         # and the sidebar's primary job is naming the model that is running.
         with st.expander("Local endpoint", icon=":material/dns:", type="compact"):

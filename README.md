@@ -57,11 +57,15 @@ uv sync                      # install into .venv from the lockfile
 cp .env.example .env         # then fill in your keys
 ```
 
-Set your keys in `.env`:
+**There is no model API key to set.** The agent runs on a model served on your own machine, over
+any OpenAI-compatible endpoint, and it defaults to `http://127.0.0.1:8080/v1` —
+`mlx_lm.server`'s own port. Start a server first; see [Running a local model](#running-a-local-model).
+
+Both keys in `.env` are optional:
 
 ```ini
-ANTHROPIC_API_KEY=sk-ant-...     # required
 TAVILY_API_KEY=tvly-...          # optional — enables live web research
+OPENAI_API_KEY=...               # optional — only if a gateway fronts your server
 ```
 
 Without a Tavily key the agent still works; it writes from its own knowledge and marks anything it can't verify with `[VERIFY]`. With one, a `researcher` subagent pulls current, sourced facts.
@@ -99,16 +103,16 @@ thing it lets you change without a restart is the model:
 - **Write** — commission a speech and watch the agent plan, research, draft, and self-critique in a live activity log; each finished turn is snapshotted immediately (a closed tab runs no shutdown hook, so waiting until exit would usually mean never).
 - **Workspace** — browse saved drafts (with a spoken-length estimate, and a **Measure** button that synthesizes the draft for a real one), research notes, and the voice profiles the agent has learned, read straight from the live Store.
 
-It binds to `localhost` only by default; the agent spends your API budget and reads your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
+It binds to `localhost` only by default; the app drives your model server and reads and writes your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
 
 ### Configuration knobs
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SPEECHWRITER_MODEL` | `claude-sonnet-5` | The model to *start* on — any Claude model id, or a locally served one alongside `SPEECHWRITER_BASE_URL`. `claude-opus-5` for top quality, with no ceiling override needed alongside it (LangChain profiles it at its real 128k). Both front ends can switch models mid-session; see [Switching models](#switching-models). |
-| `SPEECHWRITER_MAX_TOKENS` | model's own profile | Overrides the output-token ceiling. Unset, a model LangChain can profile keeps its own ceiling — as of the pinned `langchain-anthropic` every shipped Claude id is profiled at 64k–128k, so the default resolves to **128000**. An id it *cannot* profile (a typo, or one newer than the pin) would silently inherit 4096, so it gets 32000 instead plus a warning. Extended thinking bills against the same ceiling, which is why 4096 is not enough. |
-| `SPEECHWRITER_BASE_URL` | — | Point the agent at an OpenAI-compatible endpoint instead of Anthropic — a local `mlx_lm.server`, vLLM, LM Studio, Ollama. Set it and no `ANTHROPIC_API_KEY` is required. See [Running a local model](#running-a-local-model). |
-| `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a hosted OpenAI-compatible service will need a real one. |
+| `SPEECHWRITER_MODEL` | `mlx-community/Qwen3.8-27B-4bit` | The model id to *start* on — whatever your server actually serves. Half of a pair: it travels with `SPEECHWRITER_BASE_URL` and is never set alone. Both front ends can switch models mid-session; see [Switching models](#switching-models). |
+| `SPEECHWRITER_MAX_TOKENS` | `12288` | Overrides the output-token ceiling. The default is pinned rather than left to the client, whose own default is "let the server decide" — an unbounded thinking budget on a reasoning model. It is bounded both ways: **above** by `DEFAULT_LOCAL_CONTEXT_WINDOW` (32768), since output and input share one window locally and a ceiling over half of it is flagged in both front ends; **below** by the longest speech anyone commissions — a 25-minute keynote is ~3,250 words, ~4.5k tokens before the model reasons at all. |
+| `SPEECHWRITER_BASE_URL` | `http://127.0.0.1:8080/v1` | The OpenAI-compatible endpoint serving the model — `mlx_lm.server`, vLLM, LM Studio, Ollama. There is no hosted fallback, so unset means the default above rather than "off". A value that *is* set is passed through byte for byte, never rewritten. See [Running a local model](#running-a-local-model). |
+| `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a gateway in front of one (LiteLLM, a reverse proxy) may want a real one. It is sent **only to an endpoint you named yourself** — not to a server typed in at runtime, and not to the default endpoint when `SPEECHWRITER_BASE_URL` is unset. A key with no named server is not a credential for *this* server, so the placeholder goes instead. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |
@@ -120,12 +124,15 @@ without a restart — the sidebar dropdown in the browser, `/model` in the termi
 
 ```
 › /model
-   1  Sonnet 5                                claude-sonnet-5
- › 2  Opus 5                                  claude-opus-5
-   3  Haiku 4.5                               claude-haiku-4-5
-   4  mlx-community/Qwen3.8-27B-4bit (local)  http://127.0.0.1:8080/v1
+ › 1  mlx-community/Qwen3.8-27B-4bit   http://127.0.0.1:8080/v1
+   2  qwen3-8b                         http://127.0.0.1:8080/v1
+   3  mistral-small-24b                http://192.168.1.40:8000/v1
 Switch with /model <number> or /model <name>.
 ```
+
+Every row is a `(model, endpoint)` **pair**, and the endpoint column is not decoration: one id
+served by two machines is two rows, and `/model <name>` refuses an ambiguous name rather than
+guessing which server you meant. Pick by number when that happens.
 
 Three things follow from how the switch works, and they are the same in both front ends.
 
@@ -133,32 +140,36 @@ Three things follow from how the switch works, and they are the same in both fro
   client, so it has to be. Learned voice profiles are snapshotted *first* and rehydrated by the
   rebuild, so they survive; the conversation does not — the new agent has a new checkpointer and
   cannot resume the old thread, so the thread is rotated and the transcript starts fresh.
-- **Locally served entries are never hard-coded.** They are whatever *you* point at, which is
-  what makes them correct rather than a guess about which server you happen to be running. Two
-  ways in, and both **stay** in the list after you switch away, so the trip is never one-way.
-  Configure `SPEECHWRITER_BASE_URL` and `SPEECHWRITER_MODEL` and that pair is offered from the
-  first render; or point at a server without configuring anything — **Local endpoint** in the
-  browser sidebar, `/endpoint <url>` in the REPL — and everything it serves joins the list for
-  this session. Either way the probe runs on a click (or a command) only, never on page load.
-  A model and its endpoint always travel together, so picking a local id can never leave you
-  pointed at Anthropic, nor a Claude id at localhost.
+- **No entry is hard-coded.** `config.MODEL_CHOICES` is the empty tuple; every row you see is
+  synthesised from a configuration that exists. Two ways in, and both **stay** in the list after
+  you switch away, so the trip is never one-way. Configure `SPEECHWRITER_BASE_URL` and
+  `SPEECHWRITER_MODEL` and that pair is offered from the first render; or point at a server
+  without configuring anything — **Local endpoint** in the browser sidebar, `/endpoint <url>` in
+  the REPL — and everything it serves joins the list for this session. Either way the probe runs
+  on a click (or a command) only, never on page load. A shipped list of local endpoints would be
+  a guess about which server you happen to be running, dead on every machine that guessed wrong.
 - **`SPEECHWRITER_MAX_TOKENS` is global and wins over every model.** An override sized for one
-  model follows you to the next, so asking 128000 of Haiku 4.5 — whose real ceiling is 64000 —
-  is rejected at the first turn. The ceiling line says so before you spend one:
-  `Output ceiling — 128,000 — above this model's 64,000`.
-
-The roster is `config.MODEL_CHOICES`, and a test pins every entry to LangChain's profile table
-so an id that has quietly lost its ceiling fails CI rather than a draft.
+  model follows you to the next, and locally that bites in a way it never did against a hosted
+  window: output and input come out of the *same* budget, so a large ceiling starves the prompt
+  rather than merely being refused. The ceiling line says so before you spend a turn:
+  `Output ceiling — 24,000 — over half this model's 32,768-token window, leaving little room
+  for the prompt`.
 
 ### Running a local model
 
-The agent can run entirely on your machine — no API key, no per-token cost, nothing leaving
-the laptop. Any OpenAI-compatible server works; on Apple Silicon, [MLX](https://github.com/ml-explore/mlx-lm) is the fastest path:
+This is the only way it runs — no API key, no per-token cost, no model text leaving the laptop.
+Any OpenAI-compatible server works; on Apple Silicon, [MLX](https://github.com/ml-explore/mlx-lm) is the fastest path:
 
 ```bash
 uv tool install mlx-lm
-mlx_lm.server --port 8080          # --model is optional: it serves your whole HF cache
+hf download mlx-community/Qwen3.8-27B-4bit   # what the defaults name; ~15 GB
+mlx_lm.server --port 8080                    # serves your whole HF cache
 ```
+
+The download is the step that is easy to skip. `mlx_lm.server` serves whatever is already in
+your Hugging Face cache and pulls nothing itself, so on a fresh machine it starts happily,
+reports **Ready**, and then 404s on the first turn — `SPEECHWRITER_MODEL` has to name weights
+you actually hold. `/model` (or **Detect models**) asks the server what those are.
 
 Then point the agent at it, without restarting anything:
 
@@ -170,16 +181,19 @@ The URL is tidied as you type it: a missing scheme becomes `http`, and a missing
 `/v1`, which is where every OpenAI-compatible server actually answers. This is a *session*
 setting — the environment stays the durable one.
 
-To have that model selected from the first render instead, name the pair up front:
+With those weights cached, the defaults already name that pair and a server on port 8080 needs
+no configuration at all. To serve anything else, set both halves — never just the id:
 
 ```ini
-SPEECHWRITER_BASE_URL=http://127.0.0.1:8080/v1
-SPEECHWRITER_MODEL=mlx-community/Qwen3.8-27B-4bit
+SPEECHWRITER_BASE_URL=http://192.168.1.40:8000/v1
+SPEECHWRITER_MODEL=mistral-small-24b
 ```
 
-`SPEECHWRITER_BASE_URL` selects the *client*, not just the id — a local model name carries no
-provider prefix for LangChain to infer, so the endpoint is what makes the choice unambiguous.
-Nothing else changes: the same graph, subagents, skills, sandbox, and memory.
+`SPEECHWRITER_BASE_URL` selects the *client*, not just the address — a local model name carries
+no provider prefix for LangChain to infer, so the endpoint is what makes the choice
+unambiguous. It is also passed through **byte for byte**: an Azure deployment URL keeps its
+`?api-version=` query, and a LiteLLM front end serving the API at the root does not silently
+gain a `/v1` that 404s. Only what you type into the endpoint *field* gets tidied.
 
 A few things worth knowing:
 
@@ -193,19 +207,17 @@ A few things worth knowing:
   machine, and a new `SPEECHWRITER_*` knob is a documentation contract this does not deserve.
   A server with a genuinely larger window is declared by giving that roster entry a
   `context_window` — `config.local_choice(model, base_url, context_window)` — or by passing one
-  to `build_agent` directly. Not in `config.MODEL_CHOICES`: that tuple is Anthropic-only, and
-  `test_every_anthropic_model_choice_is_profiled_above_the_floor` asserts every entry has
-  `base_url is None`, so a local entry cannot live there at all.
+  to `build_agent` directly.
   Note also that the injected profile *replaces* any the id would otherwise have, which shows
   up only for a profiled id served locally — `gpt-4o` on LM Studio. That is intended: a local
   server's model *name* says nothing about the weights it actually loaded, so the conservative
   floor beats inheriting the hosted model's numbers.
-- **The ceiling resolves through tier 3**, and for a second reason besides the obvious one.
-  A locally served id usually has no LangChain profile — but even a *profiled* one (`gpt-4o`
-  on LM Studio or LiteLLM) gets the 32000-token floor here, because `init_chat_model` reads a
-  profile's `max_tokens` only on the Anthropic path. Either way the floor is the wanted
-  answer, not a fallback: `ChatOpenAI`'s own default is "let the server decide", which on a
-  reasoning model is an unbounded thinking budget.
+- **The ceiling is two tiers, not three.** `SPEECHWRITER_MAX_TOKENS` if you set it, else
+  `DEFAULT_MAX_TOKENS` (8192). There used to be a middle tier that kept a ceiling the client had
+  resolved for itself, which is gone by construction rather than by choice: `init_chat_model`
+  fills `max_tokens` from a model profile only on the Anthropic path, so with `ChatOpenAI` it
+  could never fire — not even for a *profiled* id like `gpt-4o` behind LiteLLM. A branch that
+  reads as live protection and is dead is worse than no branch, so it was deleted.
 - **The ceiling travels as `max_completion_tokens`.** That is what `langchain-openai` 1.6
   sends, and what `mlx_lm.server` reads. Some OpenAI shims accept only the older `max_tokens`
   and drop unknown fields silently — if a local turn seems to run forever, that is the first

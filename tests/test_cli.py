@@ -23,16 +23,23 @@ from speechwriter.agent import SpeechwriterAgent
 
 @pytest.fixture
 def repl(monkeypatch, tmp_path):
-    """A REPL wired to a temp home, a dummy key, and the default Anthropic model."""
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    """A REPL wired to a temp home and the documented default (model, endpoint) pair."""
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
-    # Explicit: SPEECHWRITER_BASE_URL swaps the client for an OpenAI one, so a developer
-    # who exported it to drive the local model would otherwise turn these tests red.
+    # Both halves of the pair are cleared together, and this delenv now means the opposite of
+    # what it used to: there is no hosted client left for it to keep selected, so it pins the
+    # session on DEFAULT_MODEL served at DEFAULT_LOCAL_ENDPOINT. The two tests that need an
+    # endpoint the session *cannot* call set it back themselves.
     monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    # Tier 1 is global, so an exported override would clamp every model to one figure and the
-    # ceiling assertions below would stop discriminating between them.
+    # Tier 1 is global and is now the only thing that can move the ceiling at all — with one
+    # client and two tiers, every locally served model resolves to DEFAULT_MAX_TOKENS — so an
+    # exported override would change what the banner prints and whether the crowded-window
+    # line fires.
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    # Not a credential this suite needs, but a real one in the developer's shell decides which
+    # of the two endpoint captions the REPL prints. The one test about that boundary sets its
+    # own.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     def script(*lines: str) -> None:
         remaining = iter(lines)
@@ -49,6 +56,22 @@ def repl(monkeypatch, tmp_path):
         monkeypatch.setattr(Console, "input", fake_input)
 
     return script
+
+
+def _offer(monkeypatch, *choices: config.ModelChoice) -> None:
+    """Put a fixed roster in front of ``/model``, carrying the windows a test needs.
+
+    Every entry a session can reach on its own is synthesised from a configuration that
+    exists — the pair the environment names, plus whatever ``/endpoint`` found — and none of
+    those can carry a per-model ``context_window``, because ``Settings.context_window`` is
+    deliberately never read from the environment. So a REPL cannot reach two models with
+    *different* windows by itself, and the window is what has to do the work the resolved
+    ceiling used to: with one client and two tiers, every local model resolves to the same
+    ``DEFAULT_MAX_TOKENS``, so two bundles are no longer distinguishable by their ceilings.
+    Handing :func:`cli._roster` its answer is what makes "this bundle was actually rebuilt"
+    observable from the transcript.
+    """
+    monkeypatch.setattr(cli, "_roster", lambda *args, **kwargs: tuple(choices))
 
 
 def test_dispatch_reads_commands_and_leaves_commissions_alone():
@@ -82,7 +105,15 @@ def test_resolving_a_choice_never_raises_on_a_stray_argument():
     # session over a keystroke. The superscript is the one that caught this: "²".isdigit() is
     # True while int("²") raises, so `isdigit` was a crash waiting for a stray character.
     # "٣" is the other half — isdecimal() and int() agree on it, so it must still resolve.
-    roster = config.MODEL_CHOICES
+    #
+    # The roster is synthesised rather than read from `config.MODEL_CHOICES`, which is now the
+    # empty tuple: indexing an empty roster answers None for *every* input, so a test built on
+    # it would pass while checking nothing at all.
+    roster = (
+        config.local_choice("local/qwen", "http://127.0.0.1:8080/v1"),
+        config.local_choice("local/granite", "http://127.0.0.1:8080/v1"),
+        config.local_choice("local/mistral", "http://127.0.0.1:9000/v1"),
+    )
 
     for stray in ("²", "½", "1²", "٣", "0", "-1", "99", "9" * 40, "", "  ", "🙂", "Opus"):
         config.resolve_choice(roster, stray)  # must not raise
@@ -92,8 +123,11 @@ def test_resolving_a_choice_never_raises_on_a_stray_argument():
     assert config.resolve_choice(roster, "99") is None
     assert config.resolve_choice(roster, "٣") == roster[2]
     assert config.resolve_choice(roster, "2") == roster[1]
-    assert config.resolve_choice(roster, "opus 5") == roster[1]
-    assert config.resolve_choice(roster, "CLAUDE-OPUS-5") == roster[1]
+    # One string covers both spellings the resolver accepts, because `local_choice` labels an
+    # entry with the bare id — and case-folding still has to hold, since a reader picking by
+    # name is copying one off the screen.
+    assert config.resolve_choice(roster, "local/granite") == roster[1]
+    assert config.resolve_choice(roster, "LOCAL/GRANITE") == roster[1]
 
 
 def test_the_model_command_persists_before_it_rebuilds(repl, monkeypatch):
@@ -101,6 +135,11 @@ def test_the_model_command_persists_before_it_rebuilds(repl, monkeypatch):
     # snapshot, so a rebuild that runs first throws away every voice profile learned this
     # session — and `save_store` then writes that emptier store back over the file. Nothing
     # raises; the memory is simply gone, which is why this is asserted rather than commented.
+    _offer(
+        monkeypatch,
+        config.local_choice("local/qwen"),
+        config.local_choice("local/granite", "http://127.0.0.1:9000/v1"),
+    )
     calls: list[str] = []
     real_build = cli.build_agent
 
@@ -111,28 +150,38 @@ def test_the_model_command_persists_before_it_rebuilds(repl, monkeypatch):
     monkeypatch.setattr(cli, "build_agent", spy_build)
     monkeypatch.setattr(SpeechwriterAgent, "persist", lambda self: calls.append("persist") or 0)
 
-    repl("/model 3", "exit")
+    repl("/model 2", "exit")
     cli.main()
 
     # Startup build; then the switch, which must save before it rebuilds; then the exit save.
     assert calls == ["build", "persist", "build", "persist"]
 
 
-def test_the_banner_reports_the_model_the_bundle_actually_built(repl, capsys):
+def test_the_banner_reports_the_model_the_bundle_actually_built(repl, monkeypatch, capsys):
     # The banner is re-printed after a switch, and it must describe the agent that now exists.
-    # Haiku 4.5 is the discriminating choice: it is the one roster entry whose ceiling differs
-    # from the default's, so a `_switch_model` that returned the *old* bundle — or a banner
-    # reading the requested id rather than the built one — shows up here and nowhere else.
-    repl("/model 3", "exit")
+    # The discriminator used to be the resolved ceiling — Haiku's 64k against Sonnet's 128k —
+    # and that is gone: every locally served model resolves through the same two tiers to the
+    # same figure. `context_window` is what replaces it, and the banner renders it in the one
+    # line that quotes it, so a `_switch_model` that returned the *old* bundle — or a banner
+    # reading the requested choice rather than the built one — still shows up here and nowhere
+    # else. The endpoint is the second half of the same check: it is the field that decides
+    # which server a turn is sent to, and it moves with the model or not at all.
+    crowded = config.local_choice("local/granite", "http://127.0.0.1:9000/v1", 4096)
+    _offer(monkeypatch, config.local_choice("local/qwen"), crowded)
+
+    repl("/model 2", "exit")
     cli.main()
 
     printed = capsys.readouterr().out
-    before, _, after = printed.partition("claude-haiku-4-5")
+    before, _, after = printed.partition("local/granite")
 
     assert after, "the banner never named the model that was switched to"
-    assert "claude-sonnet-5" in before
-    assert "128,000" in before
-    assert "64,000" in after
+    assert config.DEFAULT_MODEL in before
+    assert "http://127.0.0.1:9000/v1" in after, "the banner kept the endpoint it started on"
+    # 8,192 tokens of output against the 4,096-token window this choice declares — read off the
+    # bundle that was built, not off the choice that was asked for.
+    assert "4,096-token window" in after
+    assert "token window" not in before, "the pair it started on was never crowded"
 
 
 def test_an_unknown_model_leaves_the_session_on_the_one_it_had(repl, capsys, monkeypatch):
@@ -142,8 +191,8 @@ def test_an_unknown_model_leaves_the_session_on_the_one_it_had(repl, capsys, mon
     # else" would otherwise look identical from the transcript.
     #
     # This does *not* reach `_switch_model`'s try/except, which guards a different failure:
-    # `init_chat_model` raising at construction for a resolvable-but-unbuildable entry. Only a
-    # configured local pair can reach that, so it is not exercised from the curated roster.
+    # `init_chat_model` raising at construction for a resolvable-but-unbuildable entry. Name
+    # resolution rejects this argument first, so nothing is ever constructed here.
     rebuilt: list[str] = []
     real_build = cli.build_agent
     monkeypatch.setattr(
@@ -157,41 +206,57 @@ def test_an_unknown_model_leaves_the_session_on_the_one_it_had(repl, capsys, mon
     assert "No model matches" in printed
     # One build: the startup one. A rejected argument must not mint a second agent.
     assert len(rebuilt) == 1
-    assert "claude-sonnet-5" in printed
+    # The table printed alongside the complaint still shows the pair the session is on — which
+    # is the roster's only entry, since nothing has been detected and nothing is curated.
+    assert config.DEFAULT_MODEL in printed
 
 
-def test_a_keyless_session_reaches_the_command_that_fixes_it(repl, monkeypatch, capsys):
+def test_an_unusable_endpoint_still_reaches_the_command_that_fixes_it(repl, monkeypatch, capsys):
     # `main` used to print a setup panel and `raise SystemExit(1)` when no model could be
     # called — and that panel's own advice was to run a local server. So the one reader it
     # addressed could act on it only by editing a dotenv and starting again, which is exactly
     # what `/endpoint` exists to remove. Exiting before the loop would leave the terminal half
     # of this feature unreachable for the reader it is for.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    #
+    # "No model can be called" is no longer a question about a key — there is none to have —
+    # but the state it named is still reachable, and by the likeliest dotenv mistake there is:
+    # `_configured_endpoint` hands an operator's string back unrewritten, so an endpoint
+    # written without a scheme arrives here verbatim and `usable_endpoint` rejects it. Typing
+    # the very same text at `/endpoint` fixes it, because *that* path normalises.
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "127.0.0.1:8080")
     monkeypatch.setattr(
         cli.endpoints, "list_models", lambda url, **kw: ["local/qwen", "local/granite"]
     )
-    repl("/endpoint 127.0.0.1:8080", "/model", "/model 5", "exit")
+    repl("/endpoint 127.0.0.1:8080", "/model", "/model 2", "exit")
 
     cli.main()
 
     out = capsys.readouterr().out
-    assert "No model configured yet" in out, out
+    assert "Endpoint cannot be used" in out, out
     # Normalised on the way in, so what the reader typed reaches the server as a URL it answers.
     assert "http://127.0.0.1:8080/v1" in out
     # On the roster the *next* command reads, which is the whole point of handing the models
     # back to `main` rather than leaving them inside `_set_endpoint`.
-    assert "local/granite (local)" in out
-    # And selectable by the number printed beside them: 1-3 are curated, so the detections
-    # start at 4 and the second of them is 5. Picking one leaves a session that can actually
-    # run — the banner reprints with the endpoint on its own line.
-    assert "endpoint" in out and "local http://127.0.0.1:8080/v1" in out
+    assert "local/granite" in out
+    # And selectable by the number printed beside them: nothing is curated any more, so the
+    # detections are merged *before* the configured pair and the second of them is 2. The
+    # banner reprinted after the switch is where that is visible — partitioning on the save
+    # line is what separates the table's rows from the choice they actually named.
+    _, _, after_switch = out.partition("before switching")
+    assert "local/granite" in after_switch, "`/model 2` did not name the second row it printed"
+    # Picking one leaves a session that can run: the endpoint gets its own line, and the
+    # post-switch warning that fires for a pair no turn could reach stays silent.
+    assert "endpoint" in after_switch and "local http://127.0.0.1:8080/v1" in after_switch
+    assert "is not a URL this can call" not in out, out
 
 
 def test_a_commission_is_refused_while_no_model_can_be_called(repl, monkeypatch, capsys):
     # The other half of relaxing that gate. Letting the loop start must not let a brief through
-    # to a model that cannot be called — the turn would fail deep in the graph with an auth
-    # error rather than at the prompt, and `_run_turn` is where tokens start being spent.
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    # to an endpoint that cannot be called — the turn would fail deep in the graph rather than
+    # at the prompt, and `_run_turn` is where tokens start being spent. What makes an endpoint
+    # uncallable is a shape question now rather than a credential one, but the gate is the
+    # same one and it still has to refuse the *turn* rather than the session.
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "127.0.0.1:8080")
     calls: list[str] = []
     monkeypatch.setattr(cli, "_run_turn", lambda *a, **k: calls.append("turn") or False)
     repl("Write a toast for Ana.", "exit")
@@ -262,7 +327,7 @@ def test_reporting_the_endpoint_does_not_discard_what_it_found(repl, monkeypatch
     cli.main()
 
     out = capsys.readouterr().out
-    assert "local/qwen (local)" in out, "a bare or rejected /endpoint dropped the detections"
+    assert "local/qwen" in out, "a bare or rejected /endpoint dropped the detections"
     # Neither of the two non-probing commands went near the network.
     assert probes == ["http://127.0.0.1:8080/v1"], probes
 

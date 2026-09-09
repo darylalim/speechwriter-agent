@@ -4,8 +4,6 @@ import streamlit as st
 
 from speechwriter.webui import (
     SUGGESTION_KEY,
-    base_settings,
-    detections,
     get_bundle,
     queue_suggestion,
     render_turn,
@@ -33,9 +31,10 @@ SUGGESTIONS = {
 
 bundle = get_bundle()
 history = transcript()
-# Not `anthropic_api_key` directly — a model served over SPEECHWRITER_BASE_URL needs no key
-# of ours, and gating the chat input on one would disable a working configuration.
-has_key = bundle.settings.model_credentials_present
+# Not "is a credential present" — a locally served model needs none of ours, so that question
+# became true for every configuration when the hosted client left. What can still be wrong
+# before a socket is opened is the endpoint's *shape*, which is what this gates on.
+endpoint_usable = bundle.settings.model_endpoint_usable
 # Drained here, before anything renders or can raise. The queue has to be emptied by the run
 # that sees it, and the further down the script that happens the more ways there are to leave
 # it armed — a render that raises, a page switch, a stop landing during a cold start. Losing a
@@ -88,39 +87,27 @@ if not history:
             on_change=_queue_suggestion,
             label_visibility="collapsed",
             # Matched to the chat input below. A pill that takes the click and then silently
-            # drops it — which is all the `and has_key` guard below can do — is worse than one
-            # that shows it is not available.
-            disabled=not has_key,
+            # drops it — which is all the `and endpoint_usable` guard below can do — is worse
+            # than one that shows it is not available.
+            disabled=not endpoint_usable,
         )
 
-if not has_key:
-    # Reachable two ways now, and only one of them is a fresh clone: a reader on a keyless
-    # local endpoint who picks a Claude model from the sidebar also lands here, and for them
-    # switching back is the whole fix. Only *they* have somewhere to switch back to, so each
-    # branch below says the true thing for its own reader.
+if not endpoint_usable:
+    # Narrow, and honest about being narrow. This is not "the server is down" — nothing here
+    # probes, and the sidebar already names the endpoint the agent is pointed at. It is the one
+    # failure visible without a socket: a `SPEECHWRITER_BASE_URL` that `urllib` cannot even
+    # build a request from, which `config._configured_endpoint` deliberately passes through
+    # unrewritten rather than silently replacing with the default.
     #
-    # `bundle.settings.base_url` is not worth testing here: reaching this branch proves it is
-    # None, since a non-None one makes `model_credentials_present` true. The question is whether
-    # a *local entry* is on the roster to switch back to — which used to mean only a configured
-    # endpoint, and no longer does: a reader who typed one this session and detected against it
-    # has entries too, and telling them to go and point at a server they already pointed at is
-    # advice to redo what they did.
-    recover = (
-        "Pick your locally served model in the sidebar to carry on without one, or add a key "
-        "to a local dotenv file (`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
-        if base_settings().base_url or detections()
-        # No endpoint configured, so there is nothing in the picker *yet* — but the local route
-        # is open without a restart now, and naming the control that opens it is what the CLI's
-        # setup panel does. This used to say "restart the app", which the endpoint field
-        # falsifies; leaving it would have the two front ends disagreeing again about how to
-        # start without a key.
-        else "Open **Local endpoint** in the sidebar and point it at an OpenAI-compatible "
-        "server to run a model locally — or add a key to a local dotenv file "
-        "(`ANTHROPIC_API_KEY=sk-ant-...`) and restart the app."
-    )
+    # Reachable two ways: a malformed value in the environment, or one typed into the endpoint
+    # field this session. The fix is the same control either way, so unlike its predecessor
+    # this needs no branch on how the reader got here.
     st.error(
-        f"No `ANTHROPIC_API_KEY` found, so the selected model cannot be called. {recover}",
-        icon=":material/key_off:",
+        f"`{bundle.settings.base_url}` is not an endpoint the agent can call, so no turn will "
+        "reach it. Open **Local endpoint** in the sidebar and point it at an OpenAI-compatible "
+        "server (it needs an `http`/`https` scheme and a host), or set a valid "
+        "`SPEECHWRITER_BASE_URL` in a local dotenv file and restart the app.",
+        icon=":material/link_off:",
     )
 
 for turn in history:
@@ -128,7 +115,7 @@ for turn in history:
 
 # `submit_mode="stop"` turns the send button into a stop button while a turn is running, so
 # a commission that goes long can be cancelled instead of being waited out.
-typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=not has_key)
+typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=not endpoint_usable)
 # The queue was already drained at the top of the script, so this only chooses. Reading it
 # here as `typed or st.session_state.pop(...)` would short-circuit the pop whenever a typed
 # brief wins and leave the suggestion armed — Streamlit coalesces a pending rerun with a new
@@ -136,7 +123,7 @@ typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=no
 # turn runs, so a pill click and a typed brief really do arrive together.
 prompt: str | None = typed or queued
 
-if prompt and has_key:
+if prompt and endpoint_usable:
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):

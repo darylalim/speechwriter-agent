@@ -176,14 +176,22 @@ def apply_model(requested: str) -> None:
     choice = resolve_choice(roster, requested)
     if choice is None and len(matching_choices(roster, requested)) > 1:
         # `resolve_choice` answers None for "no such entry" *and* for "two entries by that
-        # name", and the pass-through below is only right for the first. One id served both by
-        # Anthropic and by a local proxy makes the second reachable — and passing it through
-        # would set the id while leaving SPEECHWRITER_BASE_URL alone, sending a Claude id to a
-        # local server and 404ing at the first turn of every graded example.
+        # name", and the pass-through below is only right for the first. One id served by two
+        # machines makes the second reachable — the same weights on a laptop and a workstation,
+        # or an identical Ollama tag — and passing it through would set the id while leaving
+        # SPEECHWRITER_BASE_URL pointed at whichever server it already named.
+        # The remedy is the ROW NUMBER, not the label. `local_choice` labels an entry with the
+        # bare model id, so two servers serving one id have identical labels and
+        # `matching_choices` matches on either — telling the reader to "use the label" would
+        # print the same string twice and name no way out. The endpoint is the only thing that
+        # differs, so it is what the message shows, beside the index that selects it.
         raise SystemExit(
-            f"--model {requested!r} names more than one roster entry. Use the label instead, "
-            f"e.g. one of: "
-            + ", ".join(repr(match.label) for match in matching_choices(roster, requested))
+            f"--model {requested!r} names more than one roster entry — the same id on more "
+            f"than one server. Select by row number instead:\n"
+            + "\n".join(
+                f"  --model {roster.index(match) + 1}   {match.model}   {match.base_url}"
+                for match in matching_choices(roster, requested)
+            )
         )
     if choice is not None:
         os.environ["SPEECHWRITER_MODEL"] = choice.model
@@ -191,9 +199,14 @@ def apply_model(requested: str) -> None:
         # in `run_langsmith`, and in the `build_agent()` of every graded example — reloads
         # the dotenv, and `load_dotenv` only skips keys already present in `os.environ`, so
         # a popped variable comes straight back. An empty one stays: it is *present*, so the
-        # dotenv will not override it, and `load_settings` normalises `"" -> None` because a
-        # blank value is how a shell says unset.
-        os.environ["SPEECHWRITER_BASE_URL"] = choice.base_url or ""
+        # dotenv will not override it.
+        #
+        # No `or ""` guard: a choice always carries an endpoint now, because `ModelChoice` makes
+        # an id without one unrepresentable, so this is always a real URL. It is still *set*
+        # rather than left alone — the whole point of `--model` taking a pair is that both
+        # halves move together. (A blank value would no longer mean what it used to, either:
+        # `load_settings` reads `"" -> DEFAULT_LOCAL_ENDPOINT` now, not `"" -> None`.)
+        os.environ["SPEECHWRITER_BASE_URL"] = choice.base_url
         return
     os.environ["SPEECHWRITER_MODEL"] = requested
 
@@ -201,16 +214,25 @@ def apply_model(requested: str) -> None:
 def model_slug() -> str:
     """A filename-safe tag for the model in force, for naming an experiment after it.
 
-    Call only after :func:`prime_environment`. The ``-local`` suffix matters as much as the id:
-    the same model id served locally and served by Anthropic are different systems under test,
-    and an experiment name that could not tell them apart would silently pool their results.
+    Call only after :func:`prime_environment`. **The host is part of the tag**, and it carries
+    exactly the weight the old ``-local`` suffix did. That suffix separated a model served
+    locally from the same id served by Anthropic; with no hosted path left it would be true of
+    every run and separate nothing, while the distinction it existed to make — same id, two
+    different systems under test — is now precisely the one between two *servers*. An
+    experiment name that could not tell them apart would silently pool their results.
+
+    The cost is a noisier name on the common single-server setup. That is the right side to err
+    on: a name that is ugly is a nuisance, a name that merges two experiments is a wrong number.
     """
+    from urllib.parse import urlsplit
+
     from speechwriter.config import load_settings
 
     settings = load_settings()
-    slug = "".join(char if char.isalnum() else "-" for char in settings.model.casefold())
-    slug = "-".join(part for part in slug.split("-") if part)
-    return f"{slug}-local" if settings.uses_local_endpoint else slug
+    host = urlsplit(settings.base_url).netloc
+    raw = f"{settings.model}-{host}".casefold()
+    slug = "".join(char if char.isalnum() else "-" for char in raw)
+    return "-".join(part for part in slug.split("-") if part)
 
 
 def prime_environment() -> None:

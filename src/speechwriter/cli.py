@@ -116,18 +116,21 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
     ceiling = bundle.ceiling_label
-    # Shown only when set, so the default Anthropic banner is unchanged. Worth a line of its
-    # own: "which model" and "served from where" fail differently, and a local server that is
-    # simply not running looks like a hung turn unless the banner said where it was pointed.
-    endpoint = f"\n[dim]endpoint[/]   [green]local[/] {s.base_url}" if s.uses_local_endpoint else ""
+    # Unconditional now that there is only one kind of endpoint, and it earns the line more
+    # than it did when it was conditional: "which model" and "served from where" fail
+    # differently, and a local server that is simply not running looks like a hung turn unless
+    # the banner already said where the agent was pointed. With no dotenv at all this is the
+    # documented default rather than a configured choice, which is exactly when a reader most
+    # needs to see it.
+    endpoint = f"\n[dim]endpoint[/]   [green]local[/] {s.base_url}"
     # On its own line rather than appended to the ceiling, because it is a different kind of
     # fact: the ceiling is a number, this is "that number will be refused". Only reachable
     # since the model became switchable — a global override outliving the model it was sized
     # for — and it fails at the first turn, so before one is taken is the only useful moment.
-    if bundle.ceiling_exceeds_model:
+    if bundle.ceiling_crowds_context:
         ceiling += (
-            f" [yellow]— above this model's {bundle.profiled_max_tokens:,}; "
-            f"unset SPEECHWRITER_MAX_TOKENS[/]"
+            f" [yellow]— over half this model's {bundle.context_window:,}-token window, "
+            f"leaving little room for the prompt; unset SPEECHWRITER_MAX_TOKENS[/]"
         )
     console.print(
         Panel(
@@ -204,7 +207,7 @@ def _model_table(
     table.add_column(style="dim")
     for index, choice in enumerate(_roster(configured, bundle, detected), start=1):
         mark = "[bold magenta]›[/]" if choice.is_current(settings) else " "
-        table.add_row(f"{mark} {index}", choice.label, choice.base_url or choice.model)
+        table.add_row(f"{mark} {index}", choice.label, choice.base_url)
     return table
 
 
@@ -219,8 +222,8 @@ def _set_endpoint(
 
     The REPL's half of the same capability the sidebar's endpoint field provides, and the
     terminal is where it matters most: :func:`main` used to *exit* when no model could be
-    called, so the reader this feature exists for — a local server, no Anthropic key, nothing
-    configured — could never reach the command that would fix it.
+    called, so the reader this feature exists for — a server on a port other than the default,
+    nothing configured — could never reach the command that would fix it.
 
     With no argument this only reports, mirroring bare ``/model``. The models found are handed
     back rather than stored, because :func:`main` owns session state; they reach the picker
@@ -328,13 +331,13 @@ def _switch_model(
         return bundle, False
 
     console.print(f"[dim]💾 Saved {saved} memory item(s) before switching.[/]")
-    if not switched.settings.model_credentials_present:
+    if not switched.settings.model_endpoint_usable:
         # The startup gate sits before the loop and cannot see this. Warn rather than refuse:
-        # the operator may be about to set the key, and a switch that silently produced an
-        # unusable agent would surface as an opaque auth error mid-draft instead.
+        # a switch that silently produced an unusable agent would surface as an opaque error
+        # mid-draft instead, and `/endpoint` is one line away.
         console.print(
-            "[yellow]⚠  No ANTHROPIC_API_KEY is set, so this model cannot be called.[/] "
-            "[dim]Set one, or switch back to a locally served model.[/]"
+            f"[yellow]⚠  {switched.settings.base_url} is not a URL this can call, "
+            "so no turn will reach it.[/] [dim]Fix it with [bold]/endpoint <url>[/].[/]"
         )
     return switched, True
 
@@ -343,28 +346,34 @@ def main() -> None:
     console = Console()
     bundle = build_agent()
 
-    # Not `anthropic_api_key` directly: a locally served model needs no key of ours, and
-    # demanding one would refuse to start a configuration that runs fine.
+    # A much narrower gate than the one it replaced, and deliberately so. That one asked "is
+    # there an API key", which no longer has an answer: a locally served model needs no
+    # credential of ours, so the question was true for every configuration and the panel was
+    # unreachable. What is left is the one thing that *can* be wrong before a socket is opened —
+    # a `SPEECHWRITER_BASE_URL` that is not a URL this can call — because `_configured_endpoint`
+    # deliberately hands an operator's string back unrewritten.
     #
-    # A warning rather than `SystemExit`, now that `/endpoint` exists. This gate used to end the
-    # process here, and the panel it printed pointed at a local server as the way out — advice
-    # the reader could act on only by editing a dotenv and starting again. The way out is a
-    # command now, so exiting before the loop would refuse entry to the very reader the panel is
-    # addressed to. Commissions are still refused below until a model can actually be called;
-    # what is allowed through is the two commands that fix it.
-    if not bundle.settings.model_credentials_present:
+    # Note what is deliberately *not* here: "is anything actually listening". Probing would
+    # break the offline-build invariant, and the banner below already prints the endpoint, so a
+    # server that is simply not running fails at the first turn with the address in view.
+    #
+    # A warning rather than `SystemExit`, for the reason `/endpoint` exists at all: exiting here
+    # would refuse entry to the very reader the panel is addressed to. Commissions are still
+    # refused below; what is allowed through is the two commands that fix it.
+    if not bundle.settings.model_endpoint_usable:
         console.print(
             Panel(
-                "[bold yellow]No ANTHROPIC_API_KEY found.[/]\n\n"
-                "Run a local model instead — point the agent at any OpenAI-compatible\n"
-                "server and no Anthropic key is needed. Start one, then:\n"
+                f"[bold yellow]{bundle.settings.base_url!r} is not an endpoint "
+                "this can call.[/]\n\n"
+                "It needs an [bold]http[/] or [bold]https[/] scheme and a host — anything\n"
+                "else is rejected here rather than at the first turn. Point at a\n"
+                "running OpenAI-compatible server instead:\n"
                 f"  [bold]/endpoint {DEFAULT_LOCAL_ENDPOINT}[/]\n"
                 "  [bold]/model[/]  [dim]to pick from what it serves[/]\n\n"
-                "Or set a key in a local dotenv file and restart:\n"
-                "  [dim]ANTHROPIC_API_KEY=sk-ant-...[/]\n"
-                "and (for live research) [dim]TAVILY_API_KEY=tvly-...[/]",
+                "[dim]Set SPEECHWRITER_BASE_URL in a local dotenv file to make it stick,[/]\n"
+                "[dim]and TAVILY_API_KEY=tvly-... for live research.[/]",
                 border_style="yellow",
-                title="No model configured yet",
+                title="Endpoint cannot be used",
                 padding=(1, 2),
             )
         )
@@ -420,13 +429,13 @@ def main() -> None:
                     _banner(console, bundle)
                     console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")
                 continue
-            if not bundle.settings.model_credentials_present:
+            if not bundle.settings.model_endpoint_usable:
                 # The startup panel no longer exits, so this is what stops a commission being
-                # spent on a model that cannot be called. Refusing the turn rather than the
+                # spent on a model that cannot be reached. Refusing the turn rather than the
                 # session is the whole point: `/endpoint` and `/model` are still reachable, and
                 # they are what turns this branch off.
                 console.print(
-                    "[yellow]No model can be called yet.[/] [dim]Point at a local server with "
+                    "[yellow]No model can be called yet.[/] [dim]Point at a running server with "
                     "[bold]/endpoint <url>[/], then choose one with [bold]/model[/].[/]"
                 )
                 continue

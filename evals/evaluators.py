@@ -533,7 +533,7 @@ def judge_criteria(
         f"OUTPUT UNDER TEST:\n<<<\n{output_text}\n>>>\n\n"
         f"Return exactly {len(criteria)} verdicts, one per index."
     )
-    reply = model.with_structured_output(JUDGE_SCHEMA).invoke(
+    reply = _structured(model, JUDGE_SCHEMA).invoke(
         [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": prompt}]
     )
     by_index = {v["index"]: v for v in (reply or {}).get("verdicts", [])}
@@ -613,20 +613,37 @@ def judge_question_count(model: Any, run: RunRecord, out: dict[str, Any]) -> lis
     cap = out.get("max_questions")
     if not isinstance(cap, int) or count_questions(run.text) <= cap or not run.text.strip():
         return []
-    reply = model.with_structured_output(QUESTION_COUNT_SCHEMA).invoke(
+    reply = _structured(model, QUESTION_COUNT_SCHEMA).invoke(
         [
             {"role": "system", "content": QUESTION_COUNT_SYSTEM},
             {"role": "user", "content": f"CAP: {cap}\n\nREPLY:\n{run.text}"},
         ]
     )
-    asked = int((reply or {}).get("count", 0))
+    if not reply:
+        # Unscored, never a pass -- the rule this file is built on, and the one place it was
+        # broken. `int((reply or {}).get("count", 0))` read a missing answer as *zero questions
+        # asked*, which is `0 <= cap` for every cap, so a silent judge scored 1.0.
+        #
+        # That inverts the escalation. This judge is only reached when the cheap question-mark
+        # tally has *already* exceeded the cap (the early return above), so the run in front of
+        # it is precisely the one that needs a second opinion -- and a judge that answered
+        # nothing was acquitting it automatically. `with_structured_output(...,
+        # method="function_calling")` returns None rather than raising when the model emits no
+        # tool call, which is exactly the local-server case
+        # :data:`JUDGE_STRUCTURED_OUTPUT_METHOD` warns is not universal.
+        #
+        # The two sibling judges already survive a None reply on their own terms:
+        # `judge_criteria` yields None verdicts, and `judge_literal_hits` falls back to "use",
+        # which is the violation. Only this one turned it into a pass.
+        return []
+    asked = int(reply.get("count", 0))
     ok = asked <= cap
     return [
         Score(
             "max_questions",
             float(ok),
             f"{asked} clarifying question(s) to the user vs cap {cap} -- "
-            f"{(reply or {}).get('reason', '')[:120]}",
+            f"{reply.get('reason', '')[:120]}",
         )
     ]
 
@@ -643,7 +660,7 @@ def judge_literal_hits(model: Any, run: RunRecord, out: dict[str, Any]) -> list[
     literals, _ = split_must_not_contain(out.get("must_not_contain") or [])
     scores: list[Score] = []
     for phrase, context in find_literal_hits(run.text, literals):
-        reply = model.with_structured_output(USE_OR_MENTION_SCHEMA).invoke(
+        reply = _structured(model, USE_OR_MENTION_SCHEMA).invoke(
             [
                 {"role": "system", "content": USE_OR_MENTION_SYSTEM},
                 {
@@ -663,6 +680,40 @@ def judge_literal_hits(model: Any, run: RunRecord, out: dict[str, Any]) -> list[
             )
         )
     return scores
+
+
+# How the judge is asked for structured output, and it is deliberately not the library default.
+#
+# `langchain-openai` 1.6 defaults `with_structured_output` to `method="json_schema"`, which
+# sends `response_format: {"type": "json_schema", ...}`. That is a *server* feature, not an API
+# feature: `mlx_lm.server` — the server `DEFAULT_LOCAL_ENDPOINT` names — does not implement it
+# and answers 400. While the judge was hosted this never showed; with every model served
+# locally it would fail every judged example on the transport rather than on its merits, and
+# uniformly enough to read as "the judge disagrees" rather than "the judge never ran".
+#
+# `function_calling` asks for the same schema over the tool-call surface, which is the broadest
+# thing the servers this repo documents agree on (mlx-lm, vLLM, Ollama, LM Studio). It is not
+# universal — it needs a model whose chat template emits tool calls — and the failure is **quiet**,
+# which is the part that matters: langchain-openai parses this path with
+# `JsonOutputKeyToolsParser(first_tool_only=True)`, which returns `None` when no tool call comes
+# back rather than raising. Every caller must therefore treat a falsy reply as *unscored*, never
+# as a passing answer. An earlier version of this comment claimed the opposite and one caller
+# believed it; see :func:`judge_question_count`.
+#
+# Deliberately a constant and not a `SPEECHWRITER_*` knob: that prefix is a contract with the
+# example template (`test_env_example_documents_every_setting`), and this is a property of the
+# judging transport rather than a setting for the machine.
+JUDGE_STRUCTURED_OUTPUT_METHOD = "function_calling"
+
+
+def _structured(model: Any, schema: dict[str, Any]) -> Any:
+    """The judge, bound to ``schema`` the one way — see :data:`JUDGE_STRUCTURED_OUTPUT_METHOD`.
+
+    One helper rather than three call sites passing the same keyword, because a call site that
+    forgot it would not fail here: it would fail at the endpoint, once, in whichever criterion
+    happened to use it.
+    """
+    return model.with_structured_output(schema, method=JUDGE_STRUCTURED_OUTPUT_METHOD)
 
 
 # The researcher prompt splits its output deliberately: "RETURN a concise brief ... Keep the

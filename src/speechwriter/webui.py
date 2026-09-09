@@ -400,7 +400,7 @@ def init_session() -> None:
     # reader who configured an endpoint finds it already filled in. `setdefault`, not an
     # assignment: once the reader has typed here — including clearing the box — that is the
     # answer, and a rerun must not put the environment's value back underneath them.
-    st.session_state.setdefault(ENDPOINT_KEY, base_settings().base_url or "")
+    st.session_state.setdefault(ENDPOINT_KEY, base_settings().base_url)
     # Guarded rather than `setdefault(...)` so the id is not re-minted on every rerun just
     # to be thrown away — and so it is obvious that the thread does *not* rotate per run.
     if _THREAD not in st.session_state:

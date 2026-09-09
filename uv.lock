@@ -3925,7 +3925,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "deepagents" },
-    { name = "langchain-anthropic" },
     { name = "langchain-openai" },
     { name = "langchain-tavily" },
     { name = "python-dotenv" },
@@ -3949,7 +3948,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "deepagents", specifier = ">=0.6.12,<0.8" },
-    { name = "langchain-anthropic", specifier = ">=1.4.8" },
     { name = "langchain-openai", specifier = ">=1.6.0" },
     { name = "langchain-tavily", specifier = ">=0.2.18" },
     { name = "misaki", extras = ["en"], marker = "extra == 'audio'", specifier = ">=0.9.4" },

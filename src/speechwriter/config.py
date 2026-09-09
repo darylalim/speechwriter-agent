@@ -1,8 +1,8 @@
 """Runtime configuration for the speechwriter agent.
 
-Everything the agent needs to know about *this machine* — which model to call,
-which API keys are present, and where files live — is resolved here into a single
-frozen :class:`Settings` object. Keeping this in one place means the agent,
+Everything the agent needs to know about *this machine* — which model to call, which
+endpoint serves it, which API keys are present, and where files live — is resolved here
+into a single frozen :class:`Settings` object. Keeping this in one place means the agent,
 the CLI, and the tests all agree on paths and never hard-code them.
 
 Path model
@@ -35,24 +35,35 @@ from speechwriter import endpoints
 logger = logging.getLogger(__name__)
 
 
+# Where a locally served model answers when nothing is configured.
+#
+# `mlx_lm.server`'s own default port, which is also the one the README's local-model recipe
+# uses. It is both the placeholder the endpoint field shows *and* — since this agent runs on
+# locally served models only — the value `load_settings()` falls back to, so a fresh clone with
+# no dotenv at all still names a coherent (model, endpoint) pair rather than a model with
+# nowhere to send it. Defined above `ModelChoice` because a NamedTuple's defaults bind at class
+# creation, not at call time.
+DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8080/v1"
+
+
 class ModelChoice(NamedTuple):
     """One selectable model: the id *and* where it is served from, as a single record.
 
-    ``model`` and ``base_url`` travel together because they are not independent choices.
-    :func:`~speechwriter.agent._build_model` keys the *client* off ``base_url``, never off
-    the id — so a locally served id paired with ``base_url=None`` builds an **Anthropic**
-    client and raises ``ValueError: Unable to infer model provider`` inside ``build_agent``,
-    which in Streamlit is a page-level traceback (``get_bundle()`` runs at module scope).
-    Pairing them here makes that combination unrepresentable rather than something every
-    front end has to remember to validate.
+    ``model`` and ``base_url`` travel together because they are not independent choices: an
+    id names weights, and the same weights served by two machines are two different systems to
+    talk to. Every model this agent can run is served over an OpenAI-compatible endpoint, so
+    ``base_url`` is **not optional** — an entry carrying an id alone would be a model with
+    nowhere to send it, and :func:`~speechwriter.agent._build_model` has no second client to
+    fall back to. Pairing them here makes that combination unrepresentable rather than
+    something every front end has to remember to validate.
 
-    ``context_window`` is the local half's other half: see
+    ``context_window`` is the third field of the same decision: see
     :data:`DEFAULT_LOCAL_CONTEXT_WINDOW`.
     """
 
     label: str
     model: str
-    base_url: str | None = None
+    base_url: str = DEFAULT_LOCAL_ENDPOINT
     context_window: int | None = None
 
     def is_current(self, settings: Settings) -> bool:
@@ -61,8 +72,8 @@ class ModelChoice(NamedTuple):
         The identity of a choice is the pair, never the label — two entries naming the same
         model at the same endpoint are the same choice however they are captioned. Spelled out
         once because both front ends ask this to decide what to mark as current and whether a
-        switch is a no-op, and a comparison that quietly dropped ``base_url`` would call a local
-        model and its Anthropic namesake the same thing.
+        switch is a no-op, and a comparison that quietly dropped ``base_url`` would call the
+        same weights on a laptop and on a workstation the same thing.
         """
         return self.model == settings.model and self.base_url == settings.base_url
 
@@ -93,33 +104,60 @@ class ModelChoice(NamedTuple):
             context_window=self.context_window,
             openai_api_key=(
                 settings.openai_api_key
-                # A curated entry needs no endpoint credential at all — the Anthropic client
-                # never reads it — so it is carried unchanged rather than dropped, or a detour
-                # through Claude would strip the key the configured endpoint still needs.
-                if self.base_url is None or endpoints.same_origin(self.base_url, settings.base_url)
+                # No exemption, deliberately. This test used to carry an `is None` disjunct so a
+                # *curated* (Anthropic) entry — which needs no endpoint credential, because that
+                # client never reads one — kept the key through a detour away from the local
+                # server and back. With every entry now a typed or configured endpoint, that
+                # disjunct is a carve-out with no owner: it would hand the reader's real
+                # `OPENAI_API_KEY` to any choice that happened to arrive without a `base_url`.
+                if endpoints.same_origin(self.base_url, settings.base_url)
                 else None
             ),
         )
 
 
-# The workhorse model. Sonnet 5 is a strong writer at sensible cost; override with
-# SPEECHWRITER_MODEL (e.g. "claude-opus-5" for the highest-quality drafting; no ceiling
-# override is needed alongside it — LangChain profiles that id at its real 128k, so tier 2
-# in agent.py keeps it. Only an id LangChain cannot profile falls to DEFAULT_MAX_TOKENS).
-DEFAULT_MODEL = "claude-sonnet-5"
+# The workhorse model — and `DEFAULT_LOCAL_ENDPOINT` is the other half of the same decision,
+# never to be defaulted apart from it. `_build_model` keys the client off the endpoint, so an
+# id defaulted alone would be a model with nowhere to send it.
+#
+# This names weights, and naming them is not the same as having them. `mlx_lm.server` serves
+# whatever is already in the Hugging Face cache and pulls nothing itself, so a fresh machine
+# gets a server that starts, reports Ready, and 404s on the first turn — which is why the
+# README's recipe now downloads this repo explicitly before starting one. Cheap to fix either
+# way: point `SPEECHWRITER_MODEL` at what you actually serve, or ask the server what it *has* —
+# the sidebar's **Detect models** button and the REPL's `/endpoint` both read `/v1/models`.
+#
+# Deliberately not a smaller, likelier-to-be-cached id: there is no id every machine has, so any
+# choice is a guess, and this one at least matches the documented recipe end to end.
+DEFAULT_MODEL = "mlx-community/Qwen3.8-27B-4bit"
 
-# Fallback output-token ceiling — used *only* when the model id has no LangChain profile.
+# The output-token ceiling, used whenever `SPEECHWRITER_MAX_TOKENS` does not override it.
 #
-# `init_chat_model` takes `max_tokens` from LangChain's model-profile table and falls back
-# to 4096 for an id it does not recognise. Extended thinking bills against that same
-# ceiling, so on an unrecognised id a subagent can spend the entire budget thinking and
-# return *no text at all* — which deepagents forwards as an empty, `status="success"` tool
-# result. 4096 is far too tight for that; 32k leaves comfortable room for a draft or
-# critique plus thinking.
+# Pinned rather than left to the client. `ChatOpenAI` defaults `max_tokens` to None — "let the
+# server decide" — and an unbounded ceiling on a *reasoning* model is a real trap: Qwen3.8-27B
+# defaults to `reasoning_effort: xhigh` and will happily spend a thousand tokens deliberating
+# before it writes a line. Extended thinking bills against this same ceiling, so a subagent can
+# exhaust the budget thinking and return *no text at all*, which deepagents forwards as an
+# empty `status="success"` tool result.
 #
-# A *profiled* model keeps its own, usually larger, ceiling (64k-128k) rather than being
-# capped to this. See `agent._build_model` for the three-tier resolution.
-DEFAULT_MAX_TOKENS = 32000
+# **Bounded from both sides, and the lower bound is the one that is easy to forget.**
+#
+# From above by `DEFAULT_LOCAL_CONTEXT_WINDOW`: output and input share one window on a local
+# server. This was 32000 while the ceiling applied to 128k-window hosted models, which against a
+# 32768-token window leaves 768 tokens for the entire prompt. vLLM rejects that outright; others
+# clamp it silently, which is worse.
+#
+# From below by the longest speech anyone actually commissions. The ceiling is also the
+# *thinking* budget, and a draft is not small: the largest committed eval example asks for 3250
+# words (a 25-minute keynote at `WORDS_PER_MINUTE`), which is ~4.5k tokens of prose before
+# Qwen3.8-27B spends anything on reasoning. A first pass at this constant chose 8192 by halving
+# until it looked safe against the window alone, which is how a ceiling ends up truncating the
+# one commission the datasets grade most heavily.
+#
+# 12288 clears that draft with room for a long deliberation and still leaves ~20k of window for
+# the system prompt, the loaded skills and the draft under revision.
+# `test_the_default_ceiling_fits_inside_the_assumed_context_window` pins both directions.
+DEFAULT_MAX_TOKENS = 12288
 
 # How the agent files its output under `workspace_dir`, and the pace it writes for.
 #
@@ -138,12 +176,6 @@ WORDS_PER_MINUTE = 130
 # value that shows up in a request log is greppable back to this comment.
 LOCAL_API_KEY_PLACEHOLDER = "local"
 
-# What the endpoint field offers when a reader has configured nothing. A guess about the port,
-# but a cheap one: it is only ever a *placeholder*, never a value — the field starts empty and
-# nothing is probed until a click, so being wrong costs a retype rather than a dead roster entry.
-# `mlx_lm.server`'s own default port, which is also the one the README's local-model recipe uses.
-DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8080/v1"
-
 # The context window assumed for a locally served model, and the reason `ModelChoice` carries
 # one at all.
 #
@@ -161,19 +193,21 @@ DEFAULT_LOCAL_ENDPOINT = "http://127.0.0.1:8080/v1"
 # rather than a setting for the machine.
 DEFAULT_LOCAL_CONTEXT_WINDOW = 32768
 
-# The models the front ends offer. Anthropic ids only, on purpose — see `model_choices()`,
-# which widens this with whatever pair the environment actually names.
+# Empty on purpose, and it must stay a real (if empty) roster rather than be deleted.
 #
-# Every entry here must be an id LangChain profiles, so it keeps its own 64k-128k ceiling
-# rather than falling to `DEFAULT_MAX_TOKENS`; that is not merely a convention but an
-# assertion (`test_every_anthropic_model_choice_is_profiled_above_the_floor`). Three rather
-# than all thirteen profiled ids: this is a writing tool, and the choice worth offering is
-# quality-versus-cost, not a catalogue of dated snapshots.
-MODEL_CHOICES: tuple[ModelChoice, ...] = (
-    ModelChoice("Sonnet 5", DEFAULT_MODEL),
-    ModelChoice("Opus 5", "claude-opus-5"),
-    ModelChoice("Haiku 4.5", "claude-haiku-4-5"),
-)
+# This held three hosted Anthropic ids while the agent had a hosted client to call them with.
+# It cannot be repopulated with local ones: a hard-coded endpoint is a guess about which server
+# the reader is running, and every guess that misses is a row in the picker that 404s when
+# selected. What replaces it is `model_choices()`, which synthesises entries from the pair the
+# environment actually names and from whatever a live `/v1/models` probe answers — correct by
+# construction, because the operator configured the one and the server reported the other.
+#
+# Kept as a name because it is still the seed `model_choices()` builds on. Note where the
+# non-empty guarantee moved to: `model_choices()` synthesises an entry for every configuration
+# handed to it, and both front ends always hand it at least one, so the roster a picker sees is
+# never empty even though this is. `streamlit_app.py` indexes it (`choices[0]`) and depends on
+# exactly that — a caller passing no settings at all would hand it an empty list.
+MODEL_CHOICES: tuple[ModelChoice, ...] = ()
 
 # Package dir is .../src/speechwriter ; the repo root is two levels up.
 _PKG_DIR = Path(__file__).resolve().parent
@@ -188,7 +222,6 @@ class Settings:
     memories_vpath: ClassVar[str] = "/memories/"
 
     model: str
-    anthropic_api_key: str | None
     tavily_api_key: str | None
     project_root: Path
     workspace_dir: Path
@@ -199,12 +232,17 @@ class Settings:
     # argument after it, so a caller constructing Settings by position would bind their
     # API key here. Explicit output-token override; None defers to the model's profile.
     max_tokens: int | None
-    # Appended for the same reason, and *defaulted* for the reason `SpeechwriterAgent`
-    # defaults its own added fields: `build_agent(settings)` is the documented library entry
-    # point, so a consumer constructing Settings by hand would otherwise break on an upgrade
-    # that only added an optional capability. An OpenAI-compatible endpoint to use *instead
-    # of* Anthropic; None (the normal case) leaves the Anthropic path untouched.
-    base_url: str | None = None
+    # The OpenAI-compatible endpoint the model is served from. Not optional and not nullable:
+    # it selects the client, and there is no second client to fall back to — see `ModelChoice`.
+    # Defaulted for the reason `SpeechwriterAgent` defaults its own added fields:
+    # `build_agent(settings)` is the documented library entry point, so a consumer constructing
+    # Settings by hand should not have to name a machine to get the documented one.
+    #
+    # NOTE for anyone constructing Settings *positionally*: `anthropic_api_key` used to sit
+    # second, and removing it shifted every field after it by one. That is a deliberate
+    # breaking change rather than a vestigial field kept for compatibility — a key this agent
+    # can no longer send is worse than absent, because it reads as a credential in use.
+    base_url: str = DEFAULT_LOCAL_ENDPOINT
     openai_api_key: str | None = None
     # Appended and defaulted for the same reason as the two above — and, alone among these
     # fields, never read from the environment. `load_settings()` leaves it None; it is set
@@ -212,6 +250,11 @@ class Settings:
     # is read only by `agent._build_model`. See `DEFAULT_LOCAL_CONTEXT_WINDOW` for what it
     # buys and why it is not a `SPEECHWRITER_*` knob.
     context_window: int | None = None
+    # Appended, like every field above it. Whether ``SPEECHWRITER_BASE_URL`` was actually *set*,
+    # as opposed to defaulted to `DEFAULT_LOCAL_ENDPOINT` — a distinction that did not exist
+    # while an unset value meant "no endpoint at all", and that guards a credential now that it
+    # means "the documented local one". See `endpoint_api_key`.
+    endpoint_configured: bool = False
 
     # -- derived helpers -------------------------------------------------
 
@@ -221,26 +264,28 @@ class Settings:
         return bool(self.tavily_api_key)
 
     @property
-    def uses_local_endpoint(self) -> bool:
-        """Whether the model is served over an OpenAI-compatible URL rather than by Anthropic.
+    def model_endpoint_usable(self) -> bool:
+        """Whether the configured endpoint is one we could actually send a turn to.
 
-        One flag drives three coupled things, the same shape as ``research_enabled``:
-        which client :func:`~speechwriter.agent._build_model` constructs, whether an
-        ``ANTHROPIC_API_KEY`` is required at all, and what the front ends put on the banner.
+        The gate both front ends put in front of the chat input, and it replaced
+        ``model_credentials_present`` when the Anthropic client left: a locally served model
+        needs no credential of ours, so "is a key present" stopped being a question with an
+        answer, and a gate that is unconditionally true is a gate that has quietly stopped
+        running.
+
+        What is left is *shape*, and it is worth checking precisely because
+        :func:`_configured_endpoint` deliberately does not rewrite what an operator wrote.
+        :func:`~speechwriter.endpoints.usable_endpoint` rejects the two values that fail
+        confusingly rather than loudly: a scheme outside ``http``/``https`` — ``file:///…``
+        would otherwise have the model client and the ``/v1/models`` probe reading local disk —
+        and a URL with no host, which raises inside ``urllib`` at *request construction*, far
+        from the dotenv that caused it.
+
+        Reachability is deliberately **not** part of this. Probing here would break the
+        "building the agent touches no network" invariant; a server that is merely not running
+        yet is what **Detect models** and ``/endpoint`` are for.
         """
-        return self.base_url is not None
-
-    @property
-    def model_credentials_present(self) -> bool:
-        """Whether the configured model can actually be called.
-
-        Both front ends gate on this rather than on ``anthropic_api_key`` directly: an
-        Anthropic key is *irrelevant* when the model is served locally, and demanding one
-        would refuse to start a configuration that works perfectly well. A local endpoint
-        needs no credential of ours — reachability is a runtime concern, and probing it here
-        would break the "building the agent touches no network" invariant.
-        """
-        return self.uses_local_endpoint or bool(self.anthropic_api_key)
+        return endpoints.usable_endpoint(self.base_url) is not None
 
     @property
     def endpoint_api_key(self) -> str:
@@ -249,7 +294,22 @@ class Settings:
         Resolved here rather than in :mod:`speechwriter.agent` so that reading credentials
         out of the environment stays this module's job — the same reason ``base_url`` is a
         field and not an ``os.environ`` lookup at the call site.
+
+        **A real key is sent only to an endpoint the operator actually named.** This became a
+        live question when ``base_url`` gained a default: while unset meant "no endpoint", an
+        ``OPENAI_API_KEY`` sitting in the environment for some hosted service was simply never
+        read. Now unset means ``DEFAULT_LOCAL_ENDPOINT``, so without this guard a developer with
+        that variable exported globally — an ordinary thing to have — would send their real key
+        to whatever process happens to hold ``127.0.0.1:8080`` on every turn, having configured
+        nothing. Loopback bounds the damage; it does not make it intended.
+
+        A key with no named server is not a credential for *this* server, so it is withheld and
+        the placeholder goes instead. Naming the endpoint is what opts in, which is the same
+        rule :meth:`endpoint_api_key_for` and :meth:`ModelChoice.applied_to` already draw for a
+        *typed* endpoint — one boundary, three places it has to hold.
         """
+        if not self.endpoint_configured:
+            return LOCAL_API_KEY_PLACEHOLDER
         return self.openai_api_key or LOCAL_API_KEY_PLACEHOLDER
 
     def endpoint_api_key_for(self, target: str) -> str | None:
@@ -293,21 +353,21 @@ def model_choices(
 ) -> tuple[ModelChoice, ...]:
     """The curated roster, widened so every configuration passed in stays selectable.
 
-    This roster is deliberately never authoritative. Streamlit **silently** rewrites a
-    ``session_state`` value that is not among a widget's options to option zero — no
-    exception, no log — so a fixed list would take a reader who configured a local endpoint
-    and retarget them onto the default Claude id, which on a machine with no Anthropic key
-    flips both front ends into their "no credentials" state. Widening means the picker can
-    only ever *add* to what the environment already says.
+    :data:`MODEL_CHOICES` is empty, so this is not merely the authoritative roster — it is the
+    *only* one. Every entry a front end offers is synthesised here from a configuration that
+    exists: the pair ``SPEECHWRITER_BASE_URL`` and ``SPEECHWRITER_MODEL`` name, whatever
+    :func:`speechwriter.endpoints.list_models` found at a live endpoint, and the pair currently
+    in force. That is correct by construction — the operator configured the one and the server
+    reported the other — where a shipped list of local endpoints would be a guess about which
+    server the reader is running, dead on every machine that guessed wrong.
 
-    It is also how locally served models reach the roster at all: rather than shipping
-    hard-coded endpoints that are dead on any machine that has not started that particular
-    server, the local entry is whatever ``SPEECHWRITER_BASE_URL`` and ``SPEECHWRITER_MODEL``
-    name — correct by construction, because the operator configured it.
-    :func:`speechwriter.endpoints.list_models` widens it further, on demand.
+    The widening rule survives the empty seed and still matters: Streamlit **silently** rewrites
+    a ``session_state`` value that is not among a widget's options to option zero — no
+    exception, no log. So this may only ever *add* to what the environment already says.
 
     **Variadic because one configuration is not enough, and passing only the live one is a
-    bug.** Selecting a curated entry sets ``base_url`` to ``None``, so a roster derived from
+    bug.** Selecting any entry replaces ``base_url`` with that entry's own, so a roster derived
+    from
     the *current* settings alone would drop the locally served entry the reader came from —
     the same silent-retarget failure this function exists to prevent, reached by a click
     instead of by a rerun, and unrecoverable without a restart. On a keyless machine it is
@@ -342,11 +402,7 @@ def model_choices(
         if identity in seen:
             continue
         seen.add(identity)
-        choices.append(
-            ModelChoice(settings.model, settings.model)
-            if settings.base_url is None
-            else local_choice(settings.model, settings.base_url, settings.context_window)
-        )
+        choices.append(local_choice(settings.model, settings.base_url, settings.context_window))
     return tuple(choices)
 
 
@@ -363,11 +419,11 @@ def resolve_choice(choices: tuple[ModelChoice, ...], requested: str) -> ModelCho
 
     **An ambiguous name is not an answer, so it resolves to ``None``.** One model id can be
     served by two machines — the same ``mlx-community/…`` weights on a laptop and a workstation,
-    or an identical Ollama tag — and :func:`local_choice` labels both ``<id> (local)`` because
-    the label has to stay a pure function of the pair. Returning the first match silently pointed
-    the agent at whichever server happened to be merged earlier. The caller prints the roster on
-    ``None``, and that table carries ``base_url`` in a column of its own, so the reader can see
-    the two apart and pick by number — which is the one input that is never ambiguous.
+    or an identical Ollama tag — and :func:`local_choice` labels both with the bare ``<id>``,
+    because the label has to stay a pure function of the pair. Returning the first match
+    silently pointed the agent at whichever server happened to be merged earlier. The caller
+    prints the roster on ``None``, and that table carries ``base_url`` in a column of its own,
+    so the reader can see the two apart and pick by number — the one input never ambiguous.
     """
     if requested.isdecimal():
         index = int(requested)
@@ -392,7 +448,9 @@ def matching_choices(choices: tuple[ModelChoice, ...], requested: str) -> list[M
     ]
 
 
-def local_choice(model: str, base_url: str, context_window: int | None = None) -> ModelChoice:
+def local_choice(
+    model: str, base_url: str = DEFAULT_LOCAL_ENDPOINT, context_window: int | None = None
+) -> ModelChoice:
     """A roster entry for ``model`` served at ``base_url``, labelled the one way.
 
     The label convention lives here, and in exactly one place, because equality decides
@@ -403,11 +461,15 @@ def local_choice(model: str, base_url: str, context_window: int | None = None) -
     selected one is not found among the options. Streamlit's response to that is to silently
     reset the selection to the first entry.
 
-    The ``(local)`` suffix earns its place for the reason the CLI banner prints ``endpoint`` on
-    a line of its own: "which model" and "served from where" fail differently, and an
-    unsuffixed id would read as an Anthropic one.
+    The label is now the bare id. It used to carry a ``(local)`` suffix, which earned its place
+    only by contrast — an unsuffixed id sat beside three Anthropic ones and would have read as
+    hosted. With every entry served over an endpoint the suffix distinguishes nothing, and it is
+    not free: the picker truncates at ~34 characters, which ``mlx-community/Qwen3.8-27B-4bit``
+    already reaches on its own. Where the model came from is still shown, on the line of its own
+    that the CLI banner and the sidebar caption both give it — "which model" and "served from
+    where" fail differently and belong in different sentences.
     """
-    return ModelChoice(f"{model} (local)", model, base_url, context_window)
+    return ModelChoice(model, model, base_url, context_window)
 
 
 def load_settings() -> Settings:
@@ -415,24 +477,24 @@ def load_settings() -> Settings:
 
     Recognised environment variables:
 
-    * ``ANTHROPIC_API_KEY``  — required to actually run the agent (checked lazily).
     * ``TAVILY_API_KEY``     — enables the live-research subagent; optional.
-    * ``SPEECHWRITER_MODEL`` — override the model id (default ``claude-sonnet-5``).
+    * ``SPEECHWRITER_MODEL`` — the id your server serves (default
+      ``mlx-community/Qwen3.8-27B-4bit``). Half of a pair — see ``SPEECHWRITER_BASE_URL``.
     * ``SPEECHWRITER_HOME``  — override the project root the agent operates in.
     * ``SPEECHWRITER_MAX_RESEARCH_RESULTS`` — Tavily results per query (default 5).
     * ``SPEECHWRITER_MAX_TOKENS`` — *override* the output-token ceiling per model call.
       Left unset, the model's own LangChain profile decides, falling back to
       ``DEFAULT_MAX_TOKENS`` only for an id that has no profile.
-    * ``SPEECHWRITER_BASE_URL`` — point the agent at an OpenAI-compatible endpoint
-      (a local ``mlx_lm.server``, vLLM, LM Studio, Ollama) instead of Anthropic. Unset
-      is the normal case and changes nothing.
+    * ``SPEECHWRITER_BASE_URL`` — the OpenAI-compatible endpoint serving the model (a local
+      ``mlx_lm.server``, vLLM, LM Studio, Ollama). Unset falls back to
+      :data:`DEFAULT_LOCAL_ENDPOINT`; there is no hosted path to fall back to instead.
     * ``OPENAI_API_KEY`` — sent to that endpoint when one is set. Local servers ignore
-      it, so it is optional and falls back to a placeholder; a hosted OpenAI-compatible
-      service will need a real one.
+      it, so it is optional and falls back to a placeholder; a gateway in front of one
+      (LiteLLM, a reverse proxy) may need a real one.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
-    # Load the project's own .env (if present) so ANTHROPIC_API_KEY / TAVILY_API_KEY /
+    # Load the project's own .env (if present) so TAVILY_API_KEY / OPENAI_API_KEY /
     # LANGSMITH_* are available without exporting them by hand. We point at the project
     # root explicitly rather than letting python-dotenv walk *up* the directory tree —
     # an upward walk can pull keys from an unrelated ancestor .env. Done here (not at
@@ -467,17 +529,19 @@ def load_settings() -> Settings:
     workspace_dir.mkdir(parents=True, exist_ok=True)
     store_path.parent.mkdir(parents=True, exist_ok=True)
 
+    configured_endpoint, endpoint_configured = _configured_endpoint()
+
     return Settings(
         model=os.environ.get("SPEECHWRITER_MODEL", DEFAULT_MODEL),
         max_tokens=_optional_int_env("SPEECHWRITER_MAX_TOKENS"),
         # Verbatim, deliberately — see `_configured_endpoint` for what normalising it broke.
-        base_url=_configured_endpoint(),
+        base_url=configured_endpoint,
+        endpoint_configured=endpoint_configured,
         # Normalised the same way, and for the same reason: a blank or whitespace-only value
         # is how a shell says "unset", and left as-is it is *truthy* — so `endpoint_api_key`
         # would send "   " as the bearer token and a hosted endpoint would 401 far from the
         # typo, instead of falling back to the placeholder.
         openai_api_key=(os.environ.get("OPENAI_API_KEY") or "").strip() or None,
-        anthropic_api_key=os.environ.get("ANTHROPIC_API_KEY"),
         tavily_api_key=os.environ.get("TAVILY_API_KEY"),
         project_root=project_root,
         workspace_dir=workspace_dir,
@@ -487,8 +551,12 @@ def load_settings() -> Settings:
     )
 
 
-def _configured_endpoint() -> str | None:
-    """``SPEECHWRITER_BASE_URL``, stripped and nothing more.
+def _configured_endpoint() -> tuple[str, bool]:
+    """``SPEECHWRITER_BASE_URL`` and whether it was set — stripped, and nothing more.
+
+    Returns the pair rather than the string because the two answers come from one read and a
+    second ``os.environ`` lookup could disagree with the first. The flag is what
+    :attr:`Settings.endpoint_api_key` gates a real credential on.
 
     It is named rather than inlined because what it *does not* do is the point, and a previous
     version got this wrong. It normalised the value — to stop one server appearing twice in the
@@ -507,9 +575,17 @@ def _configured_endpoint() -> str | None:
 
     The empty case is deliberate: an exported-but-blank ``SPEECHWRITER_BASE_URL`` is how a
     shell says "unset", and an empty string here would route every call to a nonexistent
-    endpoint while ``uses_local_endpoint`` still reported True.
+    endpoint that no shape check could tell apart from a real one.
+
+    Unset falls back to :data:`DEFAULT_LOCAL_ENDPOINT` rather than to ``None``. There is no
+    second client to select by leaving this empty, so ``None`` could only ever mean "a model
+    with nowhere to send it" — a state better made unrepresentable than reported. Note what
+    this still does *not* do: an endpoint that is set but malformed is returned as written, for
+    :attr:`Settings.model_endpoint_usable` to reject by name, because silently substituting the
+    default for an operator's own string is how a typo becomes an unexplained wrong server.
     """
-    return (os.environ.get("SPEECHWRITER_BASE_URL") or "").strip() or None
+    raw = (os.environ.get("SPEECHWRITER_BASE_URL") or "").strip()
+    return (raw or DEFAULT_LOCAL_ENDPOINT, bool(raw))
 
 
 def _optional_int_env(name: str, *, minimum: int = 1) -> int | None:
