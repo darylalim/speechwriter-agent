@@ -68,4 +68,11 @@ dev = [
     # omission either. The day langchain drops pyyaml, the break would surface on the
     # next `uv lock` as a ModuleNotFoundError in an apparently unrelated test file.
     "pyyaml>=6.0",
+    # Streamlit's fast file-watcher. Without it the dev server falls back to polling the
+    # module tree on a timer and prints a startup hint on every launch; with it, an edit to
+    # app_pages/ or src/ reruns the page immediately. Dev-group rather than a runtime dep
+    # because it only matters while source changes underneath a running server -- the
+    # packaged agent never needs it -- and `uv sync` installs dev groups by default, so the
+    # documented install path picks it up anyway.
+    "watchdog>=6.0.0",
 ]
