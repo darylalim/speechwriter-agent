@@ -19,11 +19,8 @@
       "Read(./.env.*)",
       "Edit(./.env)",
       "Edit(./.env.*)",
-      "Write(./.env)",
-      "Write(./.env.*)",
       "Read(./.streamlit/secrets.toml)",
-      "Edit(./.streamlit/secrets.toml)",
-      "Write(./.streamlit/secrets.toml)"
+      "Edit(./.streamlit/secrets.toml)"
     ]
   },
   "hooks": {
