@@ -115,6 +115,8 @@ def _report_truncation(console: Console, bundle: SpeechwriterAgent) -> None:
 def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
     s = bundle.settings
     research = "[green]on (Tavily)[/]" if s.research_enabled else "[yellow]off[/]"
+    # Plain "off", not yellow like research: untraced is the default, not a degraded mode.
+    traces = f"[green]{bundle.tracing.label}[/]" if bundle.tracing else "[dim]off[/]"
     ceiling = bundle.ceiling_label
     # Unconditional now that there is only one kind of endpoint, and it earns the line more
     # than it did when it was conditional: "which model" and "served from where" fail
@@ -139,6 +141,7 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
             f"[dim]model[/]      {s.model}{endpoint}\n"
             f"[dim]max tokens[/] {ceiling}\n"
             f"[dim]research[/]   {research}\n"
+            f"[dim]traces[/]     {traces}\n"
             f"[dim]speeches[/]   {s.workspace_dir / 'speeches'}\n"
             f"[dim]memory[/]     {s.store_path}\n\n"
             f"Describe your speech (speaker, audience, occasion, goal, length).\n"

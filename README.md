@@ -115,7 +115,9 @@ It binds to `localhost` only by default; the app drives your model server and re
 | `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a gateway in front of one (LiteLLM, a reverse proxy) may want a real one. It is sent **only to an endpoint you named yourself** — not to a server typed in at runtime, and not to the default endpoint when `SPEECHWRITER_BASE_URL` is unset. A key with no named server is not a credential for *this* server, so the placeholder goes instead. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
-| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | — | Optional [LangSmith](https://docs.langchain.com/langsmith/home) tracing. |
+| `PHOENIX_COLLECTOR_ENDPOINT` | — | A self-hosted [Phoenix](https://arize.com/docs/phoenix) to trace every turn to, e.g. `http://localhost:6006`. Unset means no tracing — there is deliberately no default. See [Tracing with Phoenix](#tracing-with-phoenix). |
+| `PHOENIX_PROJECT` | `speechwriter-agent` | The Phoenix project traces land in. `PHOENIX_PROJECT_NAME` is read as an alias, as Phoenix itself does. |
+| `PHOENIX_API_KEY` | — | Only for a Phoenix running with authentication on. Sent to that collector and nowhere else. |
 
 ### Switching models
 
@@ -231,6 +233,46 @@ Sizing, on 32GB unified memory: the 4-bit 27B weighs 15GB on disk and peaks at ~
 resident, generating ~21 tok/s on an M2 Max — comfortably inside the ~24GB macOS allows the
 GPU by default, with headroom left for the KV cache.
 
+### Tracing with Phoenix
+
+Every turn can be traced to a [Phoenix](https://arize.com/docs/phoenix) you run yourself: each
+model call, tool call and subagent run becomes a span, so you can see what the orchestrator
+delegated, what the `researcher` searched for, and what the `style-critic` said — nested the way
+it actually happened. Drafts never leave your machine to get there.
+
+Start Phoenix (either works; the UI and the collector share port 6006):
+
+```bash
+docker run -d --name phoenix -p 6006:6006 -v phoenix-data:/mnt/data \
+  -e PHOENIX_WORKING_DIR=/mnt/data arizephoenix/phoenix:latest
+# or, without Docker:
+uvx --from arize-phoenix phoenix serve
+```
+
+Then point the agent at it, in `.env`:
+
+```ini
+PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
+PHOENIX_PROJECT=speechwriter-agent   # optional; this is the default
+```
+
+Both front ends say where traces are going before a turn is spent — the banner's `traces` line,
+the sidebar's **Traces** caption — and every entry point is traced alike: the REPL, the web UI,
+the eval harness, and `build_agent()` used as a library. Four things worth knowing:
+
+- **One conversation is one Phoenix session.** Sessions are keyed by the agent's `thread_id`, so
+  the **Sessions** view follows a conversation turn by turn, and a new one starts exactly when
+  the agent does (after `Ctrl-C` in the terminal, or **New conversation** in the browser).
+- **Phoenix being down never costs you a speech.** Spans are exported in the background; if
+  nothing is listening you get one warning saying so, not a line per batch, and `exit` waits at
+  most a few seconds to deliver the last of them.
+- **It replaced LangSmith tracing.** If your `.env` still sets `LANGSMITH_TRACING=true`, every
+  turn goes to *both* — the agent warns at startup. Remove that line to trace to Phoenix only.
+  (`LANGSMITH_API_KEY` is still used by the eval harness, which mirrors its datasets to
+  LangSmith; that is separate from tracing.)
+- **It is plain OpenTelemetry (OTLP over HTTP)**, so any OTLP collector works, not only
+  Phoenix — the endpoint gets `/v1/traces` appended, as Phoenix's own client does.
+
 ### Measuring spoken length for real
 
 `WORDS_PER_MINUTE` is one constant standing in for pace, and it cannot know that one draft is
@@ -300,6 +342,7 @@ src/speechwriter/
 ├── tools.py       Lazy Tavily research tool (degrades gracefully with no key)
 ├── subagents.py   researcher + style-critic SubAgent definitions
 ├── memory.py      Persistent Store: JSON snapshot load/save + exhaustive read
+├── tracing.py     Opt-in OpenTelemetry tracing to a self-hosted Phoenix
 ├── agent.py       build_agent() — composes every layer into one graph
 ├── cli.py         Rich streaming REPL
 ├── workspace.py   UI-free reader: drafts, research notes, voice profiles

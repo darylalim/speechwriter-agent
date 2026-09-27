@@ -11,6 +11,15 @@ dependencies = [
     "deepagents>=0.6.12,<0.8",
     "langchain-openai>=1.6.0",
     "langchain-tavily>=0.2.18",
+    # Tracing to a self-hosted Phoenix (src/speechwriter/tracing.py). Plain OpenTelemetry on
+    # purpose, not `arize-phoenix-otel`: its `register()` raises AttributeError against
+    # opentelemetry 1.45 (it reads the exporter's removed private `_headers`), walks up from
+    # the CWD for a `.env.phoenix` to take credentials from, and pulls in grpcio for a gRPC
+    # transport this never uses. HTTP exporter only, for the same reason.
+    "openinference-instrumentation-langchain>=0.1.76",
+    "openinference-semantic-conventions>=0.1.39",
+    "opentelemetry-exporter-otlp-proto-http>=1.45.0",
+    "opentelemetry-sdk>=1.45.0",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     # 1.62 for the widget parameters the web UI now depends on: persist_state and required on

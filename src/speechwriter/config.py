@@ -193,6 +193,10 @@ LOCAL_API_KEY_PLACEHOLDER = "local"
 # rather than a setting for the machine.
 DEFAULT_LOCAL_CONTEXT_WINDOW = 32768
 
+# The Phoenix project traces land in when `PHOENIX_PROJECT` does not name one — the name the
+# LangSmith project had, so a reader switching backends finds the same project name waiting.
+DEFAULT_PHOENIX_PROJECT = "speechwriter-agent"
+
 # Empty on purpose, and it must stay a real (if empty) roster rather than be deleted.
 #
 # This held three hosted Anthropic ids while the agent had a hosted client to call them with.
@@ -255,6 +259,14 @@ class Settings:
     # while an unset value meant "no endpoint at all", and that guards a credential now that it
     # means "the documented local one". See `endpoint_api_key`.
     endpoint_configured: bool = False
+    # Appended and defaulted, like the fields above. Where traces go — see `speechwriter.tracing`.
+    # Unlike `base_url` there is deliberately **no default endpoint**: unset means tracing is
+    # off, because a default would start shipping every draft to whatever holds a well-known
+    # port without anyone having asked for traces at all. Naming the collector is the opt-in.
+    phoenix_endpoint: str | None = None
+    phoenix_project: str = DEFAULT_PHOENIX_PROJECT
+    # Sent only to `phoenix_endpoint`, for a Phoenix running with authentication enabled.
+    phoenix_api_key: str | None = None
 
     # -- derived helpers -------------------------------------------------
 
@@ -491,16 +503,26 @@ def load_settings() -> Settings:
     * ``OPENAI_API_KEY`` — sent to that endpoint when one is set. Local servers ignore
       it, so it is optional and falls back to a placeholder; a gateway in front of one
       (LiteLLM, a reverse proxy) may need a real one.
+    * ``PHOENIX_COLLECTOR_ENDPOINT`` — a self-hosted Phoenix to trace every turn to, e.g.
+      ``http://localhost:6006``. Unset means no tracing; see :mod:`speechwriter.tracing`.
+    * ``PHOENIX_PROJECT`` — the Phoenix project traces land in (default
+      ``speechwriter-agent``). ``PHOENIX_PROJECT_NAME`` is read as an alias, as Phoenix does.
+    * ``PHOENIX_API_KEY`` — sent to that collector only, for a Phoenix with auth enabled.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
     # Load the project's own .env (if present) so TAVILY_API_KEY / OPENAI_API_KEY /
-    # LANGSMITH_* are available without exporting them by hand. We point at the project
+    # PHOENIX_* are available without exporting them by hand. We point at the project
     # root explicitly rather than letting python-dotenv walk *up* the directory tree —
     # an upward walk can pull keys from an unrelated ancestor .env. Done here (not at
     # import) so `import speechwriter` has no side effects; real shell env wins.
     load_dotenv(project_root / ".env")
 
+    # Runtime tracing is Phoenix's now (`speechwriter.tracing`), but langsmith still arrives with
+    # langchain-core, still switches its own tracer on from LANGSMITH_TRACING alone, and is still
+    # the client the eval harness mirrors datasets through — which reads LANGSMITH_API_KEY the
+    # same memoised way. So this stays, for every LANGSMITH_* read rather than for tracing.
+    #
     # langsmith memoises env reads in an `lru_cache` on `get_env_var`, so the *first* read of
     # LANGSMITH_TRACING is the one that sticks for the life of the process. Anything that reads
     # tracing state before the line above — a module-level `Client()`, a `tracing_is_enabled()`
@@ -548,7 +570,25 @@ def load_settings() -> Settings:
         skills_dir=skills_dir,
         store_path=store_path,
         max_research_results=_int_env("SPEECHWRITER_MAX_RESEARCH_RESULTS", 5),
+        phoenix_endpoint=_optional_env("PHOENIX_COLLECTOR_ENDPOINT"),
+        phoenix_project=(
+            _optional_env("PHOENIX_PROJECT")
+            or _optional_env("PHOENIX_PROJECT_NAME")
+            or DEFAULT_PHOENIX_PROJECT
+        ),
+        phoenix_api_key=_optional_env("PHOENIX_API_KEY"),
     )
+
+
+def _optional_env(name: str) -> str | None:
+    """A variable's stripped value, or ``None`` when it is unset *or blank*.
+
+    Blank is how a dotenv copied from the example template says "unset" — ``KEY=`` with nothing
+    after it — and left as-is an empty string is falsy in some places and a value in others: an
+    empty ``PHOENIX_COLLECTOR_ENDPOINT`` would be "configured" to an endpoint no shape check can
+    call, and whitespace in a key would be sent as the bearer token.
+    """
+    return (os.environ.get(name) or "").strip() or None
 
 
 def _configured_endpoint() -> tuple[str, bool]:

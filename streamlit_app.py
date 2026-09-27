@@ -110,6 +110,10 @@ with st.sidebar:
         # configured this is the documented default, which the reader has never seen.
         st.caption(f"Endpoint — `{settings.base_url}`")
         st.caption(f"Output ceiling — {bundle.ceiling_label}")
+        # Only when on: the CLI banner lists every setting, but this sidebar is for what the
+        # reader can act on, and "not tracing" is the default rather than something to fix.
+        if bundle.tracing is not None:
+            st.caption(f"Traces — `{bundle.tracing.label}`")
         if bundle.ceiling_crowds_context:
             # Its own line, not a suffix on the caption above: the ceiling is a number, this is
             # "that number cannot be honoured". SPEECHWRITER_MAX_TOKENS is global and outlives

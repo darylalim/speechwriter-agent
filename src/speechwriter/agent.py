@@ -13,6 +13,8 @@ This is the single place that assembles the Deep Agent:
 * **store**        — a JSON-snapshotted ``InMemoryStore`` for durable voice profiles.
 * **checkpointer** — ``MemorySaver``, required so multi-turn conversation state and any
                      human-in-the-loop interrupts have somewhere to persist per thread.
+* **tracing**      — every turn sent to a self-hosted Phoenix when
+                     ``PHOENIX_COLLECTOR_ENDPOINT`` names one (see :mod:`speechwriter.tracing`).
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from speechwriter.memory import load_store, save_store
 from speechwriter.observability import TruncationWarner
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
+from speechwriter.tracing import Tracing, enable_tracing
 
 
 class _ClientKwargs(TypedDict):
@@ -96,6 +99,12 @@ class SpeechwriterAgent:
     # None is a comparison that can only ever be False, which is a warning that has quietly
     # stopped firing rather than one that has nothing to report.
     context_window: int = DEFAULT_LOCAL_CONTEXT_WINDOW
+    # Appended, after `context_window`, for the reason that field's comment gives. Where this
+    # process is sending traces, or None — carried on the bundle so both front ends can say so
+    # before a turn is spent, the way they already print the ceiling. It reports what is *in
+    # force*, not what this bundle's settings asked for: tracing is process-wide, so after one
+    # build turned it on, every later bundle is traced too and says so.
+    tracing: Tracing | None = None
 
     def persist(self) -> int:
         """Snapshot the learned speaker voice profiles to disk; returns the item count.
@@ -285,6 +294,11 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     # LangChain cannot profile. See `_build_model`.
     model = _build_model(settings)
 
+    # Here rather than in each front end so that every entry point — CLI, web UI, eval harness,
+    # a library consumer — is traced alike, as LangSmith's environment variables used to make
+    # them. Opens no socket (the first batch does), so the offline invariant holds.
+    tracing = enable_tracing(settings)
+
     agent = create_deep_agent(
         model=model,
         # The orchestrator has no direct tools: research is delegated to a subagent so
@@ -312,4 +326,5 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         # the same way — `settings.context_window` is None for every choice that did not name
         # one, and reporting None as the window would silently disable `ceiling_crowds_context`.
         context_window=settings.context_window or DEFAULT_LOCAL_CONTEXT_WINDOW,
+        tracing=tracing,
     )

@@ -1163,8 +1163,8 @@ def test_the_bundle_still_takes_its_fields_in_the_documented_order():
     # Anything added later belongs after those, in the order it was added. `context_window`
     # replaced `profiled_max_tokens` in place, which is the one edit that keeps this order: a
     # field that can only ever be None was swapped for one that answers the same question a
-    # locally served model can actually be asked.
-    assert fields[5:] == ["context_window"], fields
+    # locally served model can actually be asked. `tracing` came after it, appended.
+    assert fields[5:] == ["context_window", "tracing"], fields
 
 
 def test_a_typed_endpoint_is_read_the_way_a_reader_types_it_and_never_raises():
