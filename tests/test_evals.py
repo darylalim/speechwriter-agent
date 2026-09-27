@@ -423,7 +423,10 @@ def test_trajectory_scorer_discriminates_a_bad_run_from_a_good_one():
     assert forbidden.score == 0.0, "the forbidden researcher was not caught"
 
 
-def test_word_count_scoring_uses_the_same_rule_the_browser_shows():
+def test_word_count_scoring_uses_the_same_rule_the_browser_shows(monkeypatch, tmp_path):
+    # Isolated: the scorer calls `load_settings()`, which on the real repo would read the
+    # developer's dotenv into `os.environ` for the rest of the process (see CLAUDE.md).
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     # spoken_words is workspace.py's, so a draft's header block and its [pause] cues are dropped
     # here exactly as they are in the web UI. A second implementation would let the eval and the
     # browser disagree about the same file — which is the drift config.py is single-sourced for.
@@ -544,7 +547,10 @@ def test_assistant_text_is_read_from_content_blocks_not_only_plain_strings():
     assert harness.message_text(Msg(None)) == ""
 
 
-def test_an_empty_output_cannot_bank_passes_on_absence_criteria():
+def test_an_empty_output_cannot_bank_passes_on_absence_criteria(monkeypatch, tmp_path):
+    # Isolated: the scorer calls `load_settings()`, which on the real repo would read the
+    # developer's dotenv into `os.environ` for the rest of the process (see CLAUDE.md).
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     # Every negative criterion in the suite -- "contains no advert", "invents no statistic",
     # "quotes nothing unsourced" -- is trivially satisfied by producing nothing. Before the
     # liveness precondition a run that returned no text scored 7/17 on this very example and
@@ -646,7 +652,10 @@ def test_the_judge_asks_for_structured_output_a_local_server_can_answer():
         )
 
 
-def test_a_banned_phrase_escalates_instead_of_failing_outright():
+def test_a_banned_phrase_escalates_instead_of_failing_outright(monkeypatch, tmp_path):
+    # Isolated: the scorer calls `load_settings()`, which on the real repo would read the
+    # developer's dotenv into `os.environ` for the rest of the process (see CLAUDE.md).
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     # A substring search cannot tell USE from MENTION, and the briefs themselves invite the
     # mention ("Don't tell them to follow your passion"), so a speech that quotes the cliche in
     # order to reject it was being failed for doing what was asked. The live run hit exactly

@@ -671,7 +671,7 @@ def test_readme_routing_table_matches_the_configured_paths(monkeypatch, tmp_path
         )
 
 
-def test_orchestrator_prompt_names_every_skill():
+def test_orchestrator_prompt_names_every_skill(monkeypatch, tmp_path):
     # Not a path consumer, but the same class of drift and the other half of what the
     # advisory hook used to say. Skills are progressive-disclosure: the agent only reads a
     # SKILL.md if it knows the skill exists, and step 4 of the operating rhythm is the only
@@ -685,6 +685,12 @@ def test_orchestrator_prompt_names_every_skill():
     )
     assert skill_dirs, "no skills found — this test would otherwise pass vacuously"
 
+    # Isolated like every other test that loads settings. It used to call `load_settings()` on
+    # the real repo, which read the developer's dotenv into `os.environ` for the rest of the
+    # process — invisible until tracing arrived, when a real PHOENIX_COLLECTOR_ENDPOINT leaked
+    # that way made every later `build_agent()` in the suite trace to the developer's Phoenix.
+    # The skills are read off the real tree above; the prompt does not depend on the home.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     text = prompts.orchestrator_prompt(load_settings())
     for slug in skill_dirs:
         label = slug.replace("-and-", " & ").replace("-", " ")
