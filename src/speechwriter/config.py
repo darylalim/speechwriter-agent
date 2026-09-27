@@ -518,10 +518,10 @@ def load_settings() -> Settings:
     # import) so `import speechwriter` has no side effects; real shell env wins.
     load_dotenv(project_root / ".env")
 
-    # Runtime tracing is Phoenix's now (`speechwriter.tracing`), but langsmith still arrives with
-    # langchain-core, still switches its own tracer on from LANGSMITH_TRACING alone, and is still
-    # the client the eval harness mirrors datasets through — which reads LANGSMITH_API_KEY the
-    # same memoised way. So this stays, for every LANGSMITH_* read rather than for tracing.
+    # Runtime tracing is Phoenix's now (`speechwriter.tracing`), and so are the eval datasets and
+    # experiments, but langsmith still arrives with langchain-core and still switches its own
+    # tracer on from LANGSMITH_TRACING alone. So this stays: it keeps LangSmith's own reads of
+    # the dotenv honest, for as long as a dotenv written for the old setup can still turn it on.
     #
     # langsmith memoises env reads in an `lru_cache` on `get_env_var`, so the *first* read of
     # LANGSMITH_TRACING is the one that sticks for the life of the process. Anything that reads

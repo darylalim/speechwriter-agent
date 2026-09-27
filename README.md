@@ -268,10 +268,27 @@ the eval harness, and `build_agent()` used as a library. Four things worth knowi
   most a few seconds to deliver the last of them.
 - **It replaced LangSmith tracing.** If your `.env` still sets `LANGSMITH_TRACING=true`, every
   turn goes to *both* — the agent warns at startup. Remove that line to trace to Phoenix only.
-  (`LANGSMITH_API_KEY` is still used by the eval harness, which mirrors its datasets to
-  LangSmith; that is separate from tracing.)
+  Nothing here reads `LANGSMITH_API_KEY` any more; the evals moved to Phoenix too (below).
 - **It is plain OpenTelemetry (OTLP over HTTP)**, so any OTLP collector works, not only
   Phoenix — the endpoint gets `/v1/traces` appended, as Phoenix's own client does.
+
+### Evals in Phoenix
+
+`evals/datasets/` holds 55 graded examples across four datasets. The same Phoenix that
+receives traces keeps a mirror of them and records experiments against it — no extra settings:
+
+```bash
+uv run python evals/sync_datasets.py          # is the Phoenix mirror in sync? (read-only)
+uv run python evals/sync_datasets.py --push   # make it so — each push is a new dataset version
+uv run python evals/run_experiment.py --phoenix --dataset trajectory --limit 1   # costs tokens
+```
+
+The files in the repo are the source of truth, and a push never destroys anything: an example
+dropped from the latest version is still in the one before it. An experiment refuses to run
+against a stale mirror, so it always grades against what the file says. Each run in Phoenix
+opens onto the agent's full trace — every model call, tool call and subagent — and each
+criterion is its own annotation, with anything no scorer could measure reported as
+`criteria_coverage` rather than counted as a pass.
 
 ### Measuring spoken length for real
 
@@ -353,6 +370,7 @@ skills/            On-demand rhetoric library (SKILL.md, progressive disclosure)
 ├── speech-structures/      audience-and-occasion/
 tests/             Offline tests — build the graph, toggle research, round-trip memory,
                    render both pages headlessly (all without the model or network)
+evals/             Eval datasets, pure scorers, and the Phoenix mirror + experiment harness
 ```
 
 ## Development

@@ -64,8 +64,24 @@ exclude = ["*.md"]
 # Point the type checker at the project virtualenv so third-party imports resolve.
 python = "./.venv"
 
+[tool.pytest.ini_options]
+# arize-phoenix-client registers a pytest plugin through an entry point, so it loads into this
+# suite whether asked for or not. It is inert here (no test carries its `phoenix` marker), but
+# its tracking defaults to on and it parses PHOENIX_TEST_* on every collection, where a malformed
+# value is a UsageError that fails the whole offline suite. Nothing here wants it.
+addopts = ["-p", "no:phoenix"]
+
 [dependency-groups]
 dev = [
+    # The eval harness's client for the self-hosted Phoenix: evals/sync_datasets.py mirrors the
+    # datasets into it, and evals/run_experiment.py --phoenix records experiments there. Dev
+    # rather than runtime because the packaged agent never talks to Phoenix's REST API — it
+    # only exports spans, over plain OpenTelemetry (see the runtime comment above). This one
+    # does pull in grpcio, which is why it stays out of the runtime dependencies.
+    "arize-phoenix-client>=3.5.0",
+    # evals/sync_datasets.py builds the Phoenix client's transport itself, so the client reads
+    # no environment of its own. Imported directly, so declared — same reasoning as pyyaml below.
+    "httpx>=0.28.1",
     # Same reasoning as pyyaml below: test_load_settings_reopens_the_langsmith_env_cache
     # imports langsmith.utils directly to assert on its `get_env_var` lru_cache, but langsmith
     # only arrives transitively via langchain-core.

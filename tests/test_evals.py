@@ -9,6 +9,7 @@ in favour of tests, since it caught nothing on a push, a PR, or a hand edit.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import json
 import os
@@ -16,6 +17,8 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
@@ -57,7 +60,7 @@ def _sync_module():
     It is importable at all only because it has no module-level side effects -- unlike
     ``validate_datasets.py``, which runs its entire check at import and calls ``sys.exit``, and
     so can only ever be driven through a subprocess. Nothing reached here touches the wire:
-    ``load_settings`` and the LangSmith client both live behind ``main()``, which is why these
+    ``load_settings`` and the Phoenix client both live behind ``main()``, which is why these
     tests stay offline and free like the rest of the suite.
     """
     path = REPO_ROOT / "evals" / "sync_datasets.py"
@@ -100,8 +103,8 @@ def test_sync_roster_matches_the_validator():
     )
     for stem, description in sync.DESCRIPTIONS.items():
         # Not cosmetic: the trajectory description is the only place that tells a grader
-        # expected_trajectory is a reference path, and Client has no update_dataset, so an empty
-        # one can be fixed only by deleting and recreating the dataset.
+        # expected_trajectory is a reference path, and Phoenix reads a description only when it
+        # creates a dataset, so an empty one can be fixed only by deleting and recreating it.
         assert description.strip(), f"{stem}: empty description"
 
 
@@ -115,70 +118,73 @@ def test_sync_reads_every_committed_dataset():
 
 
 def test_sync_diff_detects_every_kind_of_drift():
-    # Mutation-tested against the live account before being written down: an edited output and a
-    # local-only example each turned the checker red, and a clean tree turned it green. This
-    # pins that behaviour with no key and no network.
+    # Measured against a running Phoenix before being written down: an edited output, a
+    # metadata change, a removal and a UI-added example each turned the checker red, one push
+    # repaired all four, and a clean tree turned it green. This pins that with no server.
     sync = _sync_module()
 
     def loc(eid, n):
         return {"inputs": {"q": eid}, "outputs": {"n": n}, "metadata": {"id": eid}}
 
-    def rem(eid, uuid, n):
-        return {"uuid": uuid, "inputs": {"q": eid}, "outputs": {"n": n}, "metadata": {"id": eid}}
+    def rem(eid, n):
+        return {"id": eid, "inputs": {"q": eid}, "outputs": {"n": n}, "metadata": {"id": eid}}
 
+    ui_added = "RGF0YXNldEV4YW1wbGU6NjA="
     plan = sync.diff_examples(
         local=[loc("keep", 1), loc("edited", 2), loc("added", 3)],
         remote=[
-            rem("keep", "u1", 1),
-            rem("edited", "u2", 99),
-            rem("removed", "u3", 4),
-            # No metadata.id: added through the LangSmith UI. A push-only mirror removes it,
-            # which is what makes "the remote equals the repo" a fact rather than a hope.
-            {"uuid": "u4", "inputs": {}, "outputs": {}, "metadata": {}},
+            rem("keep", 1),
+            rem("edited", 99),
+            rem("removed", 4),
+            # Added through the Phoenix UI: the server generated its id, and no metadata.id came
+            # with it. A push-only mirror drops it, which is what makes "the remote equals the
+            # repo" a fact rather than a hope.
+            {"id": ui_added, "inputs": {}, "outputs": {}, "metadata": {}},
         ],
     )
     assert [e["metadata"]["id"] for e in plan["create"]] == ["added"]
     assert [e["id"] for e in plan["update"]] == ["edited"]
     assert [e["fields"] for e in plan["update"]] == [["outputs"]], "changed field not named"
-    assert sorted(e["uuid"] for e in plan["delete"]) == ["u3", "u4"]
+    assert sorted(e["id"] for e in plan["delete"]) == [ui_added, "removed"]
     assert [e["id"] for e in plan["unchanged"]] == ["keep"]
     assert not sync.plan_is_clean(plan)
-    assert sync.plan_is_clean(
-        sync.diff_examples(local=[loc("keep", 1)], remote=[rem("keep", "u1", 1)])
-    )
+    assert sync.plan_is_clean(sync.diff_examples(local=[loc("keep", 1)], remote=[rem("keep", 1)]))
 
 
-def test_sync_strips_the_split_langsmith_injects_but_refuses_a_local_one(tmp_path):
-    # LangSmith writes dataset_split into every example's metadata. Comparing it would report
-    # all 55 as drifted on a key no local file ever wrote -- the false positive as_record strips.
-    # The local side is the opposite: declaring it claims a field the server overwrites, which
-    # is a schema decision to make deliberately rather than absorb, so load_local refuses it.
+def test_a_pushed_dataset_reads_back_clean():
+    # The mirror's load-bearing coupling: the upload must carry metadata.id as the example's own
+    # id, because Phoenix keeps an id it is given and generates one otherwise -- and the diff
+    # keys on the id the server reports. Drop the id from the payload and every push still
+    # "succeeds", while every later check reads as 55 deletions plus 55 creations.
+    #
+    # The server is simulated in the shape a live one returns (measured): the id as sent, or a
+    # generated node id when none was; `input`/`output` in Phoenix's singular spelling; and
+    # fields of its own beside them that the comparison must not see.
     sync = _sync_module()
+    for stem in sync.DESCRIPTIONS:
+        local = sync.load_local(stem)
+        stored = [
+            {
+                "id": sent.get("id") or f"RGF0YXNldEV4YW1wbGU6{n}",
+                "node_id": f"RGF0YXNldEV4YW1wbGU6{n}",
+                "input": json.loads(json.dumps(sent["input"])),
+                "output": json.loads(json.dumps(sent["output"])),
+                "metadata": json.loads(json.dumps(sent["metadata"])),
+                "updated_at": "2026-09-27T00:00:00+00:00",
+                "source": None,
+            }
+            for n, sent in enumerate(sync.upload_payload(local))
+        ]
+        plan = sync.diff_examples(local, [sync.as_record(e) for e in stored])
+        assert sync.plan_is_clean(plan), f"{stem}: " + "\n".join(sync.describe(stem, plan))
 
-    class _Example:
-        id = "u1"
-        inputs = {"q": 1}
-        outputs = {"n": 1}
-        metadata = {"id": "keep", "dataset_split": ["base"]}
 
-    record = sync.as_record(_Example())
-    assert record["metadata"] == {"id": "keep"}, "dataset_split reached the comparison"
-    assert sync.plan_is_clean(
-        sync.diff_examples(
-            local=[{"inputs": {"q": 1}, "outputs": {"n": 1}, "metadata": {"id": "keep"}}],
-            remote=[record],
-        )
-    ), "a server-injected split read as drift"
-
-    planted = tmp_path / "planted.json"
-    planted.write_text(
-        json.dumps(
-            [{"inputs": {}, "outputs": {}, "metadata": {"id": "x", "dataset_split": ["a"]}}]
-        ),
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="dataset_split"):
-        sync.load_local("planted", path=planted)
+def test_sync_refuses_a_dataset_it_could_not_key(tmp_path):
+    # load_local is the mirror's only reader. A missing metadata.id could not be keyed at all.
+    # A repeated one would fail a push loudly (Phoenix rejects the upload) but pass the *check*
+    # silently: the diff keys local examples by id, so one of the pair drops out of the plan and
+    # "IN SYNC" is printed over a file holding an example the server never saw. Both fail here.
+    sync = _sync_module()
 
     unkeyed = tmp_path / "unkeyed.json"
     unkeyed.write_text(
@@ -186,6 +192,92 @@ def test_sync_strips_the_split_langsmith_injects_but_refuses_a_local_one(tmp_pat
     )
     with pytest.raises(ValueError, match="metadata.id"):
         sync.load_local("unkeyed", path=unkeyed)
+
+    twice = tmp_path / "twice.json"
+    twice.write_text(
+        json.dumps([{"inputs": {}, "outputs": {}, "metadata": {"id": "x"}}] * 2), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="used twice"):
+        sync.load_local("twice", path=twice)
+
+
+def test_the_phoenix_client_is_configured_from_settings_alone(monkeypatch, tmp_path):
+    # Left to itself, Phoenix's client reads two sources this project never configured: any
+    # PHOENIX_CLIENT_HEADERS in the shell, merged into every request (a Phoenix Cloud key
+    # exported for another project would reach this server), and a dotenv of its own found by
+    # walking *up* from the working directory -- the upward walk load_settings() refuses.
+    # `connect` hands it a transport so it reads neither: the only credential that leaves is
+    # the PHOENIX_API_KEY Settings holds, sent to the server Settings names.
+    #
+    # And it is the same Phoenix tracing names: the collector variable, with the OTLP path a
+    # reader may have written into it taken back off, since the REST API is at the root.
+    #
+    # Asserted on the wire, against a loopback server, rather than on the client's private
+    # state: what matters is what a request carries, and that needs no private symbol.
+    from phoenix.client.constants import PHOENIX_ENV_FILE_NAME
+    from phoenix.client.utils.config import clear_env_file_cache
+
+    sync = _sync_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("PHOENIX_DISCOVER_CONFIG", raising=False)
+    monkeypatch.setenv("PHOENIX_CLIENT_HEADERS", "x-from-shell=cloud-key")
+    monkeypatch.setenv("PHOENIX_API_KEY", "px-configured")
+    (tmp_path / PHOENIX_ENV_FILE_NAME).write_text(
+        "PHOENIX_CLIENT_HEADERS=x-planted=1\n", encoding="utf-8"
+    )
+    (tmp_path / "cwd").mkdir()
+    monkeypatch.chdir(tmp_path / "cwd")
+    clear_env_file_cache()
+
+    with _phoenix_stub() as (url, requests):
+        monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", f"{url}/v1/traces")
+        client = sync.connect(config.load_settings())
+        assert client is not None
+        assert sync.remote_names(client) == set()
+
+    assert requests, "the client never reached the server, so nothing here was checked"
+    # Not `startswith("/v1/")`: the leaked form is /v1/traces/v1/datasets, which passes that --
+    # as the first mutation run of this test showed.
+    assert any(path.startswith("/v1/datasets") for path, _ in requests), [p for p, _ in requests]
+    for path, headers in requests:
+        assert "/v1/traces" not in path, f"{path}: the OTLP path leaked into the API base URL"
+        assert "x-from-shell" not in headers, "a header from the shell reached Phoenix"
+        assert "x-planted" not in headers, "a file above the repo added a header"
+        assert headers.get("authorization") == "Bearer px-configured", headers
+    # Nothing process-wide was switched to get there: a later client, or test, sees the
+    # environment exactly as it was.
+    assert "PHOENIX_DISCOVER_CONFIG" not in os.environ
+
+    monkeypatch.delenv("PHOENIX_COLLECTOR_ENDPOINT")
+    assert sync.connect(config.load_settings()) is None, "no endpoint must mean no client"
+
+
+@contextlib.contextmanager
+def _phoenix_stub():
+    """A loopback server answering every GET as an empty Phoenix list, recording each request."""
+    requests: list[tuple[str, dict[str, str]]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
+            requests.append((self.path, {k.lower(): v for k, v in self.headers.items()}))
+            body = json.dumps({"data": [], "next_cursor": None}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format, *args):  # noqa: A002 - the base class's own parameter name
+            """Silence the default stderr access log."""
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}", requests
+    finally:
+        server.shutdown()
+        server.server_close()
 
 
 def _harness_module():
@@ -205,8 +297,8 @@ def test_the_eval_judge_does_not_follow_the_model_under_test(monkeypatch, tmp_pa
     # so without the pinned pair, comparing two models grades each one with *itself*, changing
     # the instrument and the subject together and making the comparison meaningless.
     #
-    # This exists because the bug shipped: the `judge` parameter was threaded into
-    # `run_langsmith` and not into the plain live path, and nothing noticed.
+    # This exists because the bug shipped: the `judge` parameter was threaded into the
+    # experiment-recording path and not into the plain live path, and nothing noticed.
     #
     # The whole *pair* is pinned, and asserted as a pair. With every model served over an
     # endpoint, two models under comparison are routinely two servers, so a judge that carried
@@ -250,9 +342,9 @@ def test_the_eval_judge_does_not_follow_the_model_under_test(monkeypatch, tmp_pa
 def test_every_live_grading_path_pins_the_judge_when_the_model_is_overridden():
     # The mechanical half of the bug above: it was not that `grade()` ignored its argument, it
     # was that one of the two call sites never passed one. Read the source rather than the
-    # behaviour, because the second path (`--langsmith`) needs a network to exercise.
+    # behaviour, because the second path (`--phoenix`) needs a running server to exercise.
     source = (REPO_ROOT / "evals" / "run_experiment.py").read_text(encoding="utf-8")
-    calls = re.findall(r"\b(run_one|run_langsmith)\((.*?)\)", source)
+    calls = re.findall(r"\b(run_one|run_phoenix)\((.*?)\)", source)
     invocations = [(name, args) for name, args in calls if "args." in args]
 
     assert invocations, "neither live path is called — this test is watching the wrong names"
@@ -978,3 +1070,200 @@ def test_the_pinned_judge_keeps_the_credential_its_endpoint_needs(monkeypatch, t
         "re-applying a captured pair no longer strips the credential, so this test is passing "
         "for a reason other than the one it was written for -- re-read its premise"
     )
+
+
+def test_a_recorded_run_grades_like_a_local_one():
+    # A --phoenix run's output goes to the server as JSON and comes back to the evaluator from
+    # there, so whatever the round trip loses, the experiment grades without. The LangSmith path
+    # this replaced lost the artifacts: it sent the text and the calls only, so every recorded
+    # rag run was judged on the reply alone while the plain live path read the saved note --
+    # the note the researcher's own prompt says holds the detail. Two paths, one run, two grades.
+    harness = _harness_module()
+    evaluators = _evaluators_module()
+    note = "/workspace/research/water-rates.md"
+    run = harness.RunRecord(
+        text="Brief saved; five facts, three angles.",
+        calls=(
+            harness.ToolCall("task", {"subagent_type": "researcher", "description": "rates"}),
+            harness.ToolCall("write_file", {"file_path": note}),
+        ),
+        artifacts=((note, "1. Rates rose 9% (https://example.gov/budget)"),),
+    )
+
+    stored = json.loads(json.dumps(harness.task_output(run)))  # what the server hands back
+    back = harness.as_run_record(stored)
+
+    assert back == run, "the round trip through Phoenix changed the run it records"
+    assert "SAVED ARTIFACT" in evaluators.graded_text("rag", back), (
+        "the judge would read the reply without the research note it points at"
+    )
+    assert harness.as_run_record(None) == harness.RunRecord(text=""), "a failed run must be empty"
+
+
+def test_unscored_criteria_reach_phoenix_as_coverage_never_as_scores():
+    # Phoenix averages every annotation it is given. A criterion nothing could measure sent as
+    # 1.0 inflates the pass rate, sent as 0.0 charges the agent for the harness's blind spots,
+    # so it is not sent at all -- it shows up only in criteria_coverage, beside the ones that were.
+    harness = _harness_module()
+    scores = [
+        harness.Score("saved_to", 1.0, "wrote it"),
+        harness.Score("word_count", 0.0, "too short"),
+        harness.Score("must_mention", None, "5 criteria for a judge"),
+    ]
+    rows = harness.feedback(scores)
+
+    assert [r["name"] for r in rows] == ["saved_to", "word_count", "criteria_coverage"]
+    assert all(r["score"] is not None for r in rows), "an unscored criterion reached Phoenix"
+    assert rows[-1]["score"] == pytest.approx(2 / 3)
+
+
+def test_a_limited_experiment_runs_the_examples_the_file_lists_first():
+    # `--limit 1` must pick the same example with --phoenix as without it, or a quick recorded
+    # check and a quick local one would silently measure different briefs. The server returns
+    # examples in its own order, which a push can reshuffle; the file order is what a reader sees.
+    harness = _harness_module()
+    remote = [{"id": "c"}, {"id": "ui-added"}, {"id": "a"}, {"id": "b"}]
+
+    ordered = harness.in_local_order(remote, ["a", "b", "c"])
+
+    assert [e["id"] for e in ordered] == ["a", "b", "c", "ui-added"]
+
+
+def test_no_committed_example_sends_two_scores_under_one_name(monkeypatch, tmp_path):
+    # Phoenix keeps one annotation per name per run, so a repeated name is a silent overwrite:
+    # every trajectory example carries 2-4 order_constraints, and while each was scored as
+    # plain "order" a VIOLATED constraint followed by an ok one was recorded as a pass -- the
+    # plain path printed the failure, the experiment filed the success. Run over every committed
+    # example so a new scorer that repeats a name fails here rather than in an experiment.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    harness = _harness_module()
+    sync = _sync_module()
+    for stem in sync.DESCRIPTIONS:
+        for example in sync.load_local(stem):
+            harness.feedback(harness.score_example(stem, harness.CANNED, example))
+
+    # And the guard itself: a scored repeat is refused, while an unscored row sharing its name
+    # with the judge's verdict on it -- the max_questions escalation -- is fine, since only
+    # scored rows are sent.
+    with pytest.raises(ValueError, match="share a name"):
+        harness.feedback(
+            [harness.Score("order", 0.0, "VIOLATED"), harness.Score("order", 1.0, "ok")]
+        )
+    rows = harness.feedback(
+        [harness.Score("max_questions", None, "escalated"), harness.Score("max_questions", 1.0, "")]
+    )
+    assert [r["name"] for r in rows] == ["max_questions", "criteria_coverage"]
+
+
+def test_a_respelled_number_is_not_drift_because_phoenix_does_not_see_one():
+    # Phoenix decides "unchanged" by hashing canonical JSON, which writes 12.0 as 12. An edit
+    # from one to the other therefore writes no version -- and a checker that still called it
+    # drift left the mirror permanently "out of sync", with a push that could never fix it and
+    # every --phoenix experiment refused on it (measured against a running server).
+    sync = _sync_module()
+
+    def ex(value):
+        return {"id": "a", "inputs": {}, "outputs": {"n": value}, "metadata": {"id": "a"}}
+
+    assert sync.plan_is_clean(sync.diff_examples([ex(12.0)], [ex(12)]))
+    assert sync.plan_is_clean(sync.diff_examples([ex([-0.0])], [ex([0])]))
+    # ...without going blind to a real change.
+    assert not sync.plan_is_clean(sync.diff_examples([ex(12.5)], [ex(12)]))
+    assert not sync.plan_is_clean(sync.diff_examples([ex(True)], [ex(1)]))
+
+
+def test_a_push_the_server_ignores_is_reported_not_claimed(capsys):
+    # The backstop behind canon(): whatever difference the checker sees and Phoenix does not,
+    # the server answers the upload with the version it already had. Saying "PUSHED" and
+    # exiting 0 then sends the reader round a loop -- the next check reports the same drift.
+    sync = _sync_module()
+
+    class _Dataset:
+        def __init__(self, stem, examples, version_id):
+            self.examples = examples
+            self.version_id = version_id
+            self.description = sync.DESCRIPTIONS[stem]
+
+    class _Datasets:
+        def __init__(self, writes_version):
+            self.writes_version = writes_version
+
+        def list(self):
+            return [{"name": sync.remote_name(stem)} for stem in sync.DESCRIPTIONS]
+
+        def get_dataset(self, *, dataset):
+            stem = dataset.removeprefix(sync.NAME_PREFIX)
+            stored = sync.upload_payload(sync.load_local(stem))
+            if stem == "rag":  # the one difference only the checker can see
+                stored[0] = {**stored[0], "output": {**stored[0]["output"], "extra": 1}}
+            return _Dataset(stem, stored, "v1")
+
+        def create_dataset(self, *, name, examples, dataset_description=None):
+            stem = name.removeprefix(sync.NAME_PREFIX)
+            return _Dataset(stem, examples, "v2" if self.writes_version else "v1")
+
+    class _Client:
+        def __init__(self, writes_version):
+            self.datasets = _Datasets(writes_version)
+
+    assert sync.sync(_Client(writes_version=False), push=True) == sync.EXIT_DRIFT
+    assert "cannot repair: rag" in capsys.readouterr().out
+    assert sync.sync(_Client(writes_version=True), push=True) == sync.EXIT_OK
+
+
+def test_a_failed_turn_puts_speechwriter_home_back(monkeypatch, tmp_path):
+    # Under --phoenix a turn that raises does not end the process: Phoenix records the error and
+    # runs the next example. Restored only on success, SPEECHWRITER_HOME was left naming the
+    # deleted temp home -- inherited by the next run, and by every load_settings() in grading,
+    # each of which recreates the directories it names.
+    harness = _harness_module()
+    original = str(tmp_path / "home")
+    monkeypatch.setenv("SPEECHWRITER_HOME", original)
+
+    def fail():
+        raise RuntimeError("model server went away")
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", fail)
+    with pytest.raises(RuntimeError, match="went away"):
+        harness.invoke_agent({"messages": [{"role": "user", "content": "hi"}]}, "t")
+
+    assert os.environ["SPEECHWRITER_HOME"] == original
+
+
+def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
+    # `--keep` is how a surprising result gets inspected, and a recorded experiment is exactly
+    # where one is looked at after the fact. It was set only after --phoenix had dispatched, so
+    # that path deleted every run's home while the flag said otherwise.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # Set, not deleted: monkeypatch records nothing for deleting an absent variable, so the "1"
+    # main() writes would outlive this test. Setting records the absence, and teardown removes it.
+    monkeypatch.setenv("SPEECHWRITER_EVAL_KEEP", "0")
+    # Priming loads the real project's dotenv into os.environ -- never from a test.
+    monkeypatch.setattr(harness, "prime_environment", lambda: None)
+    seen: list[str | None] = []
+    monkeypatch.setattr(
+        harness,
+        "run_phoenix",
+        lambda *a, **k: seen.append(os.environ.get("SPEECHWRITER_EVAL_KEEP")) or 0,
+    )
+
+    assert harness.main(["--phoenix", "--keep"]) == 0
+    assert seen == ["1"]
+
+
+def test_an_experiment_name_never_carries_the_endpoints_password(monkeypatch, tmp_path):
+    # The name is stored in Phoenix and printed in every link to the experiment, and it used to
+    # be built from the URL's netloc -- which is `user:password@host:port` when the endpoint
+    # carries credentials. Host and port are all that tell two servers apart.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "qwen")
+
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://alice:s3cr3t@GPU-box.lan:8443/v1")
+    assert harness.model_slug() == "qwen-gpu-box-lan-8443"
+    # Without credentials the name is what it always was, so existing experiments still group.
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    assert harness.model_slug() == "qwen-127-0-0-1-8080"
+    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
+    assert harness.model_slug() == "qwen-gateway-example-com"

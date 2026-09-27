@@ -281,6 +281,29 @@ def test_the_collector_url_follows_phoenix_convention_and_never_raises():
         assert tracing.collector_url(raw) == want, raw
 
 
+def test_the_server_url_is_the_collector_url_run_backwards():
+    # The eval harness finds Phoenix's REST API through the same variable tracing uses, so a
+    # reader who wrote the OTLP path into it must still reach the API at the server's root --
+    # a client handed the collector URL asks for /v1/traces/v1/datasets and gets a 404.
+    expected = {
+        "http://localhost:6006": "http://localhost:6006",
+        "http://localhost:6006/": "http://localhost:6006",
+        "http://localhost:6006/v1/traces": "http://localhost:6006",
+        "http://localhost:6006/v1/traces/": "http://localhost:6006",
+        # A reverse-proxy prefix is kept, exactly as collector_url keeps it.
+        "https://tools.example/phoenix/v1/traces": "https://tools.example/phoenix",
+        "localhost:6006": None,
+        "file:///tmp/spans": None,
+        "http://[::1": None,
+        "": None,
+    }
+    for raw, want in expected.items():
+        assert tracing.server_url(raw) == want, raw
+        if want is not None:
+            # And the two stay inverse: from either spelling, the collector is the same place.
+            assert tracing.collector_url(want) == tracing.collector_url(raw), raw
+
+
 def test_a_dead_collector_is_reported_once_per_outage(caplog):
     # A batch leaves every five seconds during a turn, and a failed one makes the OTLP exporter
     # log each retry — measured at ~4 lines a batch, printed into the REPL's transcript. The

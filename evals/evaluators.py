@@ -2,14 +2,15 @@
 
 Split deliberately in two. Everything here is **pure**: it takes a :class:`RunRecord` -- what
 the agent did, already extracted from the message stream -- plus an example's ``outputs`` and
-``metadata``, and returns :class:`Score` rows. No model, no network, no LangSmith. That is what
+``metadata``, and returns :class:`Score` rows. No model, no network, no Phoenix. That is what
 lets the scorers be tested offline against synthetic runs, and it is the same split that keeps
 the rest of this repo's suite free.
 
 Three rules the datasets state about themselves, encoded here rather than re-derived:
 
-**``expected_trajectory`` is a reference path, not an assertion.** The dataset description on
-LangSmith says so outright: "exact sequence matching fails legitimately-correct runs." It is
+**``expected_trajectory`` is a reference path, not an assertion.** The dataset's own description
+(``sync_datasets.DESCRIPTIONS``) says so outright: "exact sequence matching fails
+legitimately-correct runs." It is
 reported as a similarity signal and never scored. The pass/fail axes are ``required_tools``,
 ``required_subagents``, the write-path fields and ``order_constraints``.
 
@@ -279,8 +280,13 @@ def score_trajectory(run: RunRecord, out: dict[str, Any], meta: dict[str, Any]) 
         hit = any(any(r.startswith(p) for r in run.reads) for p in any_of)
         scores.append(Score("required_skill_read_any_of", float(hit), f"any of {any_of}: {hit}"))
 
-    for constraint in out.get("order_constraints") or []:
-        scores.append(check_order_constraint(run, constraint))
+    # Indexed like the judge's `key[i]` rows, and for a reason beyond tidiness: a recorded
+    # experiment keeps one annotation per name per run, so two constraints both called "order"
+    # collapse into whichever was sent last -- a VIOLATED one first and an ok one second is a
+    # pass in Phoenix and a failure here.
+    for i, constraint in enumerate(out.get("order_constraints") or []):
+        verdict = check_order_constraint(run, constraint)
+        scores.append(Score(f"order[{i}]", verdict.score, verdict.comment))
 
     # Reported, never scored -- the dataset description is explicit that exact matching fails
     # legitimately-correct runs. Kept as a signal a human can eyeball in the experiment table.

@@ -2,8 +2,9 @@
 
 Two modes, and the default is the cheap one. ``--dry-run`` scores a canned run with no model
 call at all, which is how you check the wiring before spending anything; the live mode invokes
-the real agent once per example. ``--langsmith`` additionally records the result as an
-experiment against the mirrored dataset, so it shows up next to the examples it graded.
+the real agent once per example. ``--phoenix`` additionally records the result as an
+experiment against the mirrored dataset, so it shows up next to the examples it graded -- with
+each run's full agent trace nested under it, since the harness traces to the same Phoenix.
 
 **Each example runs in its own ``SPEECHWRITER_HOME``.** That is not tidiness. The agent writes
 real files, and half the criteria are about *where* -- ``must_save_to``, ``required_write_paths``,
@@ -39,6 +40,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     # Annotation-only, so the heavy `speechwriter` import this module otherwise defers into
     # function bodies stays deferred; `from __future__ import annotations` makes it sufficient.
+    from phoenix.client.resources.experiments.types import ExperimentEvaluation
+
     from speechwriter.config import ModelChoice, Settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -56,7 +59,6 @@ from evaluators import (  # noqa: E402  -- needs the sys.path line above
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EV = Path(__file__).resolve().parent / "datasets"
 DATASETS = ("final_response", "trajectory", "single_step", "rag")
-NAME_PREFIX = "Speechwriter: "
 
 
 def to_messages(inputs: dict[str, Any]) -> list[dict[str, str]]:
@@ -196,7 +198,7 @@ def apply_model(requested: str) -> None:
     if choice is not None:
         os.environ["SPEECHWRITER_MODEL"] = choice.model
         # Set to empty, never popped. Every later `load_settings()` — in `prime_environment`,
-        # in `run_langsmith`, and in the `build_agent()` of every graded example — reloads
+        # in `run_phoenix`, and in the `build_agent()` of every graded example — reloads
         # the dotenv, and `load_dotenv` only skips keys already present in `os.environ`, so
         # a popped variable comes straight back. An empty one stays: it is *present*, so the
         # dotenv will not override it.
@@ -229,7 +231,14 @@ def model_slug() -> str:
     from speechwriter.config import load_settings
 
     settings = load_settings()
-    host = urlsplit(settings.base_url).netloc
+    # Host and port, never `netloc`: that carries any `user:password@` in the endpoint, and the
+    # name is stored in Phoenix and printed in every link to the experiment.
+    parts = urlsplit(settings.base_url)
+    try:
+        port = parts.port
+    except ValueError:  # an out-of-range port names no server; the host still does
+        port = None
+    host = f"{parts.hostname or ''}-{port or ''}"
     raw = f"{settings.model}-{host}".casefold()
     slug = "".join(char if char.isalnum() else "-" for char in raw)
     return "-".join(part for part in slug.split("-") if part)
@@ -276,18 +285,23 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
         # before a single model call. The tree is four SKILL.md files; a copy costs nothing.
         shutil.copytree(REPO_ROOT / "skills", Path(home) / "skills")
         os.environ["SPEECHWRITER_HOME"] = home
-        bundle = build_agent()
-        state = bundle.agent.invoke(
-            {"messages": to_messages(inputs)}, config=bundle.turn_config(thread_id)
-        )
-        record = extract(state, Path(home) / "workspace")
-        if keep:
-            print(f"   [kept] artifacts under {home}")
-        if previous_home is None:
-            os.environ.pop("SPEECHWRITER_HOME", None)
-        else:
-            os.environ["SPEECHWRITER_HOME"] = previous_home
-        return record
+        # Restored in a `finally`, not on the way out: under --phoenix a turn that raises does
+        # not end the process -- Phoenix records the error and moves on to the next example,
+        # which would otherwise inherit (and later restore) a home that has been deleted.
+        try:
+            bundle = build_agent()
+            state = bundle.agent.invoke(
+                {"messages": to_messages(inputs)}, config=bundle.turn_config(thread_id)
+            )
+            record = extract(state, Path(home) / "workspace")
+            if keep:
+                print(f"   [kept] artifacts under {home}")
+            return record
+        finally:
+            if previous_home is None:
+                os.environ.pop("SPEECHWRITER_HOME", None)
+            else:
+                os.environ["SPEECHWRITER_HOME"] = previous_home
 
 
 def grade(
@@ -325,66 +339,184 @@ def run_one(
     return run, grade(dataset, run, example, no_judge, judge)
 
 
-def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | None = None) -> int:
-    """Record the run as a LangSmith experiment against the mirrored dataset.
+def task_output(run: RunRecord) -> dict[str, Any]:
+    """A :class:`RunRecord` as the JSON an experiment run stores. Inverse: :func:`as_run_record`.
 
-    Capped by ``--limit`` on purpose: ``evaluate`` would otherwise sweep every example in the
-    dataset, and each one is a full agent turn.
+    Artifacts travel too. The LangSmith path this replaced sent only the text and the calls, so
+    every experiment graded ``rag`` on the reply alone -- the researcher's own prompt says the
+    detail lives in the saved note, and the note never reached the scorer. The plain live path
+    had it all along; ``test_a_recorded_run_grades_like_a_local_one`` keeps the two equal.
     """
-    from langsmith import Client, evaluate
-    from langsmith.evaluation import EvaluationResult, EvaluationResults
-    from langsmith.schemas import Example, Run
+    return {
+        "text": run.text,
+        "calls": [{"name": c.name, "args": c.args} for c in run.calls],
+        "artifacts": [{"path": path, "content": content} for path, content in run.artifacts],
+    }
+
+
+def as_run_record(output: Any) -> RunRecord:
+    """Rebuild the :class:`RunRecord` a scorer needs from a stored run's output.
+
+    The output has been through the server as JSON, so tuples come back as lists and nothing
+    is guaranteed to be the shape it was sent in; anything unreadable reads as absent.
+    """
+    out = output if isinstance(output, dict) else {}
+    return RunRecord(
+        text=str(out.get("text") or ""),
+        calls=tuple(
+            ToolCall(str(c.get("name", "")), dict(c.get("args") or {}))
+            for c in out.get("calls") or []
+            if isinstance(c, dict)
+        ),
+        artifacts=tuple(
+            (str(a.get("path", "")), str(a.get("content", "")))
+            for a in out.get("artifacts") or []
+            if isinstance(a, dict)
+        ),
+    )
+
+
+def feedback(scores: list[Score]) -> list[ExperimentEvaluation]:
+    """Scores as Phoenix evaluation results: one named annotation per criterion.
+
+    Unscored rows are left out of what Phoenix averages and reported as their own metric
+    instead -- folding them in as 1.0 would inflate the pass rate with criteria nothing
+    actually measured, and folding them in as 0.0 would charge the agent for the harness's
+    blind spots.
+
+    **Names must be unique, and a repeat is refused rather than sent.** Phoenix keeps one
+    annotation per name per run, so a second row under a name silently replaces the first --
+    which is how two ``order`` constraints once turned a violation into a recorded pass. An
+    unscored row may share its name with the judge's verdict on it (the ``max_questions``
+    escalation does exactly that); it is dropped above, so only *scored* names must differ.
+    """
+    rows: list[ExperimentEvaluation] = [
+        {"name": s.key, "score": s.score, "explanation": s.comment}
+        for s in scores
+        if s.score is not None
+    ]
+    names = [row.get("name") for row in rows]
+    repeated = sorted({str(n) for n in names if names.count(n) > 1})
+    if repeated:
+        raise ValueError(f"scores share a name, so Phoenix would keep only one each: {repeated}")
+    rows.append({"name": "criteria_coverage", "score": coverage(scores)})
+    return rows
+
+
+def in_local_order(examples: list[Any], local_ids: list[str]) -> list[Any]:
+    """Remote examples in the order the dataset file lists them.
+
+    So ``--limit 1`` runs the same example with ``--phoenix`` as without it. The server's own
+    order is its insertion order, which a push can reshuffle; the file is what a reader reads.
+    """
+    rank = {eid: i for i, eid in enumerate(local_ids)}
+    return sorted(examples, key=lambda e: rank.get(str(e["id"]), len(rank)))
+
+
+def run_phoenix(dataset: str, limit: int, no_judge: bool, judge: Settings | None = None) -> int:
+    """Record the run as a Phoenix experiment against the mirrored dataset.
+
+    Capped by ``--limit`` on purpose: an experiment otherwise sweeps every example in the
+    dataset, and each one is a full agent turn.
+
+    **The mirror must be clean first.** An experiment is graded by the criteria on the server,
+    and a local edit not yet pushed would have it score one version of an example while the
+    file a reader opens says another -- a measurement bug of the kind this harness has hit five
+    times, each making the agent look worse than it was. Refused, with the drift named.
+
+    **Traces nest for free.** Phoenix runs each task inside a span of its own and stamps every
+    span created there with the experiment's project, including the ones
+    :mod:`speechwriter.tracing` makes for the agent's model and tool calls -- so each
+    experiment run opens onto the whole trajectory that produced it, subagents included. The
+    judge's calls land under the evaluation the same way.
+    """
+    from phoenix.client.resources.datasets import Dataset
+    from sync_datasets import (
+        as_record,
+        connect,
+        describe,
+        diff_examples,
+        load_local,
+        plan_is_clean,
+        remote_name,
+        remote_names,
+    )
 
     from speechwriter.config import load_settings
 
-    load_settings()
-    client = Client()
-    name = f"{NAME_PREFIX}{dataset}"
-    examples = list(client.list_examples(dataset_name=name))[:limit]
-    if not examples:
-        print(f"no examples found in {name!r} -- is the mirror pushed?", file=sys.stderr)
+    settings = load_settings()
+    client = connect(settings)
+    if client is None:
+        print(
+            "--phoenix needs PHOENIX_COLLECTOR_ENDPOINT set to the Phoenix to record in, e.g. "
+            "http://localhost:6006.",
+            file=sys.stderr,
+        )
         return 2
 
-    def target(inputs: dict) -> dict:
-        run = invoke_agent(inputs, thread_id=str(inputs)[:64])
-        return {"text": run.text, "calls": [{"name": c.name, "args": c.args} for c in run.calls]}
-
-    def scorer(run: Run, example: Example | None) -> EvaluationResults:
-        outputs = run.outputs or {}
-        record = RunRecord(
-            text=str(outputs.get("text", "")),
-            calls=tuple(
-                ToolCall(str(c.get("name", "")), dict(c.get("args") or {}))
-                for c in outputs.get("calls") or []
-            ),
+    name = remote_name(dataset)
+    if name not in remote_names(client):
+        print(f"{name!r} is not on Phoenix -- run evals/sync_datasets.py --push", file=sys.stderr)
+        return 2
+    remote = client.datasets.get_dataset(dataset=name)
+    local = load_local(dataset)
+    plan = diff_examples(local, [as_record(e) for e in remote.examples])
+    if not plan_is_clean(plan):
+        print("\n".join(describe(dataset, plan)), file=sys.stderr)
+        print(
+            f"{name!r} on Phoenix does not match evals/datasets/{dataset}.json -- run "
+            f"evals/sync_datasets.py --push first, so the experiment grades what the file says.",
+            file=sys.stderr,
         )
-        payload: dict[str, Any] = {
-            "outputs": (example.outputs if example else None) or {},
-            "metadata": (example.metadata if example else None) or {},
-        }
-        scores = grade(dataset, record, payload, no_judge, judge)
-        # Unscored rows are dropped from the feedback LangSmith averages and reported as their
-        # own metric instead -- folding them in as 1.0 would inflate the pass rate with criteria
-        # nothing actually measured.
-        rows = [
-            EvaluationResult(key=s.key, score=s.score, comment=s.comment)
-            for s in scores
-            if s.machine_scored
-        ]
-        rows.append(EvaluationResult(key="criteria_coverage", score=coverage(scores)))
-        return {"results": rows}
+        return 2
 
-    results = evaluate(
-        target,
-        data=examples,
-        evaluators=[scorer],
+    chosen = in_local_order(remote.examples, [e["metadata"]["id"] for e in local])[:limit]
+    # The public round trip is how a Dataset is narrowed: run_experiment takes a whole Dataset
+    # and sweeps it, and its own sampling (`dry_run=N`) is random and records nothing.
+    subset = Dataset.from_dict({**remote.to_dict(), "examples": chosen})
+
+    def run_agent(example: Any) -> dict[str, Any]:
+        # Named for what it does, because Phoenix names each run's root span after it
+        # ("Task: run_agent"), and the agent's whole trace hangs off that span.
+        # The example id, not a slice of the input, is the thread: it names the conversation
+        # in the trace's session exactly as the plain live path does.
+        return task_output(invoke_agent(dict(example["input"]), thread_id=str(example["id"])))
+
+    def speechwriter_criteria(
+        output: Any, expected: Any, metadata: Any
+    ) -> list[ExperimentEvaluation]:
+        if output is None:
+            # The task raised, and Phoenix has recorded that as the run's error. Grading the
+            # absence would bank passes on every "must not" criterion for a run that never ran.
+            return []
+        example = {"outputs": dict(expected or {}), "metadata": dict(metadata or {})}
+        scores = grade(dataset, as_run_record(output), example, no_judge, judge)
+        report(dataset, example, scores)
+        return feedback(scores)
+
+    graded_by = judge if judge is not None else settings
+    ran = client.experiments.run_experiment(
+        dataset=subset,
+        task=run_agent,
+        evaluators=[speechwriter_criteria],
         # The model is part of the experiment's identity, not incidental to it: comparing two
-        # models is the reason the model is selectable at all, and a prefix that named only the
-        # dataset would file both runs under one indistinguishable name in the mirror.
-        experiment_prefix=f"speechwriter-{dataset}-{model_slug()}",
-        max_concurrency=2,
+        # models is the reason the model is selectable at all, and a name that said only the
+        # dataset would file both runs under one indistinguishable name.
+        experiment_name=f"speechwriter-{dataset}-{model_slug()}",
+        experiment_metadata={
+            "model": settings.model,
+            "judge": None if no_judge else graded_by.model,
+            "examples": [str(e["id"]) for e in chosen],
+        },
+        # Sequential, and never retried. One local server serves every turn, so concurrency
+        # only makes them queue; and a failed turn re-run three times (the default) is three
+        # full agent runs spent reproducing one error.
+        retries=0,
     )
-    print(f"\nrecorded experiment: {getattr(results, 'experiment_name', '(see LangSmith)')}")
+    url = client.experiments.get_experiment_url(
+        dataset_id=ran["dataset_id"], experiment_id=ran["experiment_id"]
+    )
+    print(f"\nrecorded experiment: {url}")
     return 0
 
 
@@ -422,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--limit", type=int, default=1, help="examples to run (default 1)")
     p.add_argument("--dry-run", action="store_true", help="score a canned run; no model call")
     p.add_argument("--no-judge", action="store_true", help="deterministic scorers only")
-    p.add_argument("--langsmith", action="store_true", help="record as a LangSmith experiment")
+    p.add_argument("--phoenix", action="store_true", help="record as a Phoenix experiment")
     p.add_argument("--keep", action="store_true", help="leave each run's temp home on disk")
     p.add_argument(
         "--model",
@@ -430,12 +562,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = p.parse_args(argv)
 
-    if args.dry_run and (args.langsmith or args.model):
+    if args.dry_run and (args.phoenix or args.model):
         # `--dry-run` scores a canned record and never calls a model, so both of these would be
         # silently ignored — and `--model` would still rewrite SPEECHWRITER_MODEL for the
         # process on its way to doing nothing. Rejected rather than dropped, so the flag that
         # was going to have no effect says so.
-        other = "--langsmith" if args.langsmith else "--model"
+        other = "--phoenix" if args.phoenix else "--model"
         print(f"{other} and --dry-run are contradictory", file=sys.stderr)
         return 2
 
@@ -455,11 +587,13 @@ def main(argv: list[str] | None = None) -> int:
         judge = configured_settings()
         apply_model(args.model)
 
-    if args.langsmith:
-        return run_langsmith(args.dataset, args.limit, args.no_judge, judge)
-
+    # Before the dispatch, so both live paths honour it: a recorded experiment is exactly where a
+    # surprising result gets inspected after the fact.
     if args.keep:
         os.environ["SPEECHWRITER_EVAL_KEEP"] = "1"
+
+    if args.phoenix:
+        return run_phoenix(args.dataset, args.limit, args.no_judge, judge)
 
     examples = json.loads((EV / f"{args.dataset}.json").read_text(encoding="utf-8"))[: args.limit]
     print(

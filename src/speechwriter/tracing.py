@@ -8,8 +8,9 @@ it into run metadata, and OpenInference reads it from there. So a CLI thread rot
 interrupt, or a browser conversation reset, starts a new session exactly when the agent does.
 
 This replaced LangSmith tracing, which was driven entirely by ``LANGSMITH_*`` environment
-variables and had no code here at all. LangSmith is still what the eval harness mirrors
-datasets to (``evals/sync_datasets.py``); only runtime tracing moved.
+variables and had no code here at all. The eval harness followed: its datasets are mirrored to,
+and its experiments recorded in, the same Phoenix (``evals/sync_datasets.py``, ``--phoenix`` on
+``evals/run_experiment.py``), found through the same variable via :func:`server_url`.
 
 Three decisions are load-bearing, and each was measured rather than assumed.
 
@@ -104,6 +105,24 @@ def collector_url(endpoint: str) -> str | None:
     path = parts.path.rstrip("/")
     if not path.endswith(_TRACES_PATH):
         path += _TRACES_PATH
+    return urlunsplit(parts._replace(path=path))
+
+
+def server_url(endpoint: str) -> str | None:
+    """The Phoenix *server* ``PHOENIX_COLLECTOR_ENDPOINT`` names, for its REST API.
+
+    :func:`collector_url` run backwards: the eval harness talks to the same Phoenix the traces
+    go to, so one variable answers both questions. A value written as the OTLP path has
+    ``/v1/traces`` removed — the API lives at the server's root, and a client handed the
+    collector URL would ask for ``/v1/traces/v1/datasets``. A proxy prefix is kept, as there.
+    """
+    usable = endpoints.usable_endpoint(endpoint)
+    if usable is None:
+        return None
+    parts = urlsplit(usable)
+    path = parts.path.rstrip("/")
+    if path.endswith(_TRACES_PATH):
+        path = path[: -len(_TRACES_PATH)]
     return urlunsplit(parts._replace(path=path))
 
 
