@@ -838,10 +838,11 @@ def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
 
 
 def test_tool_pins_agree_wherever_they_are_declared():
-    # ruff and ty versions are four independent literals — ci.yml, release.yml,
-    # .claude/hooks/ruff-ty-gate.sh, and the commands CLAUDE.md tells a human to type — and
-    # nothing structural ties them. The same shape as test_package_version_matches_pyproject,
-    # and guarded the same way, because the failure modes are all silent.
+    # ruff and ty versions are five independent literals — ci.yml, release.yml,
+    # .claude/hooks/ruff-ty-gate.sh, and the commands CLAUDE.md and README.md tell a human to
+    # type — and nothing structural ties them. The same shape as
+    # test_package_version_matches_pyproject, and guarded the same way, because the failure
+    # modes are all silent.
     #
     # Hook drifting from CI: a type-checker suppression comment is *required* by a checker that
     # cannot resolve a symbol and *rejected* as an unused-ignore by one that can, so a hook and a
@@ -858,10 +859,11 @@ def test_tool_pins_agree_wherever_they_are_declared():
         ".github/workflows/release.yml",
         ".claude/hooks/ruff-ty-gate.sh",
         "CLAUDE.md",
+        "README.md",
     )
     # Two spellings, which is what lets a docs file be a site at all. The named form covers the
     # YAML (`TY_VERSION: "0.0.63"`) and shell (`TY_VERSION="0.0.63"`) declarations; the
-    # invocation form covers the commands CLAUDE.md tells a human to type (`uvx ty@0.0.63`).
+    # invocation form covers the commands the docs tell a human to type (`uvx ty@0.0.63`).
     # Neither matches `uvx ruff@"$RUFF_VERSION"` — the version must start with a digit — so the
     # hook's use sites are read from its declaration, not from themselves.
     named = re.compile(r'\b(RUFF|TY)_VERSION\b\s*[:=]\s*"?([0-9][0-9A-Za-z.\-]*)"?')
@@ -893,7 +895,7 @@ def test_tool_pins_agree_wherever_they_are_declared():
     for tool in ("RUFF", "TY"):
         declared = {rel: pins[tool] for rel, pins in found.items()}
         assert len(set(declared.values())) == 1, (
-            f"{tool} pin disagrees across sites: {declared}. Bump all four together."
+            f"{tool} pin disagrees across sites: {declared}. Bump all five together."
         )
 
 
