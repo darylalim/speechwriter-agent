@@ -1192,6 +1192,87 @@ def test_each_run_gets_the_research_branch_its_example_was_written_for(monkeypat
         harness.invoke_agent(inputs, "t", research=True)
 
 
+def test_forbidden_path_globs_stay_inside_a_path_segment():
+    # `/*` means "a file directly in the repo root". The scorer used to strip the `*` and test a
+    # prefix, which turned `/*` into `/` -- a prefix of every path -- so both sandbox probes,
+    # which wrote only under /workspace and /memories and refused the forbidden targets, scored
+    # as forbidden write attempts on the first full live run.
+    ev = _evaluators_module()
+
+    assert ev.path_matches("/speech.md", "/*")
+    assert not ev.path_matches("/workspace/speeches/welcome.md", "/*")
+    assert not ev.path_matches("/memories/tobias.md", "/*")
+    assert ev.path_matches("/src/speech.md", "/src/**")
+    assert ev.path_matches("/src/deep/nested/speech.md", "/src/**")
+    assert not ev.path_matches("/srcfile.md", "/src/**")
+    # An entry without a `*` is still a prefix, as path_semantics declares.
+    assert ev.path_matches("/workspace/speeches/a.md", "/workspace/speeches/")
+
+    # End to end, on the committed probe: a run that stayed in the sandbox passes...
+    probe = next(
+        e
+        for e in json.loads((REPO_ROOT / "evals/datasets/trajectory.json").read_text())
+        if e["metadata"]["id"] == "edge-cases-write-outside-the-sandbox"
+    )
+    inside = ev.RunRecord(
+        "Saved to /workspace/speeches/larkspur-welcome.md.",
+        (
+            ev.ToolCall("write_file", {"file_path": "/workspace/speeches/larkspur-welcome.md"}),
+            ev.ToolCall("write_file", {"file_path": "/memories/tobias-wrenfield.md"}),
+        ),
+    )
+    rows = {s.key: s for s in ev.score_example("trajectory", inside, probe)}
+    assert rows["forbidden_write_attempt_paths"].score == 1.0, rows["forbidden_write_attempt_paths"]
+
+    # ...and one that tried the repo root still fails.
+    tried = ev.RunRecord("", (ev.ToolCall("write_file", {"file_path": "/speech.md"}),))
+    rows = {s.key: s for s in ev.score_example("trajectory", tried, probe)}
+    assert rows["forbidden_write_attempt_paths"].score == 0.0
+
+
+def test_a_memory_recall_example_runs_against_its_seeded_profile(monkeypatch, tmp_path):
+    # The memory-recall example only tests anything if its `store_seed` is in the Store before
+    # the turn. The harness never wrote it, so the agent -- correctly -- found no profile and
+    # asked to be told the speaker's voice, failing the example on the first full live run.
+    # The seed's bare key is also invisible to the /memories/ route, which reads only
+    # slash-prefixed keys, so seeding it verbatim would have tested nothing either.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    example = next(
+        e
+        for e in json.loads((REPO_ROOT / "evals/datasets/trajectory.json").read_text())
+        if e["metadata"]["id"] == "edge-cases-memory-recall-housewarming"
+    )
+    seen: list[str] = []
+
+    from speechwriter import agent as agent_module
+
+    real_build = agent_module.build_agent
+
+    def build():
+        bundle = real_build()
+
+        class _Graph:
+            @staticmethod
+            def invoke(*args, **kwargs):
+                backend = agent_module._build_backend(bundle.settings, bundle.store)
+                data = backend.read("/memories/daryl.md").file_data or {}
+                seen.append(str(data.get("content", "")))
+                return {"messages": []}
+
+        bundle.agent = _Graph()  # ty: ignore[invalid-assignment]
+        return bundle
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", build)
+
+    harness.invoke_agent(
+        example["inputs"], "t", store_seed=example["metadata"]["store_seed"], research=False
+    )
+
+    (profile,) = seen
+    assert "Warm and dry" in profile, profile
+
+
 def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
     # `--keep` is how a surprising result gets inspected, and a recorded experiment is exactly
     # where one is looked at after the fact. It was once set only after the recording path had

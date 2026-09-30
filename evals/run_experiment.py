@@ -197,7 +197,11 @@ def prime_environment() -> None:
 
 
 def invoke_agent(
-    inputs: dict[str, Any], thread_id: str, *, research: bool | None = None
+    inputs: dict[str, Any],
+    thread_id: str,
+    *,
+    research: bool | None = None,
+    store_seed: list[dict[str, Any]] | None = None,
 ) -> RunRecord:
     """One graded run of the real agent, in a workspace of its own.
 
@@ -212,6 +216,13 @@ def invoke_agent(
     ``False`` blanks the key for this run only; ``True`` refuses to run without one, because a
     run that cannot meet its example's precondition measures nothing; ``None`` (a dataset that
     does not say) leaves the environment alone.
+
+    ``store_seed`` is the example's ``metadata.store_seed``: Store items written into the fresh
+    agent's Store before the turn, for an example that tests recalling a speaker's voice. Without
+    it that example measures nothing — the agent correctly reports no profile, and fails for it.
+    Keys are written with a leading slash, because that is the only shape the ``/memories/``
+    route reads (a bare ``daryl.md`` is invisible to ``ls`` and ``read_file`` alike), whatever
+    the fixture's own note says about the two being interchangeable.
     """
     from speechwriter.agent import build_agent
 
@@ -255,6 +266,13 @@ def invoke_agent(
         # which would otherwise inherit (and later restore) a home that has been deleted.
         try:
             bundle = build_agent()
+            for item in store_seed or []:
+                key = str(item["key"])
+                bundle.store.put(
+                    tuple(item["namespace"]),
+                    key if key.startswith("/") else f"/{key}",
+                    item["value"],
+                )
             state = bundle.agent.invoke(
                 {"messages": to_messages(inputs)}, config=bundle.turn_config(thread_id)
             )
@@ -307,6 +325,7 @@ def run_one(
         example["inputs"],
         example["metadata"]["id"],
         research=example["metadata"].get("tavily_enabled"),
+        store_seed=example["metadata"].get("store_seed"),
     )
     return run, grade(dataset, run, example, no_judge, judge)
 
@@ -456,8 +475,15 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | No
         # the thread: it names the conversation exactly as the plain live path does.
         example = by_inputs.get(canon(inputs))
         thread = _example_id(example) if example is not None else "langsmith-run"
-        research = (getattr(example, "metadata", None) or {}).get("tavily_enabled")
-        return task_output(invoke_agent(dict(inputs), thread_id=thread, research=research))
+        metadata = getattr(example, "metadata", None) or {}
+        return task_output(
+            invoke_agent(
+                dict(inputs),
+                thread_id=thread,
+                research=metadata.get("tavily_enabled"),
+                store_seed=metadata.get("store_seed"),
+            )
+        )
 
     def speechwriter_criteria(run: Any, example: Any) -> dict[str, list[dict[str, Any]]]:
         output = getattr(run, "outputs", None)
