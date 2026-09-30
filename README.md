@@ -15,6 +15,13 @@ you › Write a 4-minute wedding toast. Speaker: David, best man. Audience: 80 g
 ╰──────────────────────────────────────────────────────────────────────────────╯
 ```
 
+The same agent runs in the browser. Here is a finished draft in the Workspace view, with its word count and estimated spoken length:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/workspace-dark.png">
+  <img alt="The Workspace page showing a keynote draft with its word count, spoken-length estimate, and delivery cues" src="docs/images/workspace-light.png">
+</picture>
+
 ---
 
 ## How it works
@@ -101,6 +108,11 @@ uv run streamlit run streamlit_app.py
 
 - **Write**: commission a speech and follow the agent's activity live. Memory is saved after every turn.
 - **Workspace**: browse drafts (with a spoken-length estimate and a **Measure** button), research notes, and learned voice profiles.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/write-dark.png">
+  <img alt="The Write page: a model picker and status in the sidebar, starter briefs, and a chat input" src="docs/images/write-light.png">
+</picture>
 
 The app binds to `localhost` only, because it spends your API budget and writes to your workspace. Pass `--server.address` to override this.
 
