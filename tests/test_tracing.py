@@ -1,12 +1,14 @@
-"""Tracing to a self-hosted Phoenix — offline, like the rest of the suite.
+"""Tracing to LangSmith — offline, like the rest of the suite.
 
-No Phoenix runs here. The collector is a throwaway loopback HTTP server that records what
-arrives, which is stricter than a Phoenix would be: it asserts the wire — the path, the bearer,
-and the project and session inside the protobuf body — rather than whatever a UI chose to show.
+No LangSmith is contacted. The endpoint is a throwaway loopback HTTP server that records what
+arrives, which is stricter than the hosted service would be: it asserts the wire — the path, the
+API key, and the project and thread inside the multipart body — rather than whatever a UI chose
+to show.
 
-Tracing is process-wide (LangChain is instrumented globally), so every test here goes through
-the ``home`` fixture, whose teardown calls ``disable_tracing()``. A test that left tracing on
-would have every later test in the process exporting spans at a dead port.
+LangSmith keeps process-wide state in three places, and every test here resets all three through
+the ``home`` fixture: the ``LANGSMITH_*`` variables (monkeypatched), langsmith's ``lru_cache``d
+env reads (cleared by ``load_settings`` and again at teardown), and the cached client in
+``langsmith.run_trees`` (reset, so no test inherits an earlier test's loopback endpoint).
 """
 
 from __future__ import annotations
@@ -19,15 +21,13 @@ import socket
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
+import langsmith.run_trees
 import pytest
 import streamlit as st
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langsmith.utils import get_env_var
-from openinference.instrumentation.langchain import LangChainInstrumentor
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import ExportTraceServiceRequest
-from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from langsmith import utils as langsmith_utils
 from rich.console import Console
 from streamlit.testing.v1 import AppTest
 
@@ -36,30 +36,37 @@ from speechwriter.agent import build_agent
 
 _REPO_ROOT = config._PKG_DIR.parents[1]
 
-_PHOENIX_VARS = (
-    "PHOENIX_COLLECTOR_ENDPOINT",
-    "PHOENIX_PROJECT",
-    "PHOENIX_PROJECT_NAME",
-    "PHOENIX_API_KEY",
+_LANGSMITH_VARS = (
+    "LANGSMITH_TRACING",
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_API_KEY",
+    "LANGSMITH_PROJECT",
+    "LANGSMITH_ENDPOINT",
 )
-_LANGSMITH_SWITCHES = ("LANGSMITH_TRACING", "LANGSMITH_TRACING_V2", "LANGCHAIN_TRACING_V2")
 
-# Port 9 is `discard`, which nothing on a development machine or a CI runner listens on — a
-# collector that is guaranteed to refuse. Used only where no span is ever exported.
-_DEAD_COLLECTOR = "http://127.0.0.1:9"
+
+def _clear_langsmith_caches() -> None:
+    for cached in (langsmith_utils.get_env_var, langsmith_utils.get_tracer_project):
+        cache_clear = getattr(cached, "cache_clear", None)
+        if cache_clear is not None:
+            cache_clear()
 
 
 @pytest.fixture
 def home(monkeypatch, tmp_path):
-    """An isolated home with nothing traced, and no tracing left behind afterwards."""
+    """An isolated home with nothing traced, and no tracing state left behind afterwards."""
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    # Pins the documented default pair, as every test that builds a model does.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    for name in (*_PHOENIX_VARS, *_LANGSMITH_SWITCHES):
+    for name in _LANGSMITH_VARS:
         # A developer's shell may export any of these, and real env wins over the dotenv.
         monkeypatch.delenv(name, raising=False)
+    # Private, and deliberately so: the tracer's client is a module global, and one built
+    # against an earlier test's loopback port would otherwise receive this test's runs.
+    monkeypatch.setattr(langsmith.run_trees, "_CLIENT", None)
     yield tmp_path
-    tracing.disable_tracing()
+    # monkeypatch restores the variables after this; the caches would still hold them.
+    monkeypatch.undo()
+    _clear_langsmith_caches()
 
 
 class _Stub(BaseChatModel):
@@ -77,17 +84,23 @@ class _Stub(BaseChatModel):
 
 
 @contextlib.contextmanager
-def _collector():
-    """A loopback OTLP/HTTP collector that keeps every request it is sent."""
-    received: list[tuple[str, str | None, bytes]] = []
+def _langsmith():
+    """A loopback LangSmith that answers everything with ``{}`` and keeps every request."""
+    received: list[tuple[str, str, dict[str, str], bytes]] = []
 
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
-            body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            received.append((self.path, self.headers.get("Authorization"), body))
+        def _record(self):
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            body = self.rfile.read(length) if length else b""
+            received.append((self.command, self.path, dict(self.headers), body))
+            payload = b"{}"
             self.send_response(200)
-            self.send_header("Content-Length", "0")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
+            self.wfile.write(payload)
+
+        do_GET = do_POST = do_PATCH = _record  # noqa: N815 - BaseHTTPRequestHandler's spelling
 
         def log_message(self, format, *args):  # noqa: A002 - the base class's own parameter name
             """Silence the default stderr access log."""
@@ -103,264 +116,111 @@ def _collector():
         thread.join(timeout=5)
 
 
-def _attributes(attributes) -> dict[str, str]:
-    return {attr.key: attr.value.string_value for attr in attributes}
-
-
-def test_tracing_is_off_until_a_collector_is_named(home):
-    # No default endpoint, on purpose: a default would ship every draft to whatever holds a
-    # well-known port without anyone having asked for traces. Unset has to mean untouched —
-    # including LangChain itself, which is patched process-wide once tracing is on.
+def test_tracing_is_off_until_langsmith_tracing_is_set(home):
+    # Unset means off: no label, nothing for the front ends to print, and no client built.
     bundle = build_agent()
 
     assert bundle.tracing is None
-    assert not LangChainInstrumentor().is_instrumented_by_opentelemetry
+    assert langsmith.run_trees._CLIENT is None
 
 
-def test_a_turn_reaches_the_collector_with_its_project_session_and_key(home, monkeypatch):
-    # The end-to-end property, asserted on the wire. Three things must arrive together for a
-    # trace to be useful in Phoenix: the project (resource attribute) so it lands where the
-    # reader looks, the session (span attribute) so one conversation reads as one, and the
-    # model call itself as an LLM span — the thing a reader opens a trace to see.
-    monkeypatch.setattr("speechwriter.agent._build_model", lambda _settings: _Stub())
-    with _collector() as (endpoint, received):
-        monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", endpoint)
-        monkeypatch.setenv("PHOENIX_PROJECT", "speech-tests")
-        monkeypatch.setenv("PHOENIX_API_KEY", "px-test")
+def test_a_turn_reaches_langsmith_with_its_project_thread_and_key(home, monkeypatch):
+    # The whole feature on the wire, because none of it is our code and so none of it can be
+    # asserted any other way: LangChain starts the tracer from the environment, LangGraph copies
+    # `thread_id` into run metadata, and the client uploads both with the key. A CLI thread
+    # rotated after an interrupt, or a browser "New conversation", must start a new LangSmith
+    # thread exactly when the agent does — which is only true while `thread_id` reaches the run.
+    monkeypatch.setattr("speechwriter.agent._build_model", lambda settings: _Stub())
+    with _langsmith() as (endpoint, received):
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", endpoint)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-dummy")
+        monkeypatch.setenv("LANGSMITH_PROJECT", "wire-test")
 
         bundle = build_agent()
         assert bundle.tracing is not None
         bundle.agent.invoke(
-            {"messages": [{"role": "user", "content": "hello"}]},
-            config=bundle.turn_config("thread-under-test"),
+            {"messages": [{"role": "user", "content": "A toast, please."}]},
+            config=bundle.turn_config("thread-wire"),
         )
-        assert bundle.tracing.provider.force_flush(10_000), "spans never left the processor"
+        tracing.flush_traces()
+        langsmith.run_trees.get_cached_client().flush()
 
-    assert received, "the collector never heard from the exporter"
-    # Phoenix's convention: the variable names the server, `/v1/traces` is where OTLP goes.
-    assert {path for path, _, _ in received} == {"/v1/traces"}
-    assert {auth for _, auth, _ in received} == {"Bearer px-test"}
-
-    requests = [ExportTraceServiceRequest.FromString(body) for _, _, body in received]
-    resources = [
-        _attributes(rs.resource.attributes) for req in requests for rs in req.resource_spans
+    uploads = [
+        (path, headers, body) for method, path, headers, body in received if method == "POST"
     ]
-    spans = [
-        _attributes(span.attributes)
-        for req in requests
-        for rs in req.resource_spans
-        for scope in rs.scope_spans
-        for span in scope.spans
-    ]
-    assert {r.get("openinference.project.name") for r in resources} == {"speech-tests"}
-    # Every span, not just some: LangGraph copies `thread_id` into run metadata and OpenInference
-    # reads the session from there, so a span without it would be an orphan in the Sessions view.
-    assert {s.get("session.id") for s in spans} == {"thread-under-test"}
-    assert "LLM" in {s.get("openinference.span.kind") for s in spans}, spans
+    assert uploads, f"no run reached LangSmith: {[(m, p) for m, p, _, _ in received]}"
+    assert all(path.startswith("/runs") for path, _, _ in uploads), uploads
+    assert all(
+        {k.lower(): v for k, v in headers.items()}.get("x-api-key") == "lsv2-dummy"
+        for _, headers, _ in uploads
+    )
+    body = b"".join(body for _, _, body in uploads)
+    assert b"wire-test" in body, "the runs did not name the configured project"
+    assert b"thread-wire" in body, "thread_id did not reach the run, so threads will not group"
 
 
-def test_building_with_tracing_on_opens_no_socket(home, monkeypatch):
-    # The offline invariant, with tracing on. The exporter connects when its first batch
-    # leaves; if setup ever started probing the collector, every build — and so the whole
-    # suite, and CI — would depend on a Phoenix being up.
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
-    connected: list[object] = []
-    real_connect = socket.socket.connect
+def test_the_project_defaults_to_this_agents_own(home):
+    # LangSmith's own default is a project literally called "default", shared by everything a
+    # reader traces without naming one. `load_settings` puts ours in its place, and clears
+    # langsmith's cache so a read that happened before the dotenv loaded cannot pin "default".
+    #
+    # Poisoned first, or this passes vacuously: `get_tracer_project` is `lru_cache`d, and a
+    # read of the *unset* variable — a module-level client, an import-time check — is exactly
+    # what would otherwise stick for the life of the process.
+    assert langsmith_utils.get_tracer_project() == "default"
 
-    def spy(sock, address):
-        connected.append(address)
-        return real_connect(sock, address)
+    config.load_settings()
 
-    monkeypatch.setattr(socket.socket, "connect", spy)
+    assert langsmith_utils.get_tracer_project() == config.DEFAULT_LANGSMITH_PROJECT
+
+
+def test_a_named_project_is_never_overridden(home, monkeypatch):
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-dummy")
+    monkeypatch.setenv("LANGSMITH_PROJECT", "theirs")
 
     bundle = build_agent()
 
     assert bundle.tracing is not None
-    assert connected == [], f"building with tracing on connected to {connected}"
+    assert bundle.tracing.project == "theirs"
 
 
-def test_the_exporter_is_batched_and_bounded(home, monkeypatch):
-    # Both are measured choices, and both fail silently. A synchronous processor — the default
-    # of the `register()` this module declined to use — puts a network round trip inside every
-    # span of a turn. And the SDK's own 10s retry window held `exit` for 7.5s against a Phoenix
-    # that was not running; a local collector answers in milliseconds.
-    exporters: list[dict[str, object]] = []
-    processors: list[object] = []
+def test_building_with_tracing_on_opens_no_socket(home, monkeypatch):
+    # The offline-build invariant, with tracing on: reporting it reads the environment only.
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-dummy")
+    opened: list[object] = []
+    real_connect = socket.socket.connect
 
-    class Exporter(tracing.OTLPSpanExporter):
-        def __init__(self, **kwargs):
-            exporters.append(kwargs)
-            super().__init__(**kwargs)
+    def spy(self, address):
+        opened.append(address)
+        return real_connect(self, address)
 
-    class Processor(tracing.BatchSpanProcessor):
-        def __init__(self, exporter, **kwargs):
-            processors.append(exporter)
-            super().__init__(exporter, **kwargs)
+    monkeypatch.setattr(socket.socket, "connect", spy)
+    bundle = build_agent()
 
-    monkeypatch.setattr(tracing, "OTLPSpanExporter", Exporter)
-    monkeypatch.setattr(tracing, "BatchSpanProcessor", Processor)
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
-
-    assert build_agent().tracing is not None
-
-    assert len(processors) == 1, "spans are no longer batched"
-    [exporter] = exporters
-    assert exporter["timeout"] == tracing.EXPORT_TIMEOUT_SECONDS
-    assert tracing.EXPORT_TIMEOUT_SECONDS < 10, "no tighter than the SDK default it replaces"
-    # No key configured, no header sent — not an empty bearer.
-    assert exporter["headers"] is None
+    assert bundle.tracing is not None
+    assert opened == [], f"building the agent opened {opened}"
 
 
-def test_tracing_is_enabled_once_and_reported_by_every_later_bundle(home, monkeypatch):
-    # Tracing is process-wide, so a bundle reports what is in force rather than what its own
-    # settings asked for. A model switch rebuilds the bundle; it must neither instrument
-    # LangChain a second time nor start claiming the process is untraced.
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
-    first = build_agent()
-    # A model switch: same environment, fresh bundle. The case a first version of this test
-    # skipped — it only rebuilt with the variable gone, which passed with the once-only guard
-    # deleted, because the rebuild that would have tripped over our own instrumentation and
-    # reported "off" after every switch never happened.
-    switched = build_agent()
-    monkeypatch.delenv("PHOENIX_COLLECTOR_ENDPOINT")
-    unset = build_agent()
-
-    assert first.tracing is not None
-    assert switched.tracing is first.tracing
-    assert unset.tracing is first.tracing
-
-
-def test_a_langchain_someone_else_instrumented_is_not_claimed(home, monkeypatch, caplog):
-    # A library consumer may run its own OpenInference setup. Instrumenting again is a silent
-    # no-op upstream, so our provider would receive nothing while the banner said "tracing to
-    # Phoenix" — a signal that has stopped running but still reads as passing.
-    theirs = tracing.TracerProvider()
-    LangChainInstrumentor().instrument(tracer_provider=theirs)
-    try:
-        monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
-        with caplog.at_level(logging.WARNING, logger="speechwriter.tracing"):
-            bundle = build_agent()
-    finally:
-        LangChainInstrumentor().uninstrument()
-
-    assert bundle.tracing is None
-    assert "already instrumented" in caplog.text
-
-
-def test_a_malformed_collector_is_a_warning_not_a_crash(home, monkeypatch, caplog):
-    # A typo in an observability setting must not stop a speech from being written. The two
-    # spellings a reader actually types without a scheme read differently to `urlsplit`, which
-    # is why the check is `usable_endpoint`'s rather than a scheme test of its own.
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", "localhost:6006")
+def test_tracing_without_a_key_is_reported_not_hidden(home, monkeypatch, caplog):
+    # LangChain still starts a tracer, and every upload is rejected — a warning per batch, far
+    # from the cause. The label is where the reader looks before a turn, so it says so there.
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
 
     with caplog.at_level(logging.WARNING, logger="speechwriter.tracing"):
         bundle = build_agent()
 
-    assert bundle.tracing is None
-    assert "Not tracing" in caplog.text and "localhost:6006" in caplog.text
-    assert not LangChainInstrumentor().is_instrumented_by_opentelemetry
-
-
-def test_the_collector_url_follows_phoenix_convention_and_never_raises():
-    expected = {
-        "http://localhost:6006": "http://localhost:6006/v1/traces",
-        "http://localhost:6006/": "http://localhost:6006/v1/traces",
-        # A Phoenix behind a reverse proxy keeps its prefix.
-        "https://tools.example/phoenix": "https://tools.example/phoenix/v1/traces",
-        # Already the OTLP path: used as written, not doubled.
-        "http://localhost:6006/v1/traces": "http://localhost:6006/v1/traces",
-        "http://localhost:6006/v1/traces/": "http://localhost:6006/v1/traces",
-        "  http://localhost:6006  ": "http://localhost:6006/v1/traces",
-        "localhost:6006": None,
-        "127.0.0.1:6006": None,
-        "file:///tmp/spans": None,
-        "http://[::1": None,
-        "": None,
-    }
-    for raw, want in expected.items():
-        assert tracing.collector_url(raw) == want, raw
-
-
-def test_the_server_url_is_the_collector_url_run_backwards():
-    # The eval harness finds Phoenix's REST API through the same variable tracing uses, so a
-    # reader who wrote the OTLP path into it must still reach the API at the server's root --
-    # a client handed the collector URL asks for /v1/traces/v1/datasets and gets a 404.
-    expected = {
-        "http://localhost:6006": "http://localhost:6006",
-        "http://localhost:6006/": "http://localhost:6006",
-        "http://localhost:6006/v1/traces": "http://localhost:6006",
-        "http://localhost:6006/v1/traces/": "http://localhost:6006",
-        # A reverse-proxy prefix is kept, exactly as collector_url keeps it.
-        "https://tools.example/phoenix/v1/traces": "https://tools.example/phoenix",
-        "localhost:6006": None,
-        "file:///tmp/spans": None,
-        "http://[::1": None,
-        "": None,
-    }
-    for raw, want in expected.items():
-        assert tracing.server_url(raw) == want, raw
-        if want is not None:
-            # And the two stay inverse: from either spelling, the collector is the same place.
-            assert tracing.collector_url(want) == tracing.collector_url(raw), raw
-
-
-def test_a_dead_collector_is_reported_once_per_outage(caplog):
-    # A batch leaves every five seconds during a turn, and a failed one makes the OTLP exporter
-    # log each retry — measured at ~4 lines a batch, printed into the REPL's transcript. The
-    # first failing batch keeps its own diagnostics (they name the reason); after that the
-    # exporter is quiet until a batch lands, and the next outage is reported afresh.
-    chatter = logging.getLogger(tracing._EXPORTER_LOGGER)
-
-    class Scripted(SpanExporter):
-        def __init__(self, results):
-            self.results = list(results)
-
-        def export(self, spans):
-            result = self.results.pop(0)
-            if result is SpanExportResult.FAILURE:
-                chatter.warning("Transient error: connection refused")
-            return result
-
-    fail, ok = SpanExportResult.FAILURE, SpanExportResult.SUCCESS
-    exporter = tracing._ReportingExporter(Scripted([fail, fail, fail, ok, fail]), _DEAD_COLLECTOR)
-    quiet = tracing._QuietWhileReported(exporter)
-    chatter.addFilter(quiet)
-    try:
-        with caplog.at_level(logging.WARNING):
-            for _ in range(5):
-                exporter.export([])
-    finally:
-        chatter.removeFilter(quiet)
-
-    ours = [r.getMessage() for r in caplog.records if r.name == "speechwriter.tracing"]
-    theirs = [r for r in caplog.records if r.name == tracing._EXPORTER_LOGGER]
-    assert sum("not accepting traces" in m for m in ours) == 2, ours  # two outages
-    assert sum("accepting traces again" in m for m in ours) == 1, ours
-    # The first batch of each outage speaks; the two repeats of the first outage do not.
-    assert len(theirs) == 2, [r.getMessage() for r in theirs]
-
-
-def test_langsmith_left_on_beside_phoenix_is_called_out(home, monkeypatch, caplog):
-    # Phoenix replaced LangSmith, but LangSmith's tracer switches itself on from the
-    # environment alone — so a dotenv written for the old setup keeps sending every draft to a
-    # hosted service with nothing in this code asking it to. Say so where the reader will see it.
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
-    monkeypatch.setenv("LANGSMITH_TRACING", "true")
-    try:
-        with caplog.at_level(logging.WARNING, logger="speechwriter.tracing"):
-            assert build_agent().tracing is not None
-    finally:
-        # langsmith memoises env reads; never leave "tracing on" cached for a later test's turn.
-        cache_clear = getattr(get_env_var, "cache_clear", None)
-        if cache_clear is not None:
-            cache_clear()
-
-    assert "LANGSMITH_TRACING" in caplog.text and "as well as Phoenix" in caplog.text
+    assert bundle.tracing is not None
+    assert bundle.tracing.has_api_key is False
+    assert "no LANGSMITH_API_KEY" in bundle.tracing.label
+    assert "LANGSMITH_API_KEY is not set" in caplog.text
 
 
 def test_the_banner_says_where_traces_go(home):
     # Both front ends print where the agent is pointed before a turn is spent; "am I tracing,
-    # and to which project" is the same kind of fact as "which endpoint".
+    # and to which project" is the same kind of fact as "which model".
     bundle = build_agent()
     console = Console(record=True, width=200)
 
@@ -372,20 +232,35 @@ def test_the_banner_says_where_traces_go(home):
     on = dataclasses.replace(
         bundle,
         tracing=tracing.Tracing(
-            "http://localhost:6006", "speechwriter-agent", tracing.TracerProvider()
+            "speechwriter-agent", "https://api.smith.langchain.com", has_api_key=True
         ),
     )
     console = Console(record=True, width=200)
     cli._banner(console, on)
-    assert "Phoenix · speechwriter-agent · http://localhost:6006" in console.export_text()
+    assert "LangSmith · speechwriter-agent" in console.export_text()
+
+
+def test_a_self_hosted_endpoint_is_named_on_the_label(home):
+    hosted = tracing.Tracing("p", "https://api.smith.langchain.com", has_api_key=True)
+    local = tracing.Tracing("p", "http://langsmith.internal:1984", has_api_key=True)
+
+    assert hosted.label == "LangSmith · p"
+    assert local.label == "LangSmith · p · http://langsmith.internal:1984"
 
 
 def test_the_sidebar_says_where_traces_go(home, monkeypatch):
-    monkeypatch.setenv("PHOENIX_COLLECTOR_ENDPOINT", _DEAD_COLLECTOR)
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2-dummy")
     st.cache_resource.clear()
 
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not app.exception
     traces = [c.value for c in app.sidebar.caption if c.value.startswith("Traces")]
-    assert traces == [f"Traces — `Phoenix · speechwriter-agent · {_DEAD_COLLECTOR}`"], traces
+    assert traces == [f"Traces — `LangSmith · {config.DEFAULT_LANGSMITH_PROJECT}`"], traces
+
+
+def test_flushing_never_raises_when_nothing_is_traced(home):
+    # Called from the CLI's exit path beside the memory save; it must be a no-op, not an error,
+    # on the ordinary untraced run.
+    tracing.flush_traces()

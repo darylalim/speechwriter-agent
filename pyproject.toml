@@ -11,15 +11,11 @@ dependencies = [
     "deepagents>=0.6.12,<0.8",
     "langchain-anthropic>=1.7.5",
     "langchain-tavily>=0.2.18",
-    # Tracing to a self-hosted Phoenix (src/speechwriter/tracing.py). Plain OpenTelemetry on
-    # purpose, not `arize-phoenix-otel`: its `register()` raises AttributeError against
-    # opentelemetry 1.45 (it reads the exporter's removed private `_headers`), walks up from
-    # the CWD for a `.env.phoenix` to take credentials from, and pulls in grpcio for a gRPC
-    # transport this never uses. HTTP exporter only, for the same reason.
-    "openinference-instrumentation-langchain>=0.1.76",
-    "openinference-semantic-conventions>=0.1.39",
-    "opentelemetry-exporter-otlp-proto-http>=1.45.0",
-    "opentelemetry-sdk>=1.45.0",
+    # Tracing, eval datasets and experiments (src/speechwriter/tracing.py, evals/). Declared
+    # rather than left to arrive through langchain-core, because this project imports it
+    # directly — config.py clears its env caches, tracing.py reads its switch, and the eval
+    # harness uses its client.
+    "langsmith>=0.11.1",
     "python-dotenv>=1.2.2",
     "rich>=15.0.0",
     # 1.62 for the widget parameters the web UI now depends on: persist_state and required on
@@ -64,28 +60,8 @@ exclude = ["*.md"]
 # Point the type checker at the project virtualenv so third-party imports resolve.
 python = "./.venv"
 
-[tool.pytest.ini_options]
-# arize-phoenix-client registers a pytest plugin through an entry point, so it loads into this
-# suite whether asked for or not. It is inert here (no test carries its `phoenix` marker), but
-# its tracking defaults to on and it parses PHOENIX_TEST_* on every collection, where a malformed
-# value is a UsageError that fails the whole offline suite. Nothing here wants it.
-addopts = ["-p", "no:phoenix"]
-
 [dependency-groups]
 dev = [
-    # The eval harness's client for the self-hosted Phoenix: evals/sync_datasets.py mirrors the
-    # datasets into it, and evals/run_experiment.py --phoenix records experiments there. Dev
-    # rather than runtime because the packaged agent never talks to Phoenix's REST API — it
-    # only exports spans, over plain OpenTelemetry (see the runtime comment above). This one
-    # does pull in grpcio, which is why it stays out of the runtime dependencies.
-    "arize-phoenix-client>=3.5.0",
-    # evals/sync_datasets.py builds the Phoenix client's transport itself, so the client reads
-    # no environment of its own. Imported directly, so declared — same reasoning as pyyaml below.
-    "httpx>=0.28.1",
-    # Same reasoning as pyyaml below: test_load_settings_reopens_the_langsmith_env_cache
-    # imports langsmith.utils directly to assert on its `get_env_var` lru_cache, but langsmith
-    # only arrives transitively via langchain-core.
-    "langsmith>=0.11.1",
     "pytest>=9.1.1",
     # tests/test_build.py imports yaml to parse SKILL.md frontmatter. It arrives
     # transitively via langchain, so the suite passed without declaring it -- and

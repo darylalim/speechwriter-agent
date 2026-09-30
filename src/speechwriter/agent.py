@@ -12,8 +12,8 @@ This is the single place that assembles the Deep Agent:
 * **store**        — a JSON-snapshotted ``InMemoryStore`` for durable voice profiles.
 * **checkpointer** — ``MemorySaver``, required so multi-turn conversation state and any
                      human-in-the-loop interrupts have somewhere to persist per thread.
-* **tracing**      — every turn sent to a self-hosted Phoenix when
-                     ``PHOENIX_COLLECTOR_ENDPOINT`` names one (see :mod:`speechwriter.tracing`).
+* **tracing**      — every turn traced to LangSmith when ``LANGSMITH_TRACING=true``; LangChain
+                     does the tracing, the bundle reports it (see :mod:`speechwriter.tracing`).
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ from speechwriter.memory import load_store, save_store
 from speechwriter.observability import TruncationWarner
 from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
-from speechwriter.tracing import Tracing, enable_tracing
+from speechwriter.tracing import Tracing, current_tracing
 
 logger = logging.getLogger(__name__)
 
@@ -302,9 +302,9 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     model = _build_model(settings)
 
     # Here rather than in each front end so that every entry point — CLI, web UI, eval harness,
-    # a library consumer — is traced alike. Opens no socket (the first batch does), so the
-    # offline invariant holds.
-    tracing = enable_tracing(settings)
+    # a library consumer — reports tracing alike. Reads the environment only: no client, no
+    # socket, so the offline invariant holds with tracing on.
+    tracing = current_tracing(settings)
 
     agent = create_deep_agent(
         model=model,

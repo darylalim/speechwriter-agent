@@ -2,7 +2,7 @@
 
 Split deliberately in two. Everything here is **pure**: it takes a :class:`RunRecord` -- what
 the agent did, already extracted from the message stream -- plus an example's ``outputs`` and
-``metadata``, and returns :class:`Score` rows. No model, no network, no Phoenix. That is what
+``metadata``, and returns :class:`Score` rows. No model, no network, no LangSmith. That is what
 lets the scorers be tested offline against synthetic runs, and it is the same split that keeps
 the rest of this repo's suite free.
 
@@ -283,7 +283,7 @@ def score_trajectory(run: RunRecord, out: dict[str, Any], meta: dict[str, Any]) 
     # Indexed like the judge's `key[i]` rows, and for a reason beyond tidiness: a recorded
     # experiment keeps one annotation per name per run, so two constraints both called "order"
     # collapse into whichever was sent last -- a VIOLATED one first and an ok one second is a
-    # pass in Phoenix and a failure here.
+    # pass in the recorded experiment and a failure here.
     for i, constraint in enumerate(out.get("order_constraints") or []):
         verdict = check_order_constraint(run, constraint)
         scores.append(Score(f"order[{i}]", verdict.score, verdict.comment))

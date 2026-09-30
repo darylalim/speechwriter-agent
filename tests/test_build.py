@@ -735,8 +735,8 @@ def test_orchestrator_prompt_names_every_skill(monkeypatch, tmp_path):
 
     # Isolated like every other test that loads settings. It used to call `load_settings()` on
     # the real repo, which read the developer's dotenv into `os.environ` for the rest of the
-    # process — invisible until tracing arrived, when a real PHOENIX_COLLECTOR_ENDPOINT leaked
-    # that way made every later `build_agent()` in the suite trace to the developer's Phoenix.
+    # process — invisible until tracing arrived, when a real tracing switch leaked that way made
+    # every later `build_agent()` in the suite trace to the developer's own collector.
     # The skills are read off the real tree above; the prompt does not depend on the home.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     text = prompts.orchestrator_prompt(load_settings())

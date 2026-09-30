@@ -105,9 +105,10 @@ SPEECHES_SUBDIR = "speeches"
 RESEARCH_SUBDIR = "research"
 WORDS_PER_MINUTE = 130
 
-# The Phoenix project traces land in when `PHOENIX_PROJECT` does not name one — the name the
-# LangSmith project had, so a reader switching backends finds the same project name waiting.
-DEFAULT_PHOENIX_PROJECT = "speechwriter-agent"
+# The LangSmith project traces land in when `LANGSMITH_PROJECT` does not name one. LangSmith's
+# own default is a project literally called "default", shared by everything else a reader traces
+# without naming one — which is how this agent's runs used to end up mixed in with unrelated ones.
+DEFAULT_LANGSMITH_PROJECT = "speechwriter-agent"
 
 # The curated roster both front ends offer. Every entry must accept `output_config.effort` and
 # adaptive thinking, which `agent._build_model` sends on every call — so Haiku 4.5, which
@@ -152,14 +153,11 @@ class Settings:
     # rather than vestigial fields kept for compatibility — an endpoint this agent can no longer
     # reach reads as configuration in use.
     anthropic_api_key: str | None = None
-    # Appended and defaulted, like the field above. Where traces go — see `speechwriter.tracing`.
-    # There is deliberately **no default endpoint**: unset means tracing is off, because a
-    # default would start shipping every draft to whatever holds a well-known port without
-    # anyone having asked for traces at all. Naming the collector is the opt-in.
-    phoenix_endpoint: str | None = None
-    phoenix_project: str = DEFAULT_PHOENIX_PROJECT
-    # Sent only to `phoenix_endpoint`, for a Phoenix running with authentication enabled.
-    phoenix_api_key: str | None = None
+    # Tracing has no fields here, deliberately: it is LangSmith's own environment contract
+    # (`LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`, `LANGSMITH_ENDPOINT`),
+    # read by LangChain on every run, and a copy on Settings would be one more place for the two
+    # to disagree. The three Phoenix fields that sat here went with the Phoenix exporter; they
+    # were last, so removing them shifted nothing positional. See `speechwriter.tracing`.
 
     # -- derived helpers -------------------------------------------------
 
@@ -269,45 +267,49 @@ def load_settings() -> Settings:
     * ``SPEECHWRITER_MAX_TOKENS`` — *override* the output-token ceiling per model call.
       Left unset, the model's own LangChain profile decides, falling back to
       ``DEFAULT_MAX_TOKENS`` only for an id that has no profile.
-    * ``PHOENIX_COLLECTOR_ENDPOINT`` — a self-hosted Phoenix to trace every turn to, e.g.
-      ``http://localhost:6006``. Unset means no tracing; see :mod:`speechwriter.tracing`.
-    * ``PHOENIX_PROJECT`` — the Phoenix project traces land in (default
-      ``speechwriter-agent``). ``PHOENIX_PROJECT_NAME`` is read as an alias, as Phoenix does.
-    * ``PHOENIX_API_KEY`` — sent to that collector only, for a Phoenix with auth enabled.
+    * ``LANGSMITH_TRACING`` — ``true`` traces every turn to LangSmith; unset means no tracing.
+      Read by LangChain itself, with ``LANGSMITH_API_KEY``, ``LANGSMITH_PROJECT`` (defaulted
+      here to ``speechwriter-agent``) and ``LANGSMITH_ENDPOINT``; see :mod:`speechwriter.tracing`.
     """
     project_root = Path(os.environ.get("SPEECHWRITER_HOME", _PKG_DIR.parents[1])).resolve()
 
     # Load the project's own .env (if present) so ANTHROPIC_API_KEY / TAVILY_API_KEY /
-    # PHOENIX_* are available without exporting them by hand. We point at the project
+    # LANGSMITH_* are available without exporting them by hand. We point at the project
     # root explicitly rather than letting python-dotenv walk *up* the directory tree —
     # an upward walk can pull keys from an unrelated ancestor .env. Done here (not at
     # import) so `import speechwriter` has no side effects; real shell env wins.
     load_dotenv(project_root / ".env")
 
-    # Runtime tracing is Phoenix's now (`speechwriter.tracing`), and so are the eval datasets and
-    # experiments, but langsmith still arrives with langchain-core and still switches its own
-    # tracer on from LANGSMITH_TRACING alone. So this stays: it keeps LangSmith's own reads of
-    # the dotenv honest, for as long as a dotenv written for the old setup can still turn it on.
-    #
-    # langsmith memoises env reads in an `lru_cache` on `get_env_var`, so the *first* read of
-    # LANGSMITH_TRACING is the one that sticks for the life of the process. Anything that reads
-    # tracing state before the line above — a module-level `Client()`, a `tracing_is_enabled()`
-    # at import — permanently caches "off" for a value that only exists in the dotenv, with no
-    # error to notice. Clearing the cache here makes the read *order* irrelevant for every entry
-    # point (CLI, Streamlit, library consumers) instead of leaving an unwritten rule that only
+    # Our project name rather than LangSmith's shared "default", unless the reader named one.
+    # Written into the environment rather than kept on Settings because the reader of it is
+    # LangChain's own tracer, which consults nothing else. `setdefault`, so a shell or dotenv
+    # value always wins, and harmless while tracing is off — nothing reads it then.
+    os.environ.setdefault("LANGSMITH_PROJECT", DEFAULT_LANGSMITH_PROJECT)
+
+    # Tracing is LangSmith's (`speechwriter.tracing`), switched on by LANGSMITH_TRACING alone,
+    # and langsmith memoises its env reads: `get_env_var` and `get_tracer_project` are both
+    # `lru_cache`d, so the *first* read of a variable is the one that sticks for the life of the
+    # process. Anything that reads tracing state before the lines above — a module-level
+    # `Client()`, a `tracing_is_enabled()` at import — permanently caches "off" (or the "default"
+    # project) for a value that only exists in the dotenv, with no error to notice: traces never
+    # arrive, or arrive in the wrong project, while every setting still reads as correct.
+    # Clearing both here makes the read *order* irrelevant for every entry point (CLI,
+    # Streamlit, eval harness, library consumers) instead of leaving an unwritten rule that only
     # `build_agent()` happens to satisfy. Imported inside the function so `import speechwriter`
     # keeps its lazy import surface.
+    #
     # `get_env_var` carries `@overload` stubs that shadow the `lru_cache` wrapper, so
     # `cache_clear` is invisible to a type checker but present at runtime. `getattr` states that
     # precisely, and doubles as the fallback for a langsmith that stops caching.
     try:
-        from langsmith.utils import get_env_var
-    except ImportError:  # pragma: no cover - langsmith ships with langchain-core
+        from langsmith import utils as langsmith_utils
+    except ImportError:  # pragma: no cover - langsmith is a declared dependency
         pass
     else:
-        cache_clear = getattr(get_env_var, "cache_clear", None)
-        if cache_clear is not None:
-            cache_clear()
+        for cached in (langsmith_utils.get_env_var, langsmith_utils.get_tracer_project):
+            cache_clear = getattr(cached, "cache_clear", None)
+            if cache_clear is not None:
+                cache_clear()
 
     workspace_dir = project_root / "workspace"
     skills_dir = project_root / "skills"
@@ -330,13 +332,6 @@ def load_settings() -> Settings:
         skills_dir=skills_dir,
         store_path=store_path,
         max_research_results=_int_env("SPEECHWRITER_MAX_RESEARCH_RESULTS", 5),
-        phoenix_endpoint=_optional_env("PHOENIX_COLLECTOR_ENDPOINT"),
-        phoenix_project=(
-            _optional_env("PHOENIX_PROJECT")
-            or _optional_env("PHOENIX_PROJECT_NAME")
-            or DEFAULT_PHOENIX_PROJECT
-        ),
-        phoenix_api_key=_optional_env("PHOENIX_API_KEY"),
     )
 
 
@@ -344,9 +339,9 @@ def _optional_env(name: str) -> str | None:
     """A variable's stripped value, or ``None`` when it is unset *or blank*.
 
     Blank is how a dotenv copied from the example template says "unset" — ``KEY=`` with nothing
-    after it — and left as-is an empty string is falsy in some places and a value in others: an
-    empty ``PHOENIX_COLLECTOR_ENDPOINT`` would be "configured" to an endpoint no shape check can
-    call, and whitespace in a key would be sent as the credential.
+    after it — and left as-is an empty string is falsy in some places and a value in others: a
+    blank key would pass a presence gate, and whitespace in a key would be sent as the
+    credential.
     """
     return (os.environ.get(name) or "").strip() or None
 

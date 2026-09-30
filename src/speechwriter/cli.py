@@ -32,6 +32,7 @@ from speechwriter.config import (
     model_choices,
     resolve_choice,
 )
+from speechwriter.tracing import flush_traces
 from speechwriter.transcript import clip, iter_events
 
 _EXIT_WORDS = {"exit", "quit", ":q", "q"}
@@ -333,6 +334,9 @@ def main() -> None:
                 console.print("[dim]↻  Started a fresh thread; earlier context was dropped.[/]")
     finally:
         count = bundle.persist()
+        # After the save, which matters more: the tracer uploads on a background thread, so
+        # without this the last turn's runs can still be queued when the process exits.
+        flush_traces()
         console.print(f"\n[dim]💾 Saved {count} memory item(s) to {bundle.settings.store_path}.[/]")
         console.print("[bold magenta]Until next time. ✒[/]")
 
