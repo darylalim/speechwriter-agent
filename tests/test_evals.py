@@ -1151,6 +1151,47 @@ def test_a_failed_turn_puts_speechwriter_home_back(monkeypatch, tmp_path):
     assert os.environ["SPEECHWRITER_HOME"] == original
 
 
+def test_each_run_gets_the_research_branch_its_example_was_written_for(monkeypatch, tmp_path):
+    # Nine of the thirteen trajectory examples are written for the NO-research branch and forbid
+    # calling the researcher. The harness used to ignore `metadata.tavily_enabled`, so on a
+    # machine with a Tavily key those examples were run against an agent that *had* a researcher,
+    # and a correct research call scored as a forbidden one -- found on the first live
+    # --langsmith run, the sixth measurement bug that made the agent look worse than it was.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-real-looking")
+    built_with: list[bool] = []
+
+    class _Bundle:
+        agent = type("A", (), {"invoke": staticmethod(lambda *a, **k: {"messages": []})})()
+
+        @staticmethod
+        def turn_config(thread_id):
+            return {}
+
+    def build():
+        from speechwriter.config import load_settings
+
+        built_with.append(load_settings().research_enabled)
+        return _Bundle()
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", build)
+    inputs = {"messages": [{"role": "user", "content": "hi"}]}
+
+    harness.invoke_agent(inputs, "t", research=False)
+    harness.invoke_agent(inputs, "t", research=None)
+    harness.invoke_agent(inputs, "t", research=True)
+
+    assert built_with == [False, True, True]
+    # Blanked for that run only -- the next example, and grading, see the key again.
+    assert os.environ["TAVILY_API_KEY"] == "tvly-real-looking"
+
+    # An example written for research cannot be measured without a key: refused, not graded.
+    monkeypatch.delenv("TAVILY_API_KEY")
+    with pytest.raises(RuntimeError, match="TAVILY_API_KEY"):
+        harness.invoke_agent(inputs, "t", research=True)
+
+
 def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
     # `--keep` is how a surprising result gets inspected, and a recorded experiment is exactly
     # where one is looked at after the fact. It was once set only after the recording path had

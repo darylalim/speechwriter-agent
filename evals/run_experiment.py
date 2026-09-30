@@ -196,9 +196,30 @@ def prime_environment() -> None:
     load_settings()
 
 
-def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
-    """One graded run of the real agent, in a workspace of its own."""
+def invoke_agent(
+    inputs: dict[str, Any], thread_id: str, *, research: bool | None = None
+) -> RunRecord:
+    """One graded run of the real agent, in a workspace of its own.
+
+    ``research`` is the example's ``metadata.tavily_enabled``, and it decides whether the agent
+    under test *has* a researcher — which changes the agent's shape, not just a setting: with no
+    Tavily key the ``researcher`` subagent is absent and the prompt tells the agent to mark
+    unverified claims ``[VERIFY]``. Nine of the thirteen trajectory examples are written for that
+    no-research branch and forbid calling the researcher. Ignored, the run took whatever the
+    environment said, so a machine with a Tavily key graded those nine against an agent they were
+    never written for — and a correct research call scored as a violation.
+
+    ``False`` blanks the key for this run only; ``True`` refuses to run without one, because a
+    run that cannot meet its example's precondition measures nothing; ``None`` (a dataset that
+    does not say) leaves the environment alone.
+    """
     from speechwriter.agent import build_agent
+
+    had_key = bool((os.environ.get("TAVILY_API_KEY") or "").strip())
+    if research is True and not had_key:
+        raise RuntimeError(
+            "this example is written for the research branch, but TAVILY_API_KEY is not set"
+        )
 
     keep = os.environ.get("SPEECHWRITER_EVAL_KEEP") == "1"
     context = (
@@ -212,6 +233,7 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
     # scoring resolved workspace_vpath against a path that no longer existed. Unsetting restores
     # the real project root, which is what the criteria are written against.
     previous_home = os.environ.get("SPEECHWRITER_HOME")
+    previous_key = os.environ.get("TAVILY_API_KEY")
     with context as home:
         # skills_dir is project_root / "skills", and project_root IS the temp home -- so a bare
         # one silently runs the agent with the rhetoric library absent. That does not just fail
@@ -223,6 +245,11 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
         # before a single model call. The tree is four SKILL.md files; a copy costs nothing.
         shutil.copytree(REPO_ROOT / "skills", Path(home) / "skills")
         os.environ["SPEECHWRITER_HOME"] = home
+        if research is False:
+            # Blank, never popped: `load_dotenv` skips a key already present in os.environ, so an
+            # empty one stays empty through every load_settings() the build makes, where a popped
+            # one would come straight back from the project's dotenv.
+            os.environ["TAVILY_API_KEY"] = ""
         # Restored in a `finally`, not on the way out: under --langsmith a turn that raises does
         # not end the process -- LangSmith records the error and moves on to the next example,
         # which would otherwise inherit (and later restore) a home that has been deleted.
@@ -236,10 +263,14 @@ def invoke_agent(inputs: dict[str, Any], thread_id: str) -> RunRecord:
                 print(f"   [kept] artifacts under {home}")
             return record
         finally:
-            if previous_home is None:
-                os.environ.pop("SPEECHWRITER_HOME", None)
-            else:
-                os.environ["SPEECHWRITER_HOME"] = previous_home
+            for name, previous in (
+                ("SPEECHWRITER_HOME", previous_home),
+                ("TAVILY_API_KEY", previous_key),
+            ):
+                if previous is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = previous
 
 
 def grade(
@@ -272,7 +303,11 @@ def run_one(
     example: dict[str, Any], no_judge: bool, judge: Settings | None = None
 ) -> tuple[RunRecord, list[Score]]:
     dataset = example["metadata"]["dataset_type"]
-    run = invoke_agent(example["inputs"], example["metadata"]["id"])
+    run = invoke_agent(
+        example["inputs"],
+        example["metadata"]["id"],
+        research=example["metadata"].get("tavily_enabled"),
+    )
     return run, grade(dataset, run, example, no_judge, judge)
 
 
@@ -410,17 +445,19 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | No
         return 2
 
     chosen = in_local_order(remote, [e["metadata"]["id"] for e in local])[:limit]
-    # The target is handed only the example's inputs, so its id is recovered from them. Keyed on
-    # the canonical rendering, which is what the mirror already compares on, so key order in a
-    # round-tripped dict cannot miss the match.
-    ids_by_inputs = {canon(e.inputs or {}): _example_id(e) for e in chosen}
+    # The target is handed only the example's inputs, so its example is recovered from them --
+    # keyed on the canonical rendering, which is what the mirror already compares on, so key order
+    # in a round-tripped dict cannot miss the match.
+    by_inputs = {canon(e.inputs or {}): e for e in chosen}
 
     def run_agent(inputs: dict[str, Any]) -> dict[str, Any]:
         # Named for what it does, because LangSmith names each row's root run after it and the
         # agent's whole trace hangs off that run. The example id, not a slice of the input, is
         # the thread: it names the conversation exactly as the plain live path does.
-        thread = ids_by_inputs.get(canon(inputs), "langsmith-run")
-        return task_output(invoke_agent(dict(inputs), thread_id=thread))
+        example = by_inputs.get(canon(inputs))
+        thread = _example_id(example) if example is not None else "langsmith-run"
+        research = (getattr(example, "metadata", None) or {}).get("tavily_enabled")
+        return task_output(invoke_agent(dict(inputs), thread_id=thread, research=research))
 
     def speechwriter_criteria(run: Any, example: Any) -> dict[str, list[dict[str, Any]]]:
         output = getattr(run, "outputs", None)
