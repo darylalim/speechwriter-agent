@@ -7,30 +7,23 @@ save/load round-trip, and every SKILL.md is well-formed — all in CI, for free.
 
 from __future__ import annotations
 
-import contextlib
 import dataclasses
 import json
 import logging
 import re
-import socket
 import subprocess
 import sys
-import threading
-import time
 import tomllib
 import uuid
-from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import yaml
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult, LLMResult
-from langchain_openai import ChatOpenAI
 
 import speechwriter
-from speechwriter import config, endpoints, memory, prompts
+from speechwriter import config, memory, prompts
 from speechwriter.agent import (
     SpeechwriterAgent,
     _build_backend,
@@ -46,9 +39,7 @@ from speechwriter.subagents import build_subagents
 def test_agent_builds_without_research(monkeypatch, tmp_path):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    # Both halves of the documented default pair, pinned by unsetting them: an exported
-    # SPEECHWRITER_BASE_URL or SPEECHWRITER_MODEL would otherwise decide what this asserts.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Pinned by unsetting: an exported SPEECHWRITER_MODEL would otherwise decide what this asserts.
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
 
     settings = load_settings()
@@ -57,9 +48,21 @@ def test_agent_builds_without_research(monkeypatch, tmp_path):
 
     bundle = build_agent(settings)
     assert bundle.agent.__class__.__name__ == "CompiledStateGraph"
-    # A fresh clone names a coherent pair, not a model with nowhere to send it.
     assert bundle.settings.model == config.DEFAULT_MODEL
-    assert bundle.settings.base_url == config.DEFAULT_LOCAL_ENDPOINT
+
+
+def test_the_agent_builds_offline_without_an_anthropic_key(monkeypatch, tmp_path):
+    # The invariant the whole suite rests on, stated for the one credential every turn needs:
+    # `ChatAnthropic` accepts a missing key at construction and fails only at the first call. If
+    # a langchain-anthropic bump started validating the key eagerly, CI — which sets no key
+    # anywhere — would go red here rather than in forty unrelated tests at once.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    settings = load_settings()
+    assert settings.anthropic_api_key is None
+    assert settings.model_credentials_present is False
+    assert build_agent(settings).agent.__class__.__name__ == "CompiledStateGraph"
 
 
 def test_research_subagent_appears_with_tavily(monkeypatch, tmp_path):
@@ -72,9 +75,9 @@ def test_research_subagent_appears_with_tavily(monkeypatch, tmp_path):
 
 
 def test_model_override(monkeypatch, tmp_path):
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/granite-4.1-8b-4bit")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5-5")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    assert load_settings().model == "mlx-community/granite-4.1-8b-4bit"
+    assert load_settings().model == "claude-opus-5-5"
 
 
 def test_memory_snapshot_roundtrip(monkeypatch, tmp_path):
@@ -152,71 +155,109 @@ def test_max_tokens_env_is_an_optional_override(monkeypatch, tmp_path):
 
 
 def test_max_tokens_rejects_out_of_range_values(monkeypatch, tmp_path):
-    # A zero or negative ceiling is accepted by init_chat_model without complaint and only
-    # fails at the first API call, with an opaque provider error far from the typo that
-    # caused it — so it must be rejected at load time, not forwarded to the client.
+    # A zero or negative ceiling is accepted by the client without complaint and only fails at
+    # the first API call, with an opaque provider error far from the typo that caused it — so it
+    # must be rejected at load time, not forwarded to the client.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    # Pins the documented default endpoint rather than whatever a developer exported.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     for bad in ("0", "-5"):
         monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", bad)
         assert load_settings().max_tokens is None, f"{bad} must not reach the model"
-        assert getattr(_build_model(load_settings()), "max_tokens", None) != int(bad)
+        assert _build_model(load_settings()).max_tokens != int(bad)
 
 
-def test_ceiling_resolution_is_two_tier(monkeypatch, tmp_path):
-    # Regression. `ChatOpenAI` defaults `max_tokens` to None -- "let the server decide" -- and
-    # on a reasoning model that defaults to a high effort level that is an *unbounded* thinking
-    # budget rather than a merely small one: extended thinking bills against the same ceiling,
-    # so a subagent can spend the whole response deliberating and emit no text, which deepagents
-    # forwards as an empty status="success" task result. A ceiling is therefore always set.
-    #
-    # There used to be a middle tier that kept the ceiling the client had resolved for itself
-    # out of LangChain's profile table. It is gone by construction rather than by choice:
-    # `init_chat_model` reads a profile's max_tokens only on the Anthropic path, so with one
-    # OpenAI-compatible client it could never fire — see
-    # test_a_profiled_id_over_a_local_endpoint_still_gets_a_ceiling, which pins that half.
+def test_ceiling_resolution_is_three_tier(monkeypatch, tmp_path):
+    # Regression, both directions. `ChatAnthropic` takes max_tokens from LangChain's profile
+    # table and silently falls back to 4096 for an id it cannot profile — and adaptive thinking
+    # bills against that same ceiling, so a subagent can spend the whole budget thinking and
+    # emit no text, which deepagents forwards as an empty status="success" task result. But a
+    # blunt constant must not *lower* a model LangChain does know: capping the 128k models at 32k
+    # would be the same mistake inverted.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
-    # Pins the documented default endpoint rather than whatever a developer exported.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
-    served = (config.DEFAULT_MODEL, "mlx-community/not-a-real-model-9")
+    # Tier 2: a profiled model keeps its own, larger ceiling.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5-5")
+    assert (_build_model(load_settings()).max_tokens or 0) > config.DEFAULT_MAX_TOKENS
 
-    # Tier 2: with no override every id lands on our floor, never on the client's own None.
-    for model_id in served:
-        monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
-        model = _build_model(load_settings())
-        assert isinstance(model, ChatOpenAI)
-        assert model.max_tokens == config.DEFAULT_MAX_TOKENS, model_id
+    # Tier 3: an unprofiled id gets our floor, never LangChain's 4096.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+    assert _build_model(load_settings()).max_tokens == config.DEFAULT_MAX_TOKENS
 
-    # Tier 1: an explicit override wins, and still reaches the same client.
+    # Tier 1: an explicit override beats both.
     monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "4242")
-    for model_id in served:
+    for model_id in ("claude-opus-5-5", "claude-not-a-real-model-9"):
         monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
-        overridden = _build_model(load_settings())
-        assert isinstance(overridden, ChatOpenAI)
-        assert overridden.max_tokens == 4242, model_id
+        assert _build_model(load_settings()).max_tokens == 4242
 
 
-def test_the_default_ceiling_fits_inside_the_assumed_context_window():
-    # Output and input come out of *one* budget on a local server, which the hosted path never
-    # had to think about: DEFAULT_MAX_TOKENS was 32000 while it applied to 128k-window hosted
-    # models, and left unchanged it would leave 768 tokens of a 32768-token window for the
-    # entire system prompt, the loaded skills and the draft under revision. vLLM rejects that
-    # outright at the first turn; others clamp it silently, which is worse. The two constants
-    # are declared independently in config.py with nothing structural tying them, and
-    # `ceiling_crowds_context` draws its line at half the window — so the shipped default must
-    # not itself trip the warning both front ends render.
-    assert config.DEFAULT_MAX_TOKENS <= config.DEFAULT_LOCAL_CONTEXT_WINDOW // 2, (
-        f"the default ceiling ({config.DEFAULT_MAX_TOKENS}) crowds the assumed window "
-        f"({config.DEFAULT_LOCAL_CONTEXT_WINDOW}) — a fresh install would warn about itself."
+def test_unprofiled_model_id_warns(monkeypatch, tmp_path, caplog):
+    # A model id LangChain cannot profile must not degrade silently. Uses a fabricated id so the
+    # test keeps meaning once real ids gain profiles.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+
+    with caplog.at_level(logging.WARNING, logger="speechwriter.agent"):
+        _build_model(load_settings())
+
+    assert "model profile" in caplog.text
+
+
+def test_default_model_still_resolves_through_tier_two(monkeypatch, tmp_path):
+    # A tripwire on someone else's data, deliberately. `test_ceiling_resolution_is_three_tier`
+    # proves tier 2 works through `claude-opus-5-5` — so the day LangChain stops profiling
+    # DEFAULT_MODEL, every other assertion in this file still passes while the default
+    # configuration quietly drops to the 32k floor. Nothing would surface it: falling back is
+    # *correct* behaviour, just four times smaller, and `ceiling_label` is the only place it shows.
+    #
+    # It has already happened once: langchain-anthropic 1.6.1 did not profile the 5.5 ids, so the
+    # default ran on tier 3 until the pin moved to 1.7.5. A failure is not a bug. It is a prompt
+    # to re-read the ceiling notes in CLAUDE.md and config.py, and to decide whether to pin
+    # SPEECHWRITER_MAX_TOKENS or the dependency.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+
+    model = _build_model(load_settings())
+
+    assert (model.profile or {}).get("max_output_tokens"), (
+        f"LangChain no longer profiles {config.DEFAULT_MODEL}, so the default configuration "
+        f"now resolves through tier 3 to the {config.DEFAULT_MAX_TOKENS}-token floor."
+    )
+    # Not implied by the line above: a profile *below* the floor would keep tier 2 and leave
+    # the default running under the ceiling an unprofiled id would have been given.
+    assert (model.max_tokens or 0) > config.DEFAULT_MAX_TOKENS, (
+        f"{config.DEFAULT_MODEL} profiles at {model.max_tokens}, at or below the "
+        f"{config.DEFAULT_MAX_TOKENS} floor — re-check the figure CLAUDE.md quotes."
     )
 
-    # And from below, which the first version of this test missed entirely — a one-sided bound
-    # on a constant is satisfied by making it smaller, and smaller is the direction that
-    # silently truncates a draft. The ceiling is the *thinking* budget too, so it has to clear
-    # the longest speech the committed datasets actually grade plus room to deliberate.
+
+def test_every_model_choice_is_profiled_above_the_floor(monkeypatch, tmp_path):
+    # The roster is a promise: everything the picker offers keeps its *own* 128k ceiling rather
+    # than dropping to the 32k floor. Nothing structural enforces it — MODEL_CHOICES is a
+    # hand-written tuple, and `_build_model` resolves a typo'd id through tier 3 with only a log
+    # line, so a reader would discover it by watching a draft come back short. Like the tripwire
+    # above, this asserts against a third-party table; a failure is a prompt to re-pick the
+    # roster or the pin, not a bug to fix.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+
+    assert config.MODEL_CHOICES, "an empty roster would make this assertion vacuous"
+    for choice in config.MODEL_CHOICES:
+        monkeypatch.setenv("SPEECHWRITER_MODEL", choice.model)
+        model = _build_model(load_settings())
+        assert (model.profile or {}).get("max_output_tokens"), (
+            f"LangChain no longer profiles {choice.model!r}, so offering it drops the ceiling "
+            f"to the {config.DEFAULT_MAX_TOKENS}-token floor."
+        )
+        assert (model.max_tokens or 0) > config.DEFAULT_MAX_TOKENS, choice.model
+
+
+def test_the_default_ceiling_clears_the_longest_commission():
+    # A one-sided bound on a constant is satisfied by making it smaller, and smaller is the
+    # direction that silently truncates a draft. The floor is also the *thinking* budget for an
+    # unprofiled id, so it has to clear the longest speech the committed datasets actually grade
+    # plus room to deliberate.
     #
     # Read out of `evals/datasets/` rather than hard-coded, so adding a longer example moves the
     # floor with it instead of leaving this assertion describing a corpus that has changed.
@@ -237,120 +278,102 @@ def test_the_default_ceiling_fits_inside_the_assumed_context_window():
     )
 
 
-def test_the_payload_carries_no_sampling_parameters(monkeypatch, tmp_path):
-    # `_build_model` sets no temperature, top_p or top_k, and this is what keeps it that way in
-    # both directions. `build_agent()` never touches the wire — that is what makes this suite
-    # free — so nothing else here would notice a langchain-openai bump that began sending one by
-    # default, which it has form for: `ChatOpenAI.temperature` used to default to 0.7 and go out
-    # on every request. A sampling parameter appearing unbidden changes every generation from a
-    # local reasoning model and raises nothing.
-    #
-    # This absorbs a sibling that asserted the same thing through `ChatAnthropic`, where the
-    # three parameters were rejected outright with a 400. That client is gone, and with it the
-    # reason to assert this twice; `_get_request_payload` is still private, like the other
-    # LangChain/deepagents internals this file reaches into, so a rename breaks it loudly.
-    unset = {"temperature", "top_p", "top_k"}
+def test_payload_omits_parameters_current_models_reject(monkeypatch, tmp_path):
+    # temperature/top_p/top_k are rejected outright (400) on the 5.5 models. `build_agent()`
+    # never touches the wire — that is what makes this suite free — so nothing else here would
+    # notice a langchain-anthropic bump that began sending one by default; instead every real
+    # turn would fail, far from the upgrade that caused it. `_get_request_payload` builds the
+    # dict offline, so the seam is assertable for free. It is private, like the other
+    # LangChain/deepagents internals this file reaches into: a rename breaks this test loudly,
+    # which is the failure mode we want.
+    rejected = {"temperature", "top_p", "top_k"}
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
 
-    for model_id in (config.DEFAULT_MODEL, "gpt-4o"):
+    for model_id in (config.DEFAULT_MODEL, "claude-opus-5-5", "claude-not-a-real-model-9"):
         monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
-        # Every ceiling branch, since a stray default could be injected on either call:
-        # None exercises the floor, the override exercises tier 1.
+        # Every ceiling branch, since a stray default could be injected on any call: None
+        # exercises the profile/floor paths, the override exercises tier 1.
         for override in (None, "4242"):
             if override is None:
                 monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
             else:
                 monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", override)
-            model = _build_model(load_settings())
-            # Narrows `BaseChatModel` for the type checker, and pins the client type while we
-            # are here: `settings.model` is free-form, so that is worth asserting too.
-            assert isinstance(model, ChatOpenAI)
-            payload = model._get_request_payload([])
-            assert unset.isdisjoint(payload), f"{model_id} (override={override}): {payload}"
+            payload = _build_model(load_settings())._get_request_payload([])
+            assert rejected.isdisjoint(payload), f"{model_id} (override={override}): {payload}"
 
 
-def test_the_configured_pair_reaches_the_client(monkeypatch, tmp_path):
-    # The pair is the whole configuration: `base_url` selects nothing *else* any more, but it is
-    # still what the client is pointed at, and the id is free-form, so a build that dropped
-    # either would only fail at the first turn. Asserted through `_build_model` rather than on
-    # Settings so a branch that forgot to thread the client kwargs through is caught here.
+def test_every_call_carries_the_thinking_settings_the_models_need(monkeypatch, tmp_path):
+    # Each of these fails differently, and none of them fails at build time:
+    #
+    # * effort is set explicitly because the default differs by model (`high` on Sonnet 5.5,
+    #   `medium` on Opus 5.5) — a switch would otherwise silently change what every turn costs;
+    # * `display: summarized`, because the default `omitted` returns empty thinking blocks and on
+    #   Sonnet 5.5 the notes *between* tool calls arrive as thinking blocks — a long turn goes
+    #   silent;
+    # * `block_binding: drop_block` plus its beta, because deepagents' summarisation edits
+    #   history and newer accounts 400 when an edited history replays a thinking block — the
+    #   first compaction in a long session would fail the next call outright;
+    # * `fallbacks: default` plus its beta, so a classifier decline is retried server-side
+    #   rather than handed back as an empty turn.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://192.168.1.50:8080/v1")
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
 
-    settings = load_settings()
-    # The point of the gate: no credential of ours anywhere, yet the pair is runnable.
-    assert settings.openai_api_key is None
-    assert settings.model_endpoint_usable is True
+    for model_id in (config.DEFAULT_MODEL, "claude-opus-5-5", "claude-not-a-real-model-9"):
+        monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
+        payload = _build_model(load_settings())._get_request_payload([])
 
-    model = _build_model(settings)
-    assert isinstance(model, ChatOpenAI)
-    assert model.openai_api_base == "http://192.168.1.50:8080/v1"
-    assert model.model_name == "mlx-community/Qwen3.8-27B-4bit"
+        assert payload["output_config"]["effort"] == config.DEFAULT_EFFORT, model_id
+        thinking = payload["thinking"]
+        assert thinking["type"] == "adaptive", model_id
+        assert thinking["display"] == "summarized", model_id
+        assert thinking["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}, model_id
+        assert payload["fallbacks"] == "default", model_id
+        assert "thinking-binding-controls-2026-08-01" in payload["betas"], model_id
+        assert "server-side-fallback-2026-07-01" in payload["betas"], model_id
+        # Forced tool choice is a 400 on the 5.5 models; nothing here may default it on.
+        assert "tool_choice" not in payload, model_id
 
 
-def test_blank_base_url_falls_back_to_the_documented_default(monkeypatch, tmp_path):
-    # `export SPEECHWRITER_BASE_URL=` is how a shell says "unset". Read with a bare
-    # `os.environ.get` that empty string is truthy enough to set the field, and every call would
-    # be routed at an endpoint no shape check could tell apart from a real one — while the
-    # banner still printed a model id. There is no second client to select by leaving this
-    # empty, so the fallback is the documented pair, not None.
+def test_the_model_client_streams(monkeypatch, tmp_path):
+    # Profiled ceilings are 128k, and the Anthropic SDK refuses a *non-streaming* request whose
+    # max_tokens could outlast its ten-minute timeout — so a client built without streaming
+    # would fail every turn at the SDK, before the request is sent.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    assert _build_model(load_settings()).streaming is True
+
+
+def test_the_credentials_gate_is_a_presence_check(monkeypatch, tmp_path):
+    # The CLI refuses commissions on this and the web UI disables its chat input, so a false
+    # negative silently bricks a working setup and a false positive defers the failure to a 401
+    # at the first turn. Blank is how a copied dotenv template says "unset", and an unstripped
+    # blank is *truthy* — it would pass the gate and be sent as the key.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert load_settings().model_credentials_present is False
 
     for blank in ("", "   "):
-        monkeypatch.setenv("SPEECHWRITER_BASE_URL", blank)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", blank)
         settings = load_settings()
-        assert settings.base_url == config.DEFAULT_LOCAL_ENDPOINT
-        assert settings.model_endpoint_usable is True
-        model = _build_model(settings)
-        assert isinstance(model, ChatOpenAI)
-        assert model.openai_api_base == config.DEFAULT_LOCAL_ENDPOINT
+        assert settings.anthropic_api_key is None, repr(blank)
+        assert settings.model_credentials_present is False, repr(blank)
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-ant-dummy  ")
+    settings = load_settings()
+    assert settings.anthropic_api_key == "sk-ant-dummy"
+    assert settings.model_credentials_present is True
 
 
-def test_the_endpoint_gate_refuses_only_a_shape_that_cannot_be_called(monkeypatch, tmp_path):
-    # The CLI refuses commissions on this and the web UI disables its chat input, so a false
-    # negative silently bricks a working setup and a false positive defers the failure to the
-    # first turn. It replaced `model_credentials_present` when the hosted client left: a locally
-    # served model needs no credential of ours, so "is a key present" stopped being a question
-    # with an answer, and a gate that is unconditionally true has quietly stopped running.
-    #
-    # What is left is *shape*, which is worth checking precisely because `_configured_endpoint`
-    # deliberately never rewrites what an operator wrote. Reachability is not part of it — a
-    # probe here would break the offline-build invariant, and a server that is merely not
-    # running yet is what Detect models and `/endpoint` are for.
+def test_the_key_reaches_the_client_exactly_once(monkeypatch, tmp_path):
+    # The key is read by `load_settings` and handed to the client explicitly, so the credential
+    # the gate checked is the one the client sends — never a second read of the environment
+    # that could disagree with it.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
 
-    # Nothing configured is not a failure state any more: it is the documented default pair.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    assert load_settings().model_endpoint_usable is True
+    model = _build_model(load_settings())
 
-    for usable in ("http://127.0.0.1:8080/v1", "https://gateway.example.com/openai/v1"):
-        monkeypatch.setenv("SPEECHWRITER_BASE_URL", usable)
-        assert load_settings().model_endpoint_usable is True, usable
-
-    # `file:///…` is the one that bites: `urlopen`'s default opener would read it off local
-    # disk. `http://` has no host, and raises inside urllib at request *construction*.
-    for unusable in ("file:///Users/you/private", "ftp://example.invalid/v1", "http://", "[::1"):
-        monkeypatch.setenv("SPEECHWRITER_BASE_URL", unusable)
-        assert load_settings().model_endpoint_usable is False, unusable
-
-
-def test_local_endpoint_api_key_falls_back_to_a_placeholder(monkeypatch, tmp_path):
-    # ChatOpenAI raises without *a* key, and a local server never reads one -- so the
-    # placeholder is what makes the no-credentials-at-all case work at all. A real
-    # OPENAI_API_KEY must still win, for a hosted OpenAI-compatible endpoint.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    assert load_settings().endpoint_api_key == config.LOCAL_API_KEY_PLACEHOLDER
-
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-real")
-    assert load_settings().endpoint_api_key == "sk-real"
+    assert model.anthropic_api_key.get_secret_value() == "sk-ant-dummy"
 
 
 def test_truncation_warner_counts_ceiling_stops():
@@ -394,8 +417,6 @@ def test_bundle_owns_the_truncation_warner(monkeypatch, tmp_path):
     # Observability belongs to the bundle for the same reason persist() does: a consumer
     # invoking bundle.agent directly — the path the README documents — must not silently
     # lose truncation reporting just because the CLI is not involved.
-    # Pins the documented default endpoint rather than whatever a developer exported.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     bundle = build_agent()
 
@@ -405,6 +426,33 @@ def test_bundle_owns_the_truncation_warner(monkeypatch, tmp_path):
     callbacks = config["callbacks"]
     assert isinstance(callbacks, list)  # narrows the RunnableConfig union
     assert bundle.warner in callbacks
+
+
+def test_truncation_warner_counts_refusals_and_names_their_category():
+    # A refusal the server-side fallback could not rescue is an HTTP 200 with
+    # stop_reason="refusal" and little or no text — inside a subagent that reaches the
+    # orchestrator as the same empty status="success" result a truncation does, so it is
+    # counted the same way. `stop_details` is optional, so an unnamed refusal still counts.
+    warner = TruncationWarner()
+
+    def result(**metadata: object) -> LLMResult:
+        message = AIMessage(content="", response_metadata=metadata)
+        return LLMResult(generations=[[ChatGeneration(message=message)]])
+
+    warner.on_llm_end(
+        result(stop_reason="refusal", stop_details={"category": "general_harms"}),
+        run_id=uuid.uuid4(),
+    )
+    warner.on_llm_end(result(stop_reason="refusal"), run_id=uuid.uuid4())
+    warner.on_llm_end(result(stop_reason="end_turn"), run_id=uuid.uuid4())
+
+    assert warner.refused == 2
+    assert warner.refusal_categories == ["general_harms"]
+    # A refusal is not a truncation — the two call for different advice.
+    assert warner.truncated == 0
+
+    warner.reset()
+    assert (warner.refused, warner.refusal_categories) == (0, [])
 
 
 def test_write_sandbox_confines_writes(monkeypatch, tmp_path):
@@ -849,83 +897,49 @@ def test_tool_pins_agree_wherever_they_are_declared():
         )
 
 
-def test_a_profiled_id_over_a_local_endpoint_still_gets_a_ceiling(monkeypatch, tmp_path):
-    # Regression, and the reason the middle ceiling tier was *deleted* rather than kept for
-    # symmetry. It asked "is there a profile?", which is the same question as "was a ceiling
-    # resolved?" for ChatAnthropic and emphatically not for ChatOpenAI: init_chat_model applies
-    # a profile's max_tokens only on the Anthropic path. So a *profiled* id served over an
-    # OpenAI-compatible endpoint -- `gpt-4o` on LM Studio, LiteLLM or a hosted service, all of
-    # which the README names -- skipped the floor and came back with max_tokens=None: no ceiling
-    # at all, which is the unbounded thinking budget the floor exists to prevent.
-    #
-    # With one client that branch could only ever have been dead code reading as live
-    # protection, and this is what keeps a well-meaning reinstatement red.
+def test_an_unprofiled_anthropic_id_does_not_keep_langchains_4096(monkeypatch, tmp_path):
+    # The other half of the tier-2 condition, and the reason it cannot be simplified to a bare
+    # max_tokens check: ChatAnthropic *always* carries a max_tokens, and for an unprofiled id
+    # that value is LangChain's silent 4096 fallback — the original trap. Asserting the resolved
+    # ceiling alone would happily accept it.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
 
-    model = _build_model(load_settings())
-
-    assert isinstance(model, ChatOpenAI)
-    assert getattr(model, "profile", None) is not None, (
-        "gpt-4o is no longer profiled, so this test no longer exercises the branch it guards"
-    )
-    assert model.max_tokens == config.DEFAULT_MAX_TOKENS
+    assert _build_model(load_settings()).max_tokens == config.DEFAULT_MAX_TOKENS
 
 
 def test_the_resolved_ceiling_reaches_the_request_payload(monkeypatch, tmp_path):
-    # A ceiling set on the client but dropped from the payload is no ceiling at all, and the key
-    # is not the obvious one: langchain-openai 1.6 sends `max_completion_tokens` where
-    # langchain-anthropic sent `max_tokens`, and `mlx_lm.server` reads the new spelling while
-    # older shims may read only the old. Assert the *value* is carried under some key rather
-    # than pinning either, so a rename upstream fails loudly here instead of silently
-    # unbounding a local reasoning model.
+    # A ceiling set on the client but dropped from the payload is no ceiling at all. Assert the
+    # *value* is carried under some key rather than pinning the spelling, so a rename upstream
+    # fails loudly here instead of silently unbounding the model.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "12345")
 
-    # The default endpoint and a typed one: the client is the same either way, but the kwargs
-    # are threaded through one construction, so a dropped ceiling would show up on both.
-    for base_url, model_id in (
-        (None, config.DEFAULT_MODEL),
-        ("http://192.168.1.50:8080/v1", "mlx-community/granite-4.1-8b-4bit"),
+    for override, model_id in (
+        ("12345", config.DEFAULT_MODEL),
+        ("12345", "claude-not-a-real-model-9"),
+        (None, "claude-not-a-real-model-9"),
     ):
-        if base_url is None:
-            monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+        if override is None:
+            monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
         else:
-            monkeypatch.setenv("SPEECHWRITER_BASE_URL", base_url)
+            monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", override)
         monkeypatch.setenv("SPEECHWRITER_MODEL", model_id)
-        model = _build_model(load_settings())
-        # Narrows BaseChatModel for the checker, and pins that a client was built at all — the
-        # payload assertion below is vacuous on anything else.
-        assert isinstance(model, ChatOpenAI)
-        payload = model._get_request_payload([])
-        carrying = {key for key, value in payload.items() if value == 12345}
-        assert carrying, f"{model_id}: ceiling absent from payload {sorted(payload)}"
+        expected = int(override) if override else config.DEFAULT_MAX_TOKENS
+        payload = _build_model(load_settings())._get_request_payload([])
+        carrying = {key for key, value in payload.items() if value == expected}
+        assert carrying, f"{model_id}: ceiling {expected} absent from payload {sorted(payload)}"
 
 
-def test_a_blank_openai_key_falls_back_to_the_placeholder(monkeypatch, tmp_path):
-    # `export OPENAI_API_KEY=` is how a shell says "unset", and an unstripped blank is
-    # truthy -- so it would be sent as the Authorization bearer and a hosted endpoint would
-    # 401 far from the typo. Same normalisation as base_url, which had it from the start.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-
-    for blank in ("", "   "):
-        monkeypatch.setenv("OPENAI_API_KEY", blank)
-        assert load_settings().endpoint_api_key == config.LOCAL_API_KEY_PLACEHOLDER
-
-
-def test_settings_can_still_be_built_without_the_local_model_fields(tmp_path):
+def test_settings_can_still_be_built_with_only_the_required_fields(tmp_path):
     # `build_agent(settings)` is the documented library entry point, so Settings is part of
     # the public surface: adding an optional capability must not break a caller that predates
     # it. Mirrors the defaulting already argued for on SpeechwriterAgent's own added fields.
     #
-    # `anthropic_api_key` used to sit second in this list, and removing it shifted every
-    # positional argument after it — a deliberate breaking change rather than a vestigial field
-    # kept for compatibility, because a key this agent can no longer send would read as a
-    # credential in use. Named arguments, so this test says nothing about that ordering; it is
-    # `Settings`' own comment that carries the warning.
+    # The local-endpoint fields used to sit after `max_tokens`, and removing them shifted every
+    # positional argument after them — a deliberate breaking change, because an endpoint this
+    # agent can no longer reach would read as configuration in use. Named arguments, so this
+    # test says nothing about that ordering; it is `Settings`' own comment that carries it.
     settings = config.Settings(
         model=config.DEFAULT_MODEL,
         tavily_api_key=None,
@@ -937,144 +951,52 @@ def test_settings_can_still_be_built_without_the_local_model_fields(tmp_path):
         max_tokens=None,
     )
 
-    # A caller who named no machine still gets a coherent *pair*: an id defaulted on its own
-    # would be a model with nowhere to send it, and there is no second client to fall back to.
-    assert settings.base_url == config.DEFAULT_LOCAL_ENDPOINT
-    assert settings.model_endpoint_usable is True
-    assert settings.openai_api_key is None
-    # The field the model picker adds, asserted here rather than in a test of its own: this is
-    # the standing guard on the constructor's shape, and a required field would break it.
-    assert settings.context_window is None
+    # No key is a coherent, reportable state rather than a construction error: the gate says
+    # so, and the build still succeeds offline.
+    assert settings.anthropic_api_key is None
+    assert settings.model_credentials_present is False
 
 
-def test_the_configured_pair_is_always_offered(monkeypatch, tmp_path):
+def test_the_configured_model_is_always_offered(monkeypatch, tmp_path):
     # Streamlit *silently* rewrites a selection that is not among a widget's options to option
-    # zero — no exception, no log. So a roster that did not contain the configured pair would
-    # retarget a reader onto whatever happened to be listed first, on a machine where that entry
-    # may not even be served.
-    #
-    # MODEL_CHOICES is empty, which makes this the *only* roster rather than merely the
-    # authoritative one: every row is synthesised from a configuration that exists, because a
-    # shipped list of local endpoints would be a guess about which server the reader is running.
+    # zero — no exception, no log. So a roster that did not contain the configured model would
+    # retarget a reader who set SPEECHWRITER_MODEL to an older Claude id onto Sonnet 5.5.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://192.168.1.50:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5")
 
     settings = load_settings()
     offered = config.model_choices(settings)
 
-    assert offered[-1].model == settings.model
-    assert offered[-1].base_url == settings.base_url
-    # Built through the one constructor, so an entry discovered from a live endpoint is
-    # indistinguishable from this one and the same model cannot appear twice. The empty seed is
-    # why this is the whole roster — and why it is never *itself* empty, which
-    # `streamlit_app.py` depends on when it indexes `choices[0]`.
-    assert offered == (config.local_choice(settings.model, settings.base_url),)
+    assert offered[: len(config.MODEL_CHOICES)] == config.MODEL_CHOICES
+    assert offered[-1] == config.ModelChoice("claude-opus-5", "claude-opus-5")
 
     # ...and a configuration already on the roster is not offered a second time, however many
     # times it is handed over — both front ends pass the configured *and* the live settings.
     assert config.model_choices(settings, settings) == offered
+    monkeypatch.setenv("SPEECHWRITER_MODEL", config.DEFAULT_MODEL)
+    assert config.model_choices(load_settings()) == config.MODEL_CHOICES
 
 
-def test_switching_away_from_a_server_leaves_a_way_back(monkeypatch, tmp_path):
+def test_switching_away_from_an_off_roster_model_leaves_a_way_back(monkeypatch, tmp_path):
     # The roster must be widened by *every* configuration that has to stay reachable, not only
-    # the live one. A roster derived from the post-switch settings alone drops the pair the
-    # reader came from, and with MODEL_CHOICES empty there is no curated list underneath to fall
-    # back on: the way back would be removed by the act of leaving, and nothing short of a
-    # restart brings it back. Callers therefore pass the configuration the session *started* on
-    # as well as the one now in force.
+    # the live one. A roster derived from the post-switch settings alone drops the off-roster id
+    # the reader came from: the way back would be removed by the act of leaving, and nothing
+    # short of a restart brings it back. Callers therefore pass the configuration the session
+    # *started* on as well as the one now in force.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5")
 
     configured = load_settings()
-    # What the bundle's settings look like after picking a model detected on another machine.
-    elsewhere = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
-    switched = elsewhere.applied_to(configured)
+    switched = config.MODEL_CHOICES[0].applied_to(configured)
 
     offered = config.model_choices(configured, switched)
 
-    assert any(c.base_url == configured.base_url for c in offered), (
-        "the pair the session started on vanished once another server was selected — there is "
-        "no way back to it without restarting the process"
+    assert any(c.model == configured.model for c in offered), (
+        "the model the session started on vanished once another was selected — there is no "
+        "way back to it without restarting the process"
     )
     # And no duplicate for the entry that is now both current and already on the list.
-    assert len(offered) == 2
-    assert [c.model for c in offered].count(elsewhere.model) == 1
-
-
-def test_a_stalling_endpoint_gives_up_rather_than_hanging():
-    # The one failure `DEFAULT_TIMEOUT` exists for, and the only one this module cannot shrug
-    # off by itself: a server that *accepts* the connection and then never answers. A refused
-    # port fails in under a millisecond, but `urlopen` inherits no default timeout at all, so
-    # without one this blocks forever — and the caller is a sidebar button.
-    #
-    # Not mutation-tested by deleting the timeout, for the obvious reason: that mutation does
-    # not fail this test, it hangs the suite. The elapsed-time assertion is what stands in.
-    listener = socket.socket()
-    listener.bind(("127.0.0.1", 0))
-    listener.listen(1)
-    try:
-        started = time.monotonic()
-        found = endpoints.list_models(
-            f"http://127.0.0.1:{listener.getsockname()[1]}/v1", timeout=0.25
-        )
-        elapsed = time.monotonic() - started
-    finally:
-        listener.close()
-
-    assert found == []
-    assert elapsed < 5, f"the request ran for {elapsed:.1f}s — the timeout is not being applied"
-
-
-def test_a_local_choice_compacts_before_its_context_window(monkeypatch, tmp_path):
-    # deepagents sizes its context-compaction trigger from the model's profile. An unprofiled
-    # id — which every locally served one is — gets a flat ("tokens", 170000) trigger instead,
-    # and no local server has a 170k window, so the plan/draft/critique/revise rhythm outgrows
-    # the window and the server errors before compaction ever fires. `_build_model` hands the
-    # local client a minimal profile so the trigger scales to the window it actually has.
-    #
-    # Asserted as "a fraction of *this* model's window" rather than as an exact figure: the
-    # fraction is deepagents' own default and may move, but a flat token count sized for
-    # somebody else's model is the failure, and that is what this catches.
-    import deepagents.graph
-
-    triggers = []
-    original = deepagents.graph.create_summarization_middleware
-
-    def spy(*args, **kwargs):
-        middleware = original(*args, **kwargs)
-        # deepagents keeps the resolved trigger on an inner helper, not on the middleware.
-        triggers.append(getattr(getattr(middleware, "_lc_helper", middleware), "trigger", None))
-        return middleware
-
-    monkeypatch.setattr(deepagents.graph, "create_summarization_middleware", spy)
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-
-    settings = load_settings()
-    profile = getattr(_build_model(settings), "profile", None) or {}
-    assert profile.get("max_input_tokens") == config.DEFAULT_LOCAL_CONTEXT_WINDOW
-
-    build_agent(settings)
-
-    assert triggers, "no summarization middleware was built — the spy is watching the wrong name"
-    assert all(t is not None and t[0] == "fraction" for t in triggers), triggers
-
-
-def test_a_roster_entry_can_override_the_assumed_local_window(monkeypatch, tmp_path):
-    # The floor is conservative on purpose, so a server that really does have a larger window
-    # must be able to say so per model — and without a new environment variable, which would be
-    # a documentation contract this knob does not deserve.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-
-    settings = replace(load_settings(), context_window=131072)
-    profile = getattr(_build_model(settings), "profile", None) or {}
-
-    assert profile.get("max_input_tokens") == 131072
+    assert len(offered) == len(config.MODEL_CHOICES) + 1
 
 
 def test_switching_models_carries_learned_memory_across_the_rebuild(monkeypatch, tmp_path):
@@ -1084,18 +1006,11 @@ def test_switching_models_carries_learned_memory_across_the_rebuild(monkeypatch,
     # voice profiles with no error at all, which is why the order is asserted here rather than
     # only commented at the call sites.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
     configured = load_settings()
 
-    # A real rebuild is told from a no-op by the *context window*. It used to be told by the
-    # resolved ceiling, which separated the two hosted models this switched between (128k and
-    # 64k) and separates nothing now that one floor applies to every id. The window still does,
-    # because it is the per-entry field a roster row carries — and it is what the switch has to
-    # move, since compacting for the previous model's window is the local failure mode.
-    first = config.local_choice(config.DEFAULT_MODEL, configured.base_url, 32768)
-    second = config.local_choice("mlx-community/granite-4.1-8b-4bit", configured.base_url, 131072)
+    first, second = config.MODEL_CHOICES[0], config.MODEL_CHOICES[1]
 
     bundle = build_agent(first.applied_to(configured))
     bundle.store.put(("speechwriter", "memories"), "mayor.md", {"content": "Plain speaker."})
@@ -1106,114 +1021,56 @@ def test_switching_models_carries_learned_memory_across_the_rebuild(monkeypatch,
     assert switched.store is not bundle.store
     assert [item.key for item in memory.all_items(switched.store)] == ["mayor.md"]
     assert switched.settings.model == second.model
-    assert bundle.context_window == 32768
-    assert switched.context_window == 131072
 
 
 def test_an_oversized_ceiling_override_is_reported_beside_the_label_not_inside_it(
     monkeypatch, tmp_path
 ):
     # SPEECHWRITER_MAX_TOKENS is tier 1 and global, so an override sized for one model follows a
-    # switch to another — and served locally the constraint is harder than any hosted ceiling
-    # was: output and input come out of *one* window. A 32,000-token ceiling against a
-    # 32,768-token window leaves 768 tokens for the entire system prompt, the loaded skills and
-    # the draft under revision. vLLM rejects that at the first turn; others clamp it silently,
-    # which is worse, because the reader sees a short speech and no error.
+    # switch to another — and the API rejects a ceiling above the model's maximum at the first
+    # turn rather than clamping it.
     #
-    # Two facts, two members, and that separation is the point: this began as a suffix on
-    # `ceiling_label`, and both front ends interpolate that label into a sentence telling the
-    # reader to *raise* the ceiling — producing "raise SPEECHWRITER_MAX_TOKENS (currently
-    # 32,000 — more than half this model's window)", which argues with itself.
+    # Two facts, two members, and that separation is the point: a warning folded into
+    # `ceiling_label` lands in the sentence both front ends use to tell the reader to *raise*
+    # the ceiling, which argues with itself.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
-    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "32000")
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "200000")
 
     over = build_agent(load_settings())
-    assert over.context_window == config.DEFAULT_LOCAL_CONTEXT_WINDOW
-    assert over.ceiling_crowds_context is True
+    assert over.profiled_max_tokens is not None
+    assert over.ceiling_exceeds_model is True
     # The label stays a bare figure, so the sentence it lands in still reads correctly.
-    assert over.ceiling_label == "32,000"
+    assert over.ceiling_label == "200,000"
 
-    # The same override against a window that can carry it raises nothing — which is what
-    # `ModelChoice.context_window` is for, and the reason the window travels with the model.
-    roomy = config.local_choice(config.DEFAULT_MODEL, config.DEFAULT_LOCAL_ENDPOINT, 131072)
-    within = build_agent(roomy.applied_to(load_settings()))
-    assert within.ceiling_crowds_context is False
-    assert within.ceiling_label == "32,000"
+    # An override within the model's maximum raises nothing.
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "32000")
+    assert build_agent(load_settings()).ceiling_exceeds_model is False
 
-    # And the shipped default is sized to sit under the line, so a fresh install never warns
-    # about itself — the ceiling is always resolved now, so "no override" is not "no ceiling".
-    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS")
-    default = build_agent(load_settings())
-    assert default.max_tokens == config.DEFAULT_MAX_TOKENS
-    assert default.ceiling_crowds_context is False
+    # Nor does an unprofiled id: with no maximum to compare against there is nothing to claim.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
+    monkeypatch.setenv("SPEECHWRITER_MAX_TOKENS", "200000")
+    unknown = build_agent(load_settings())
+    assert unknown.profiled_max_tokens is None
+    assert unknown.ceiling_exceeds_model is False
 
 
 def test_the_bundle_still_takes_its_fields_in_the_documented_order():
     # `SpeechwriterAgent` is public: `build_agent` returns it and the README documents that
     # path. Fields are appended, never inserted — a defaulted field in the *middle* still shifts
     # every positional argument after it, which is the mistake `config.Settings` spells out and
-    # this class made when a second ceiling field landed ahead of `warner`. A consumer writing
-    # `SpeechwriterAgent(agent, store, settings, 32000, my_warner)` had their warner bound to
-    # that field: no truncation signal, and a TypeError from the first comparison.
+    # this class once made when a second ceiling field landed ahead of `warner`. A consumer
+    # writing `SpeechwriterAgent(agent, store, settings, 32000, my_warner)` had their warner
+    # bound to that field: no truncation signal, and a TypeError from the first comparison.
     fields = [f.name for f in dataclasses.fields(SpeechwriterAgent)]
 
     assert fields[:5] == ["agent", "store", "settings", "max_tokens", "warner"], fields
-    # Anything added later belongs after those, in the order it was added. `context_window`
-    # replaced `profiled_max_tokens` in place, which is the one edit that keeps this order: a
-    # field that can only ever be None was swapped for one that answers the same question a
-    # locally served model can actually be asked. `tracing` came after it, appended.
-    assert fields[5:] == ["context_window", "tracing"], fields
+    # Anything added later belongs after those, in the order it was added. The sixth slot has
+    # held `profiled_max_tokens`, then `context_window` while the agent ran on local models, and
+    # `profiled_max_tokens` again — each swapped in place, which is the one edit that keeps this
+    # order. `tracing` came after it, appended.
+    assert fields[5:] == ["profiled_max_tokens", "tracing"], fields
 
-
-def test_a_typed_endpoint_is_read_the_way_a_reader_types_it_and_never_raises():
-    # One table rather than four tests, in the shape of
-    # `test_resolving_a_choice_never_raises_on_a_stray_argument`, and for the same reason: this
-    # now runs on whatever a reader types into a text box, so *answering* matters more than any
-    # single answer. Two of the entries were measured against a live `mlx_lm.server` serving
-    # eight models: without a scheme the Request constructor raises before any socket, and
-    # without `/v1` the path is `/models`, which no OpenAI-compatible server exposes. Both came
-    # back as `[]` — a healthy server reported exactly like a dead one.
-    normalize = endpoints.normalize_endpoint
-    expected = {
-        "127.0.0.1:8080": "http://127.0.0.1:8080/v1",
-        "localhost:8080": "http://localhost:8080/v1",
-        "http://127.0.0.1:8080": "http://127.0.0.1:8080/v1",
-        "  http://h/v1/  ": "http://h/v1",
-        "https://api.example.com/openai/v1": "https://api.example.com/openai/v1",
-        # `urlsplit` reads the two spellings of one typo differently — "localhost:8080" parses
-        # as scheme "localhost", "127.0.0.1:8080" as no scheme at all — which is why the test
-        # for a scheme is `"://" in raw` and not `urlsplit(raw).scheme`.
-        "file:///Users/you/private": None,
-        "ftp://example.invalid/v1": None,
-        "http://": None,
-        "": None,
-        "   ": None,
-        # The one that raises. `configured_endpoint` runs on every Streamlit rerun, so a
-        # ValueError here is not a bad caption but a page that throws on every rerun with the
-        # offending text still in session state.
-        "http://[::1": None,
-        "[::1": None,
-    }
-    for typed, want in expected.items():
-        assert normalize(typed) == want, typed
-
-    # Idempotent, which both callers rely on: the sidebar normalises the value seeded from the
-    # environment as well as the one typed, so a second pass must be a no-op.
-    for produced in filter(None, expected.values()):
-        assert normalize(produced) == produced
-
-
-def test_listing_models_never_raises_on_a_url_it_cannot_parse():
-    # This module's docstring promises "every failure is an empty list, never an exception", and
-    # the line that decides whether to open a socket at all sat *outside* the try: `urlsplit`
-    # raises `ValueError: Invalid IPv6 URL` on an unclosed bracket. Unreachable while an
-    # endpoint could only come from a dotenv the operator wrote; one keystroke away once it can
-    # be typed. Asserted here rather than left to the caller because the promise is this
-    # module's, and both front ends were written against it.
-    assert endpoints.list_models("http://[::1") == []
-    assert endpoints.list_models("[::1") == []
     # Deliberately no well-formed-but-unreachable address here. An earlier version asserted on
     # `http://[::1]:8080/v1`, which opens a real TCP connection — breaking the suite's offline
     # invariant, and going red for any contributor running the `mlx_lm.server --port 8080` the
@@ -1221,372 +1078,22 @@ def test_listing_models_never_raises_on_a_url_it_cannot_parse():
     # The unclosed bracket is the whole point: it raises inside `urlsplit`, before any socket.
 
 
-def test_the_key_configured_for_one_endpoint_is_not_sent_to_another(monkeypatch, tmp_path):
-    # `list_models` licenses forwarding the reader's key with "no new disclosure: the chat
-    # client already sends the very same credential to this very same host". That is exact, and
-    # it stops holding the moment the host is *typed*: a reader with a real OPENAI_API_KEY for a
-    # hosted gateway who types a colleague's laptop address would hand that key over plaintext
-    # HTTP to a machine the operator never named, on the first request — before
-    # `_CredentialSafeRedirects`, which guards only the second hop, can see it.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://192.168.1.50:8080/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
-    settings = load_settings()
-
-    # The configured server keeps the credential: that is the host it was configured for, and
-    # the chat client sends it there every turn anyway.
-    assert settings.endpoint_api_key_for("http://192.168.1.50:8080/v1") == "sk-real-key"
-    # Same origin, different path — still the same server.
-    assert settings.endpoint_api_key_for("http://192.168.1.50:8080/v2") == "sk-real-key"
-    # Everything else gets nothing: another port is another server, and so is another host —
-    # the default endpoint emphatically included, since it is only the default.
-    assert settings.endpoint_api_key_for("http://192.168.1.50:1234/v1") is None
-    assert settings.endpoint_api_key_for(config.DEFAULT_LOCAL_ENDPOINT) is None
-    assert settings.endpoint_api_key_for("https://192.168.1.50:8080/v1") is None
-    # Total, like `same_origin` itself: an unparseable target is not the configured one.
-    assert settings.endpoint_api_key_for("http://[::1") is None
-
-    # With nothing configured, the real key goes NOWHERE — including to the default endpoint.
-    #
-    # This is the half that is easy to get backwards, and an earlier version of this test did:
-    # it reasoned that since `base_url` now always names a server, the default is "a configured
-    # origin like any other" and should keep the key. It is not. `DEFAULT_LOCAL_ENDPOINT` is a
-    # guess this repo makes on the reader's behalf, not a host the operator named, and the whole
-    # credential boundary is *the operator named this server*.
-    #
-    # The concrete case: `OPENAI_API_KEY` exported globally for some hosted service — an
-    # ordinary thing for a developer to have — plus a fresh clone with no dotenv. While unset
-    # meant "no endpoint at all" that key was simply never read. Defaulting `base_url` would
-    # have started sending it, on every turn, to whatever process holds 127.0.0.1:8080. Loopback
-    # bounds that; it does not make it intended, and the README promises the opposite.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    defaulted = load_settings()
-    assert defaulted.endpoint_configured is False
-    assert defaulted.endpoint_api_key == config.LOCAL_API_KEY_PLACEHOLDER
-    assert defaulted.endpoint_api_key_for(config.DEFAULT_LOCAL_ENDPOINT) == (
-        config.LOCAL_API_KEY_PLACEHOLDER
-    ), "the reader's real key was sent to an endpoint they never named"
-    assert defaulted.endpoint_api_key_for("http://192.168.1.50:8080/v1") is None
-
-    # Naming that same endpoint explicitly is what opts in — the value is identical, so this
-    # pins that the flag and not the string is what carries the permission.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", config.DEFAULT_LOCAL_ENDPOINT)
-    named = load_settings()
-    assert named.endpoint_configured is True
-    assert named.endpoint_api_key_for(config.DEFAULT_LOCAL_ENDPOINT) == "sk-real-key"
-
-
-def _client_key(model: ChatOpenAI) -> str | None:
-    """The plain text behind a built client's key field.
-
-    ``ChatOpenAI.openai_api_key`` is typed ``SecretStr | () -> str | () -> Awaitable[str]``,
-    so the attribute alone does not type-check. Unwrapped through ``getattr`` rather than by
-    importing ``pydantic.SecretStr``: pydantic reaches this environment only transitively via
-    langchain, and importing it directly is the undeclared-dependency trap this repo already
-    documents for ``pyyaml``.
-    """
-    getter = getattr(model.openai_api_key, "get_secret_value", None)
-    return getter() if callable(getter) else None
-
-
-def test_the_key_reaches_the_chat_client_only_for_the_configured_endpoint(monkeypatch, tmp_path):
-    # `endpoint_api_key_for` guards the /v1/models probe, and guarding only there was a hole
-    # rather than a boundary: the probe withheld the key while the chat client went on sending
-    # it to the same typed host on *every turn*, over plaintext HTTP, which is where it actually
-    # matters. Measured on the wire before this — one invoke carried `Authorization: Bearer` and
-    # the reader's real gateway key — while the sidebar rendered "No credential sent".
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-gateway-secret")
-    configured = load_settings()
-
-    # A model detected at an endpoint the reader typed: not the configured origin, so the key
-    # is dropped and `endpoint_api_key` falls back to the placeholder a local server ignores.
-    typed = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
-    elsewhere = _build_model(typed.applied_to(configured))
-    assert isinstance(elsewhere, ChatOpenAI)
-    assert _client_key(elsewhere) == config.LOCAL_API_KEY_PLACEHOLDER
-
-    # Its own server still gets it, or a configured hosted gateway could never be called.
-    same = config.local_choice("gpt-4o", "https://gateway.example.com/v1")
-    mine = _build_model(same.applied_to(configured))
-    assert isinstance(mine, ChatOpenAI)
-    assert _client_key(mine) == "sk-real-gateway-secret"
-
-    # A choice that merely *defaults* onto the local endpoint is judged on origin like any
-    # other — it names a real server, so `same_origin` decides it on the merits.
-    defaulted = config.local_choice("qwen")
-    assert defaulted.base_url == config.DEFAULT_LOCAL_ENDPOINT
-    assert defaulted.applied_to(configured).openai_api_key is None
-
-    # And there is no exemption left, which is the change worth pinning — but pinning it needs a
-    # choice the type system now forbids, so read why before deleting this.
-    #
-    # `applied_to` used to read `if self.base_url is None or same_origin(...)`. That disjunct
-    # existed for a curated (Anthropic) entry, which carries no endpoint at all and whose client
-    # never reads the key: without it, a detour through Claude and back stripped the key the
-    # configured endpoint still needed. Nothing constructs such a choice today, because
-    # `base_url` is `str` with a default — which makes the disjunct *unreachable* rather than
-    # wrong, and unreachable is exactly why it needs a test. Relax `base_url` back to
-    # `str | None` for any reason at all and it silently becomes a live carve-out handing the
-    # reader's real `OPENAI_API_KEY` to any choice that arrives without an endpoint.
-    #
-    # The assertion above cannot see that: a defaulted choice has a non-None `base_url`, so the
-    # `is None` half never fires for it. Mutation-tested — restoring the disjunct fails this
-    # line and nothing else in the suite.
-    exempt = config.ModelChoice("qwen", "qwen", None)  # ty: ignore[invalid-argument-type]
-    assert exempt.applied_to(configured).openai_api_key is None
-
-
-def test_one_model_served_by_two_machines_will_not_resolve_by_name(monkeypatch, tmp_path):
-    # `local_choice` labels an entry with the bare model id because the label must stay a pure
-    # function of the pair, so a roster holding the same id at two endpoints has two rows a name
-    # cannot tell apart. Returning the first match pointed the agent at whichever was merged
-    # earlier, with nothing said. None is the honest answer: the caller prints the table, whose
-    # `base_url` column distinguishes them, and a row number never is ambiguous.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
-    laptop = config.local_choice("qwen", "http://127.0.0.1:8080/v1")
-    workstation = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
-    roster = config.model_choices(load_settings(), detected=[laptop, workstation])
-
-    assert config.resolve_choice(roster, "qwen") is None
-    # The label is the id now, so the two spellings a reader might try are the same string —
-    # which is the point: nothing about the label distinguishes the two servers.
-    assert laptop.label == workstation.label == "qwen"
-    # The number still resolves, and to the right one of the two.
-    assert config.resolve_choice(roster, str(roster.index(workstation) + 1)) == workstation
-    # An unambiguous name is unaffected — this must narrow ambiguity, not matching.
-    assert config.resolve_choice(roster, config.DEFAULT_MODEL) == config.local_choice(
-        config.DEFAULT_MODEL, config.DEFAULT_LOCAL_ENDPOINT
-    )
-
-
-def test_reading_an_endpoint_back_never_rewrites_it(monkeypatch, tmp_path):
-    # Two functions on purpose. `normalize_endpoint` edits what a reader *typed*, because a
-    # missing scheme or a missing /v1 reports a healthy server as dead. `usable_endpoint` only
-    # accepts or rejects, because the value it reads was written deliberately by an operator —
-    # and normalising on read is what dropped Azure's required `?api-version=` and appended a
-    # 404-producing `/v1` to a proxy serving the OpenAI API at its root.
-    deliberate = [
-        "https://x.openai.azure.com/openai/deployments/gpt4?api-version=2024-02-01",
-        "http://127.0.0.1:4000",
-        "http://127.0.0.1:8080/v1/",
-    ]
-    for written in deliberate:
-        assert endpoints.usable_endpoint(f"  {written}  ") == written
-    # It still refuses what cannot be called, and still never raises on an unclosed bracket.
-    for junk in ("", "   ", "file:///Users/you/private", "localhost:8080", "http://[::1"):
-        assert endpoints.usable_endpoint(junk) is None, junk
-
-    # And the typed side lower-cases the host, because "LocalHost" and "localhost" are one
-    # server while roster dedup compares the string -- two rows, identical labels, and
-    # `same_origin` disagreeing with the dedup key about what "the same server" means.
-    assert endpoints.normalize_endpoint("http://LocalHost:8080/v1") == "http://localhost:8080/v1"
-    # Userinfo is left alone, where case is significant.
-    assert endpoints.normalize_endpoint("http://user:Pa55@h/v1") == "http://user:Pa55@h/v1"
-    # A typed URL keeps its query too, for the same reason a configured one does.
-    azure = "https://x.openai.azure.com/deployments/g?api-version=2024-02-01"
-    assert endpoints.normalize_endpoint(azure) == azure
-
-
 def test_an_ambiguous_model_name_is_refused_rather_than_passed_through():
     # `resolve_choice` answers None for "no such entry" and for "two entries by that name", and
-    # the eval harness's pass-through is only right for the first: it sets SPEECHWRITER_MODEL
-    # while leaving SPEECHWRITER_BASE_URL alone, which sends a Claude id to a local server.
-    # `matching_choices` is what lets a caller tell the two Nones apart.
-    laptop = config.local_choice("qwen", "http://127.0.0.1:8080/v1")
-    workstation = config.local_choice("qwen", "http://192.168.1.50:8080/v1")
-    roster = (config.local_choice(config.DEFAULT_MODEL), laptop)
+    # the eval harness's pass-through is only right for the first: it would set
+    # SPEECHWRITER_MODEL to the literal text the reader typed. `matching_choices` is what lets a
+    # caller tell the two Nones apart.
+    sonnet, opus = config.MODEL_CHOICES[0], config.MODEL_CHOICES[1]
+    roster = (sonnet, opus)
 
     assert config.matching_choices(roster, "nonesuch") == []
-    assert config.matching_choices(roster, "qwen") == [laptop]
-    assert len(config.matching_choices(roster, config.DEFAULT_MODEL)) == 1
+    assert config.matching_choices(roster, "opus 5.5") == [opus]
+    assert config.matching_choices(roster, opus.model) == [opus]
 
-    ambiguous = roster + (workstation,)
-    assert len(config.matching_choices(ambiguous, "qwen")) == 2
-    assert config.resolve_choice(ambiguous, "qwen") is None
-
-
-def test_a_configured_endpoint_reaches_the_client_exactly_as_written(monkeypatch, tmp_path):
-    # An earlier version normalised SPEECHWRITER_BASE_URL to stop one server appearing twice in
-    # the picker, and rewrote endpoints that worked: an Azure deployment URL lost the
-    # `?api-version=` query it requires, and a proxy serving the OpenAI API at the root gained a
-    # `/v1` that 404s. Both measured. `build_agent` never probes, so each failed at the first
-    # turn with no log line. A configured endpoint is an operator's deliberate string.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
-    for written in (
-        "https://x.openai.azure.com/openai/deployments/gpt4?api-version=2024-02-01",
-        "http://127.0.0.1:4000",
-        "http://127.0.0.1:8080/v1/",
-        "http://LocalHost:8080/v1",
-    ):
-        monkeypatch.setenv("SPEECHWRITER_BASE_URL", f"  {written}  ")
-        settings = load_settings()
-        assert settings.base_url == written, f"{written} was rewritten to {settings.base_url}"
-        model = _build_model(settings)
-        assert isinstance(model, ChatOpenAI)
-        assert model.openai_api_base == written
-
-
-def test_a_configured_endpoint_and_a_detected_one_are_the_same_row(monkeypatch, tmp_path):
-    # The duplicate normalisation used to prevent, prevented on the read side instead. A dotenv
-    # holding a trailing slash works fine — `list_models` rstrips it — but if the endpoint field
-    # rewrote the value it was seeded with, detections would carry the tidied spelling while the
-    # configured pair carried the raw one. Roster dedup is on `(model, base_url)`, so that is two
-    # strings for one server: two rows both labelled "local/qwen", indistinguishable in the
-    # picker and, in the REPL, ambiguous by label. `usable_endpoint` accepts a seeded value
-    # without touching it, so both sides name the server the same way.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1/")
-    settings = load_settings()
-
-    seeded = endpoints.usable_endpoint(settings.base_url)
-    assert seeded == settings.base_url, "reading the configured endpoint back rewrote it"
-
-    detected = [config.local_choice("local/qwen", seeded or "")]
-    labels = [choice.label for choice in config.model_choices(settings, detected=detected)]
-    assert labels.count("local/qwen") == 1, labels
-
-
-def test_listing_models_speaks_only_http(tmp_path):
-    # `urlopen`'s default opener installs FileHandler, FTPHandler and DataHandler, so a
-    # `SPEECHWRITER_BASE_URL` of `file:///Users/you/private` would make the Detect button read
-    # `/Users/you/private/models` off local disk and list whatever it found. `build_opener`
-    # cannot be relied on to drop those — it re-adds every default whose class was not passed
-    # in — so the scheme is checked before a Request is built.
-    served = tmp_path / "models"
-    served.write_text(json.dumps({"object": "list", "data": [{"id": "read-off-disk"}]}))
-
-    assert endpoints.list_models(f"file://{tmp_path}") == []
-    assert endpoints.list_models("ftp://example.invalid/v1") == []
-    assert endpoints.list_models(f"data:,{served.read_text()}") == []
-
-
-def test_listing_models_does_not_carry_the_key_across_a_redirect():
-    # `HTTPRedirectHandler.redirect_request` copies every header except content-length and
-    # content-type onto the new request — Authorization included. So an endpoint answering
-    # /v1/models with a 302 elsewhere hands the reader's real OPENAI_API_KEY to whatever it
-    # points at: reachable from a mistyped hosted gateway, an http URL redirecting to https on
-    # another host, or a captive portal. Same-origin keeps it; anything else is stripped.
-    received: list[tuple[str, str | None]] = []
-
-    def note(handler):
-        received.append((handler.path, handler.headers.get("Authorization")))
-
-    with _serving({"object": "list", "data": [{"id": "ok"}]}, observer=note) as elsewhere:
-        with _redirecting_to(f"{elsewhere}/models") as configured:
-            assert endpoints.list_models(configured, api_key="sk-REAL-SECRET") == ["ok"]
-
-    assert received, "the redirect target was never reached"
-    assert all(auth is None for _, auth in received), (
-        f"the bearer token was forwarded off-origin: {received}"
-    )
-
-
-def test_listing_models_survives_every_endpoint_that_is_not_one():
-    # The Detect button's whole contract, and every case here is one typo away in
-    # SPEECHWRITER_BASE_URL. The no-scheme case is the one that bites: `urllib.request.Request`
-    # raises at *construction*, before any socket is opened, so a try block wrapped around only
-    # the connection would let it escape into the page as a traceback.
-    assert endpoints.list_models("http://127.0.0.1:1/v1") == []
-    assert endpoints.list_models("definitely-not-a-url") == []
-    assert endpoints.list_models("") == []
-
-
-def test_listing_models_reads_ids_and_skips_rows_that_have_none():
-    # Sorted, and rows without a usable id are skipped rather than trusted, so one malformed
-    # entry does not cost the rest of an otherwise real answer.
-    served = {
-        "object": "list",
-        "data": [
-            {"id": "mlx-community/granite-4.1-8b-4bit"},
-            {"id": "mlx-community/Qwen3.8-27B-4bit"},
-            {"object": "model"},
-            {"id": ""},
-        ],
-    }
-    with _serving(served) as base_url:
-        assert endpoints.list_models(base_url) == [
-            "mlx-community/Qwen3.8-27B-4bit",
-            "mlx-community/granite-4.1-8b-4bit",
-        ]
-
-
-def test_an_endpoint_serving_nothing_is_not_reported_as_unreachable(caplog):
-    # A running Ollama with nothing pulled answers `{"object": "list", "data": null}` — that is
-    # well-formed, and a real answer meaning "none". Iterating that None raises, and the blanket
-    # `except` would then file a healthy server under "could not list", so the two would be
-    # indistinguishable in the log.
-    #
-    # Asserted on the log rather than on the return value, deliberately: both paths return [],
-    # so a test that only checked the result would pass with the shape guard deleted — it did,
-    # on the first mutation run.
-    with _serving({"object": "list", "data": None}) as base_url:
-        with caplog.at_level(logging.INFO, logger="speechwriter.endpoints"):
-            assert endpoints.list_models(base_url) == []
-
-    assert not caplog.text, f"a well-formed empty answer was logged as a failure: {caplog.text}"
-
-
-@contextlib.contextmanager
-def _serving(payload, observer=None):
-    """Run a throwaway OpenAI-shaped ``/models`` endpoint on a free loopback port.
-
-    Loopback only, and on a port the OS picks, so the suite stays free and cannot reach — or be
-    reached from — anything outside this process. ``observer`` is handed each request, for
-    tests that care about what arrived rather than what came back.
-    """
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
-            if observer is not None:
-                observer(self)
-            body = json.dumps(payload).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, format, *args):  # noqa: A002 - the base class's own parameter name
-            """Silence the default stderr access log, which pytest would otherwise capture."""
-
-    yield from _running(Handler)
-
-
-@contextlib.contextmanager
-def _redirecting_to(target):
-    """An endpoint whose ``/models`` answers 302 pointing at ``target``.
-
-    ``localhost`` rather than ``127.0.0.1`` so the redirect is genuinely cross-origin by
-    netloc while still resolving to this machine — a real second host would make the test
-    depend on the network.
-    """
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
-            self.send_response(302)
-            self.send_header("Location", target.replace("127.0.0.1", "localhost"))
-            self.end_headers()
-
-        def log_message(self, format, *args):  # noqa: A002 - the base class's own parameter name
-            """Silence the default stderr access log."""
-
-    yield from _running(Handler)
-
-
-def _running(handler):
-    """Serve ``handler`` on a free loopback port for the life of the block."""
-    server = HTTPServer(("127.0.0.1", 0), handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/v1"
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
+    # Two entries that share a label — the only way a curated roster could collide.
+    twin = config.ModelChoice(opus.label, "claude-opus-5")
+    ambiguous = roster + (twin,)
+    assert len(config.matching_choices(ambiguous, opus.label)) == 2
+    assert config.resolve_choice(ambiguous, opus.label) is None
+    # A row number is never ambiguous.
+    assert config.resolve_choice(ambiguous, "3") == twin

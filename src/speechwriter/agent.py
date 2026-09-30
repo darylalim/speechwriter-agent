@@ -2,9 +2,8 @@
 
 This is the single place that assembles the Deep Agent:
 
-* **model**        — a locally served model, reached over the OpenAI-compatible endpoint
-                     named by ``SPEECHWRITER_BASE_URL``, with an explicit output-token
-                     ceiling rather than the client's unbounded default.
+* **model**        — a Claude model (default ``claude-sonnet-5-5``) with an explicit
+                     output-token ceiling, effort level, and thinking configuration.
 * **system_prompt**— the speechwriting method (see :mod:`speechwriter.prompts`).
 * **subagents**    — ``researcher`` (Tavily) + ``style-critic`` (see :mod:`speechwriter.subagents`).
 * **skills**       — the on-demand rhetoric library under ``/skills``.
@@ -19,20 +18,20 @@ This is the single place that assembles the Deep Agent:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Any
 
 from deepagents import FilesystemPermission, create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StoreBackend
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_anthropic import ChatAnthropic
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from speechwriter.config import (
-    DEFAULT_LOCAL_CONTEXT_WINDOW,
+    DEFAULT_EFFORT,
     DEFAULT_MAX_TOKENS,
     Settings,
     load_settings,
@@ -43,31 +42,36 @@ from speechwriter.prompts import orchestrator_prompt
 from speechwriter.subagents import build_subagents
 from speechwriter.tracing import Tracing, enable_tracing
 
+logger = logging.getLogger(__name__)
 
-class _ClientKwargs(TypedDict):
-    """The ``init_chat_model`` arguments that select and shape the client.
+# How the model thinks on every call. Three things, each load-bearing:
+#
+# * `adaptive` is the only on-mode the 5.5 models accept (`budget_tokens` and `disabled` are
+#   400s), and it is what `effort` steers.
+# * `display: "summarized"` because the default on these models is `"omitted"` — thinking blocks
+#   arrive with empty text — and on Sonnet 5.5 the notes the model writes *between tool calls*
+#   come back as thinking blocks too. Omitted, a long plan/draft/critique turn reads as silence.
+# * `block_binding: drop_block` because thinking blocks are bound to the exact history that
+#   produced them, and accounts created on or after 2026-08-31 get a **400** when an edited
+#   history replays one. deepagents' `SummarizationMiddleware` edits history by design — it
+#   replaces older turns with a summary — so without this the first compaction in a long session
+#   would fail the next call outright. `drop_block` drops the stale blocks instead: the request
+#   succeeds and the model runs without that earlier reasoning, which is what compaction meant
+#   anyway. It needs the beta header below.
+_THINKING: dict[str, Any] = {
+    "type": "adaptive",
+    "display": "summarized",
+    "block_binding": {"prefix_mismatch_behavior": "drop_block"},
+}
 
-    Typed rather than left as ``dict[str, object]`` for the same reason
-    :func:`~speechwriter.subagents.build_subagents` returns ``list[SubAgent]``: every key here
-    is load-bearing and silently optional. ``init_chat_model`` takes ``**kwargs: Any``, so a
-    misspelled ``"profiles"`` or ``"base_urls"`` would be accepted and forwarded into the
-    client constructor's own ``**kwargs``, and the only symptom would be a model that never
-    compacts, or one pointed at the wrong host. Spelled out, ``ty`` rejects the typo.
-
-    **Total**, where it used to be ``total=False``. That laxity paid for one thing: the same
-    record also had to describe the *empty* dict handed to the hosted path. There is no hosted
-    path now, so every key is always supplied and the type can say so — which is what makes a
-    dropped key a type error rather than a silent fallback.
-
-    It also keeps the ``**client`` unpack matching ``init_chat_model``'s overloads: an
-    inferred ``dict`` widens its value type to a union covering ``profile``'s nested mapping,
-    which no longer satisfies the declared ``model_provider: str | None``.
-    """
-
-    model_provider: str
-    base_url: str
-    api_key: str
-    profile: dict[str, int]
+# Betas every call carries — one per feature above that needs one. Named so a request log's
+# `anthropic-beta` header greps back to the reason.
+_BETAS = [
+    # `thinking.block_binding` — see `_THINKING`.
+    "thinking-binding-controls-2026-08-01",
+    # `fallbacks: "default"` — see `_build_model`.
+    "server-side-fallback-2026-07-01",
+]
 
 
 @dataclass
@@ -85,23 +89,17 @@ class SpeechwriterAgent:
     # `bundle.agent` directly — the path the README documents — would otherwise get no
     # truncation signal at all, which is precisely what this warner exists to prevent.
     warner: TruncationWarner = field(default_factory=TruncationWarner)
-    # Appended, not inserted — the rule `config.Settings` states, and this field first broke.
+    # Appended, not inserted — the rule `config.Settings` states, and this slot first broke.
     # A default is not sufficient on its own: a consumer constructing the bundle positionally
-    # would have had their warner bound to *this* field instead, losing every truncation
-    # signal and raising from `ceiling_label` on the first comparison.
+    # would have had their warner bound to *this* field instead, losing every truncation signal.
     #
-    # The window the model is compacting for, kept beside the resolved ceiling because the two
-    # share it: output and input come out of one budget on a local server, so an override
-    # sized without reference to the window cannot be honoured. This replaced
-    # `profiled_max_tokens`, which held what LangChain's table said a *hosted* model would
-    # accept — a number that is now structurally always None, since `init_chat_model` fills a
-    # profile's `max_output_tokens` only on the Anthropic path. A field that can only ever be
-    # None is a comparison that can only ever be False, which is a warning that has quietly
-    # stopped firing rather than one that has nothing to report.
-    context_window: int = DEFAULT_LOCAL_CONTEXT_WINDOW
-    # Appended, after `context_window`, for the reason that field's comment gives. Where this
-    # process is sending traces, or None — carried on the bundle so both front ends can say so
-    # before a turn is spent, the way they already print the ceiling. It reports what is *in
+    # What LangChain's profile says this model can emit at most, or None for an id it does not
+    # profile. It took over this slot from `context_window` (which served the local path) in
+    # place, rather than being slotted anywhere tidier, so positional order is unchanged.
+    profiled_max_tokens: int | None = None
+    # Appended, after `profiled_max_tokens`, for the reason that field's comment gives. Where
+    # this process is sending traces, or None — carried on the bundle so both front ends can say
+    # so before a turn is spent, the way they already print the ceiling. It reports what is *in
     # force*, not what this bundle's settings asked for: tracing is process-wide, so after one
     # build turned it on, every later bundle is traced too and says so.
     tracing: Tracing | None = None
@@ -128,32 +126,24 @@ class SpeechwriterAgent:
         return f"{self.max_tokens:,}" if self.max_tokens is not None else "model default"
 
     @property
-    def ceiling_crowds_context(self) -> bool:
-        """Whether the resolved output ceiling leaves too little of the window for the prompt.
+    def ceiling_exceeds_model(self) -> bool:
+        """Whether the resolved ceiling is above what the model can actually emit.
 
-        The local analogue of the check this replaced. ``ceiling_exceeds_model`` compared the
-        ceiling against what a *hosted* model advertised it would emit; served locally there is
-        no such advertisement, but there is a harder constraint that the hosted path never had:
-        **output and input share one window.** A ceiling of 32,000 against a 32,768-token window
-        is not merely large, it leaves 768 tokens for the entire system prompt, the loaded
-        skills and the draft under revision. vLLM rejects that outright at the first turn;
-        others clamp it silently, which is worse, because the reader sees a short speech and no
-        error.
+        Only an explicit ``SPEECHWRITER_MAX_TOKENS`` can get here — tier 2 *is* the profiled
+        figure — and the API rejects it at the first turn rather than clamping. Reported so the
+        reader learns that before a turn is spent, and more likely after a model switch than at
+        startup, because the override is global and outlives the model it was sized for.
 
-        Half the window is the line. It is a judgement, not a measurement, and this is the
-        argument for it: a revision turn's input — prompt, skills, the draft being revised — is
-        routinely the same order of magnitude as its output, so a ceiling above half the window
-        cannot be honoured alongside a realistic prompt. :data:`DEFAULT_MAX_TOKENS` sits
-        comfortably under half of :data:`~speechwriter.config.DEFAULT_LOCAL_CONTEXT_WINDOW`, so
-        the default configuration never trips it.
-
-        A property of its own rather than a suffix on :attr:`ceiling_label`, which is where its
-        predecessor started: both front ends interpolate that label into a sentence telling the
-        reader to *raise* ``SPEECHWRITER_MAX_TOKENS``, so folding the warning in produced advice
-        that argued with itself. The label answers "what is the ceiling"; this answers "can it
-        be honoured", and the two questions belong in different sentences.
+        A property of its own rather than a suffix on :attr:`ceiling_label`: both front ends
+        interpolate that label into a sentence telling the reader to *raise*
+        ``SPEECHWRITER_MAX_TOKENS``, so folding this warning in produced advice that argued with
+        itself. The label answers "what is the ceiling"; this answers "can it be honoured".
         """
-        return self.max_tokens is not None and self.max_tokens > self.context_window // 2
+        return (
+            self.max_tokens is not None
+            and self.profiled_max_tokens is not None
+            and self.max_tokens > self.profiled_max_tokens
+        )
 
     def turn_config(self, thread_id: str) -> RunnableConfig:
         """Build the config for one invocation: thread to resume + truncation detection.
@@ -223,66 +213,83 @@ def _build_backend(settings: Settings, store: BaseStore) -> CompositeBackend:
     )
 
 
-def _build_model(settings: Settings) -> BaseChatModel:
-    """Build the chat client, settling its output-token ceiling in two tiers.
+def _chat_anthropic(settings: Settings, max_tokens: int | None) -> ChatAnthropic:
+    """One ``ChatAnthropic`` with every per-call setting this agent sends.
+
+    Built directly rather than through ``init_chat_model`` so each setting is a typed field the
+    constructor validates — ``init_chat_model`` takes ``**kwargs: Any``, where a misspelled
+    ``"thinkng"`` would be accepted and silently dropped.
+
+    * ``streaming=True`` because profiled ceilings are 128k and the Anthropic SDK refuses a
+      non-streaming request whose ``max_tokens`` could outlast its ten-minute timeout.
+      ``invoke`` still returns one aggregated message, so nothing downstream changes.
+    * ``fallbacks: "default"`` (via ``model_kwargs``, since the field is newer than the
+      client's typed surface): when a safety classifier declines a turn, the API re-runs it on a
+      fallback model inside the same call instead of returning an empty ``refusal``. It is the
+      documented default for the 5.5 models. What it cannot rescue still arrives as
+      ``stop_reason="refusal"``, which :class:`~speechwriter.observability.TruncationWarner`
+      counts.
+    * No ``temperature``, ``top_p`` or ``top_k`` — the 5.5 models reject non-default values
+      with a 400. See the invariant in CLAUDE.md.
+    * ``api_key`` omitted when unset rather than passed as ``None``: the client then falls back
+      to its own empty default, still constructs, and fails only at the first call — which is
+      what keeps ``build_agent`` offline for the test suite.
+    """
+    credentials: dict[str, Any] = (
+        {"api_key": settings.anthropic_api_key} if settings.anthropic_api_key else {}
+    )
+    return ChatAnthropic(
+        model=settings.model,
+        max_tokens=max_tokens,
+        effort=DEFAULT_EFFORT,
+        thinking=_THINKING,
+        betas=list(_BETAS),
+        streaming=True,
+        model_kwargs={"fallbacks": "default"},
+        **credentials,
+    )
+
+
+def _build_model(settings: Settings) -> ChatAnthropic:
+    """Build the chat client, settling its output-token ceiling in three tiers.
 
     1. An explicit ``SPEECHWRITER_MAX_TOKENS`` always wins.
-    2. Otherwise :data:`~speechwriter.config.DEFAULT_MAX_TOKENS`.
+    2. Otherwise, a ceiling LangChain resolved from the model's profile (128k for the 5.5 ids)
+       is kept as-is.
+    3. Only an id with *no* profile falls back to
+       :data:`~speechwriter.config.DEFAULT_MAX_TOKENS`, with a warning.
 
-    **There used to be a middle tier, and it is gone by construction rather than by choice.**
-    It kept a ceiling the client had resolved for itself — 64k-128k for a Claude id, out of
-    LangChain's model-profile table. ``init_chat_model`` reads a profile's ``max_tokens`` only
-    on the Anthropic path, so with that client removed the tier can never fire: ``ChatOpenAI``
-    comes back with ``max_tokens=None`` whatever the id, including a *profiled* one such as
-    ``gpt-4o`` behind LiteLLM. Left in place it would have been a branch that reads as live
-    protection and is dead — the worst kind — so it is deleted rather than kept for symmetry.
+    Tier 3 is the one that bites. ``ChatAnthropic`` gives an unprofiled id a ceiling of 4096,
+    and adaptive thinking bills against the same budget — so a subagent can spend it all
+    deliberating and emit no text, which deepagents forwards as an *empty* tool result with
+    ``status="success"``. The failure is silent, and the orchestrator pays to retry it. It is
+    not hypothetical: ``langchain-anthropic`` 1.6.1 did not profile the 5.5 ids, so the default
+    model ran on exactly this path until the pin moved to 1.7.5.
 
-    That also removes the reason the old tier 3 logged a warning. An unprofiled id used to mean
-    a typo; now it is every id, so a line on every build would be noise. What reports the
-    resolved ceiling is :attr:`SpeechwriterAgent.ceiling_label`, which both front ends already
-    print before a turn is spent, and :class:`~speechwriter.observability.TruncationWarner`,
-    which counts the responses that actually hit it.
-
-    Tier 2 is the one that bites, and it is why the ceiling is pinned at all rather than left
-    to the client's own ``None`` ("let the server decide"). Extended thinking bills against the
-    same ceiling, so an unbounded reasoning model can spend a whole response deliberating and
-    emit no text — deepagents forwards that as an *empty* tool result with ``status="success"``
-    (it walks back for the last message with text and finds none), so the failure is silent and
-    the orchestrator pays to retry it.
-
-    Constructing the client performs no network I/O, so ``build_agent`` stays offline:
-    ``base_url`` is recorded on the client, never probed, so an unreachable server fails at the
-    first turn rather than at build time.
+    Constructing the client performs no network I/O, so ``build_agent`` stays offline.
     """
-    # The client is selected by URL, not by model id: "mlx-community/Qwen3.8-27B-4bit" carries
-    # no provider prefix for `init_chat_model` to infer, so the provider is stated outright.
-    #
-    # `profile` is not about the output ceiling — `init_chat_model` reads a profile's
-    # `max_tokens` only on the Anthropic path, so it does not feed the tiers below. It is about
-    # *input*: deepagents sizes its context-compaction trigger from the model's profile, and an
-    # id LangChain does not profile — which every locally served id is — gets a flat 170k-token
-    # trigger instead of a fraction of its real window. No local server has a 170k window, so
-    # without this the plan/draft/critique/revise rhythm outgrows the window and the server
-    # errors before compaction ever fires. See `config.DEFAULT_LOCAL_CONTEXT_WINDOW`. Only
-    # `max_input_tokens` is carried: a `max_output_tokens` key here is inert (measured), and
-    # would imply a ceiling mechanism this path does not have.
-    client: _ClientKwargs = {
-        "model_provider": "openai",
-        "base_url": settings.base_url,
-        "api_key": settings.endpoint_api_key,
-        "profile": {"max_input_tokens": settings.context_window or DEFAULT_LOCAL_CONTEXT_WINDOW},
-    }
+    if settings.max_tokens is not None:
+        return _chat_anthropic(settings, settings.max_tokens)
 
-    ceiling = settings.max_tokens if settings.max_tokens is not None else DEFAULT_MAX_TOKENS
-    return init_chat_model(settings.model, max_tokens=ceiling, **client)
+    model = _chat_anthropic(settings, None)
+    if (model.profile or {}).get("max_output_tokens"):
+        return model
+
+    logger.warning(
+        "No output ceiling resolved for %r (no LangChain model profile) — it would otherwise "
+        "inherit a 4096-token ceiling, which thinking alone can exhaust. Using max_tokens=%d "
+        "instead; set SPEECHWRITER_MAX_TOKENS to override.",
+        settings.model,
+        DEFAULT_MAX_TOKENS,
+    )
+    return _chat_anthropic(settings, DEFAULT_MAX_TOKENS)
 
 
 def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     """Assemble and compile the speechwriter Deep Agent.
 
     Constructing the agent does **not** call the model or the network, so this is safe to run
-    in tests. The endpoint in ``settings.base_url`` is recorded on the client and never probed,
-    so a server that is not running yet fails at the first turn rather than here.
+    in tests — with or without ``ANTHROPIC_API_KEY``, which is only read at the first turn.
     """
     settings = settings or load_settings()
     store = load_store(settings)
@@ -291,12 +298,12 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
     backend = _build_backend(settings, store)
 
     # Built, not named: a bare model string would inherit a 4096-token ceiling for any id
-    # LangChain cannot profile. See `_build_model`.
+    # LangChain cannot profile, and would carry none of the thinking settings. See `_build_model`.
     model = _build_model(settings)
 
     # Here rather than in each front end so that every entry point — CLI, web UI, eval harness,
-    # a library consumer — is traced alike, as LangSmith's environment variables used to make
-    # them. Opens no socket (the first batch does), so the offline invariant holds.
+    # a library consumer — is traced alike. Opens no socket (the first batch does), so the
+    # offline invariant holds.
     tracing = enable_tracing(settings)
 
     agent = create_deep_agent(
@@ -315,6 +322,9 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         name="speechwriter",
     )
 
+    # Read with `getattr` rather than as ChatAnthropic attributes: `_build_model` is the seam the
+    # prompt-vs-tools test swaps for a recording stub, which is a chat model without either.
+    profile = getattr(model, "profile", None) or {}
     return SpeechwriterAgent(
         agent=agent,
         store=store,
@@ -322,9 +332,6 @@ def build_agent(settings: Settings | None = None) -> SpeechwriterAgent:
         # Read off the *constructed* client rather than from `settings`, which carries only the
         # override: this is the figure a banner can promise before a turn is spent.
         max_tokens=getattr(model, "max_tokens", None),
-        # The same value `_build_model` put in the client's profile, and it has to be resolved
-        # the same way — `settings.context_window` is None for every choice that did not name
-        # one, and reporting None as the window would silently disable `ceiling_crowds_context`.
-        context_window=settings.context_window or DEFAULT_LOCAL_CONTEXT_WINDOW,
+        profiled_max_tokens=profile.get("max_output_tokens"),
         tracing=tracing,
     )

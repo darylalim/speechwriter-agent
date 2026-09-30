@@ -31,10 +31,9 @@ SUGGESTIONS = {
 
 bundle = get_bundle()
 history = transcript()
-# Not "is a credential present" — a locally served model needs none of ours, so that question
-# became true for every configuration when the hosted client left. What can still be wrong
-# before a socket is opened is the endpoint's *shape*, which is what this gates on.
-endpoint_usable = bundle.settings.model_endpoint_usable
+# A presence check, never a probe — validating the key would break the offline-build invariant,
+# and a wrong key fails at the first turn with the provider's own 401.
+has_key = bundle.settings.model_credentials_present
 # Drained here, before anything renders or can raise. The queue has to be emptied by the run
 # that sees it, and the further down the script that happens the more ways there are to leave
 # it armed — a render that raises, a page switch, a stop landing during a cold start. Losing a
@@ -87,27 +86,17 @@ if not history:
             on_change=_queue_suggestion,
             label_visibility="collapsed",
             # Matched to the chat input below. A pill that takes the click and then silently
-            # drops it — which is all the `and endpoint_usable` guard below can do — is worse
+            # drops it — which is all the `and has_key` guard below can do — is worse
             # than one that shows it is not available.
-            disabled=not endpoint_usable,
+            disabled=not has_key,
         )
 
-if not endpoint_usable:
-    # Narrow, and honest about being narrow. This is not "the server is down" — nothing here
-    # probes, and the sidebar already names the endpoint the agent is pointed at. It is the one
-    # failure visible without a socket: a `SPEECHWRITER_BASE_URL` that `urllib` cannot even
-    # build a request from, which `config._configured_endpoint` deliberately passes through
-    # unrewritten rather than silently replacing with the default.
-    #
-    # Reachable two ways: a malformed value in the environment, or one typed into the endpoint
-    # field this session. The fix is the same control either way, so unlike its predecessor
-    # this needs no branch on how the reader got here.
+if not has_key:
     st.error(
-        f"`{bundle.settings.base_url}` is not an endpoint the agent can call, so no turn will "
-        "reach it. Open **Local endpoint** in the sidebar and point it at an OpenAI-compatible "
-        "server (it needs an `http`/`https` scheme and a host), or set a valid "
-        "`SPEECHWRITER_BASE_URL` in a local dotenv file and restart the app.",
-        icon=":material/link_off:",
+        "No `ANTHROPIC_API_KEY` found. Every turn is sent to Claude, so add the key to a "
+        "local dotenv file at the project root (`ANTHROPIC_API_KEY=sk-ant-...`) and restart "
+        "the app.",
+        icon=":material/key_off:",
     )
 
 for turn in history:
@@ -115,7 +104,7 @@ for turn in history:
 
 # `submit_mode="stop"` turns the send button into a stop button while a turn is running, so
 # a commission that goes long can be cancelled instead of being waited out.
-typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=not endpoint_usable)
+typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=not has_key)
 # The queue was already drained at the top of the script, so this only chooses. Reading it
 # here as `typed or st.session_state.pop(...)` would short-circuit the pop whenever a typed
 # brief wins and leave the suggestion armed — Streamlit coalesces a pending rerun with a new
@@ -123,7 +112,7 @@ typed = st.chat_input("Describe your speech…", submit_mode="stop", disabled=no
 # turn runs, so a pill click and a typed brief really do arrive together.
 prompt: str | None = typed or queued
 
-if prompt and endpoint_usable:
+if prompt and has_key:
     with st.chat_message("user"):
         st.markdown(prompt)
     with st.chat_message("assistant"):

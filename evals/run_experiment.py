@@ -42,7 +42,7 @@ if TYPE_CHECKING:
     # function bodies stays deferred; `from __future__ import annotations` makes it sufficient.
     from phoenix.client.resources.experiments.types import ExperimentEvaluation
 
-    from speechwriter.config import ModelChoice, Settings
+    from speechwriter.config import Settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -122,27 +122,12 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     return RunRecord(text=text, calls=tuple(calls), artifacts=tuple(artifacts))
 
 
-def configured_choice() -> ModelChoice:
-    """The model/endpoint pair the environment currently names, as one record."""
-    from speechwriter.config import ModelChoice, load_settings
-
-    settings = load_settings()
-    return ModelChoice(settings.model, settings.model, settings.base_url, settings.context_window)
-
-
 def configured_settings() -> Settings:
     """The whole configuration in force right now — what the judge must be built from.
 
-    A :class:`~speechwriter.config.ModelChoice` is not enough, and used to be what was captured
-    here. ``ModelChoice.applied_to`` moves the *credential* along with the pair now, dropping
-    ``openai_api_key`` unless the choice names the endpoint the settings were configured with —
-    so applying the captured judge to a ``load_settings()`` read *after* :func:`apply_model` has
-    blanked ``SPEECHWRITER_BASE_URL`` compares the judge's endpoint against ``None``, decides it
-    is a stranger, and sends the placeholder bearer instead of the real key. Every judge call
-    then 401s, and only when ``--model`` is used, which is the one path that has a judge to pin.
-
-    Capturing the settings whole sidesteps the question: the judge is built from exactly the
-    configuration that was in force before the override, credential included.
+    Captured whole, before :func:`apply_model`, so the judge is built from exactly the
+    configuration that was in force before the override — model and credential together —
+    rather than re-derived from an environment ``--model`` has since changed.
     """
     from speechwriter.config import load_settings
 
@@ -157,11 +142,8 @@ def apply_model(requested: str) -> None:
     environment each time. ``load_dotenv`` never overrides an already-set variable, so a value
     put here survives the priming that follows.
 
-    A roster label or id resolves to a whole :class:`~speechwriter.config.ModelChoice`, and the
-    endpoint moves with it. That half is not cosmetic: ``base_url`` — never the id — is what
-    selects the client, so choosing a Claude entry while ``SPEECHWRITER_BASE_URL`` happens to be
-    exported would otherwise send that id to a local server. Anything unrecognised is passed
-    through verbatim as an id the operator means literally, endpoint untouched.
+    A roster label or id resolves to a :class:`~speechwriter.config.ModelChoice`; anything
+    unrecognised is passed through verbatim as an id the operator means literally.
     """
     from speechwriter.config import (
         load_settings,
@@ -170,76 +152,33 @@ def apply_model(requested: str) -> None:
         resolve_choice,
     )
 
-    # Against the *full* roster, not just the curated tuple: the label a reader copies out of
-    # `/model` or the sidebar for a local model is "<id> (local)", and matching only
-    # MODEL_CHOICES passed that whole string through as a model id — so the server 404s at the
-    # first turn of every graded example, long after the temp homes are set up.
+    # Against the *full* roster, not just the curated tuple, so an off-roster SPEECHWRITER_MODEL
+    # the reader copies out of `/model` or the sidebar resolves to itself.
     roster = model_choices(load_settings())
     choice = resolve_choice(roster, requested)
     if choice is None and len(matching_choices(roster, requested)) > 1:
         # `resolve_choice` answers None for "no such entry" *and* for "two entries by that
-        # name", and the pass-through below is only right for the first. One id served by two
-        # machines makes the second reachable — the same weights on a laptop and a workstation,
-        # or an identical Ollama tag — and passing it through would set the id while leaving
-        # SPEECHWRITER_BASE_URL pointed at whichever server it already named.
-        # The remedy is the ROW NUMBER, not the label. `local_choice` labels an entry with the
-        # bare model id, so two servers serving one id have identical labels and
-        # `matching_choices` matches on either — telling the reader to "use the label" would
-        # print the same string twice and name no way out. The endpoint is the only thing that
-        # differs, so it is what the message shows, beside the index that selects it.
+        # name", and the pass-through below is only right for the first.
         raise SystemExit(
-            f"--model {requested!r} names more than one roster entry — the same id on more "
-            f"than one server. Select by row number instead:\n"
+            f"--model {requested!r} names more than one roster entry. Select by row number:\n"
             + "\n".join(
-                f"  --model {roster.index(match) + 1}   {match.model}   {match.base_url}"
+                f"  --model {roster.index(match) + 1}   {match.label}   {match.model}"
                 for match in matching_choices(roster, requested)
             )
         )
-    if choice is not None:
-        os.environ["SPEECHWRITER_MODEL"] = choice.model
-        # Set to empty, never popped. Every later `load_settings()` — in `prime_environment`,
-        # in `run_phoenix`, and in the `build_agent()` of every graded example — reloads
-        # the dotenv, and `load_dotenv` only skips keys already present in `os.environ`, so
-        # a popped variable comes straight back. An empty one stays: it is *present*, so the
-        # dotenv will not override it.
-        #
-        # No `or ""` guard: a choice always carries an endpoint now, because `ModelChoice` makes
-        # an id without one unrepresentable, so this is always a real URL. It is still *set*
-        # rather than left alone — the whole point of `--model` taking a pair is that both
-        # halves move together. (A blank value would no longer mean what it used to, either:
-        # `load_settings` reads `"" -> DEFAULT_LOCAL_ENDPOINT` now, not `"" -> None`.)
-        os.environ["SPEECHWRITER_BASE_URL"] = choice.base_url
-        return
-    os.environ["SPEECHWRITER_MODEL"] = requested
+    os.environ["SPEECHWRITER_MODEL"] = choice.model if choice is not None else requested
 
 
 def model_slug() -> str:
     """A filename-safe tag for the model in force, for naming an experiment after it.
 
-    Call only after :func:`prime_environment`. **The host is part of the tag**, and it carries
-    exactly the weight the old ``-local`` suffix did. That suffix separated a model served
-    locally from the same id served by Anthropic; with no hosted path left it would be true of
-    every run and separate nothing, while the distinction it existed to make — same id, two
-    different systems under test — is now precisely the one between two *servers*. An
-    experiment name that could not tell them apart would silently pool their results.
-
-    The cost is a noisier name on the common single-server setup. That is the right side to err
-    on: a name that is ugly is a nuisance, a name that merges two experiments is a wrong number.
+    Call only after :func:`prime_environment`. The model id alone identifies the system under
+    test now that every model is served by one API; the host suffix it carried while models
+    were served locally separated two *servers*, and there is only one.
     """
-    from urllib.parse import urlsplit
-
     from speechwriter.config import load_settings
 
-    settings = load_settings()
-    # Host and port, never `netloc`: that carries any `user:password@` in the endpoint, and the
-    # name is stored in Phoenix and printed in every link to the experiment.
-    parts = urlsplit(settings.base_url)
-    try:
-        port = parts.port
-    except ValueError:  # an out-of-range port names no server; the host still does
-        port = None
-    host = f"{parts.hostname or ''}-{port or ''}"
-    raw = f"{settings.model}-{host}".casefold()
+    raw = load_settings().model.casefold()
     slug = "".join(char if char.isalnum() else "-" for char in raw)
     return "-".join(part for part in slug.split("-") if part)
 
@@ -323,9 +262,8 @@ def grade(
         from speechwriter.agent import _build_model
         from speechwriter.config import load_settings
 
-        # The pinned judge is used *as captured*, never re-applied to the current environment:
-        # `apply_model` has since blanked SPEECHWRITER_BASE_URL, and `applied_to` would read
-        # that as "this endpoint is a stranger" and withhold the endpoint credential.
+        # The pinned judge is used *as captured*, never re-applied to the current environment,
+        # which `apply_model` has since pointed at the model under test.
         settings = judge if judge is not None else load_settings()
         scores += judge_example(_build_model(settings), dataset, run, example)
     return scores
@@ -508,9 +446,10 @@ def run_phoenix(dataset: str, limit: int, no_judge: bool, judge: Settings | None
             "judge": None if no_judge else graded_by.model,
             "examples": [str(e["id"]) for e in chosen],
         },
-        # Sequential, and never retried. One local server serves every turn, so concurrency
-        # only makes them queue; and a failed turn re-run three times (the default) is three
-        # full agent runs spent reproducing one error.
+        # Sequential, and never retried. `invoke_agent` repoints the process-wide
+        # SPEECHWRITER_HOME per example, so concurrent tasks would write into each other's
+        # homes; and a failed turn re-run three times (the default) is three full agent runs
+        # spent reproducing one error.
         retries=0,
     )
     url = client.experiments.get_experiment_url(

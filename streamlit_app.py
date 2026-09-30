@@ -11,33 +11,21 @@ Configuration is read the same way the CLI reads it — ``build_agent()`` calls
 deliberately unused: a second config source would be one more place for the model id or an
 API key to disagree with itself.
 
-The two sidebar controls — the model picker and the endpoint field — are the exception, and it
-is a narrow one. Neither reads configuration from anywhere new: they *override* a field for this
-session, in memory, and the environment remains the durable setting the next start reads. There
-is still exactly one place a credential can be written down.
-
-The endpoint field is deliberately not a second config source. It decides which server the
-Detect button *asks*, never which model is running — that changes only when the picker says so
-— and it is seeded from ``SPEECHWRITER_BASE_URL`` so the box always shows what will be asked.
-It is drawn unconditionally because the reader it exists for has configured nothing at all.
+The model picker is the one exception, and it is a narrow one. It reads configuration from
+nowhere new: it *overrides* the model for this session, in memory, and the environment remains
+the durable setting the next start reads. There is still exactly one place a credential can be
+written down.
 """
 
 import streamlit as st
 
-from speechwriter.config import DEFAULT_LOCAL_ENDPOINT
 from speechwriter.webui import (
-    ENDPOINT_KEY,
     MODEL_KEY,
-    apply_endpoint,
     available_choices,
-    base_settings,
     build_error,
-    detect_models,
-    detections,
     get_bundle,
     init_session,
     reset_conversation,
-    session_endpoint,
     switch_model,
 )
 
@@ -57,15 +45,12 @@ failed_pick = build_error()
 
 with st.sidebar:
     with st.container(horizontal=True):
-        # `model_endpoint_usable`, the property the chat input also gates on and the one
-        # `config.py` names as the contract for both front ends. It replaced
-        # `model_credentials_present` when the hosted client left: a locally served model needs
-        # no credential of ours, so "is a key present" became true for every configuration —
-        # a badge that is always green is a badge that has stopped reporting.
-        if settings.model_endpoint_usable:
+        # `model_credentials_present`, the property the chat input also gates on and the one
+        # `config.py` names as the contract for both front ends.
+        if settings.model_credentials_present:
             st.badge("Ready", icon=":material/check_circle:", color="green")
         else:
-            st.badge("Endpoint unusable", icon=":material/link_off:", color="red")
+            st.badge("No API key", icon=":material/key_off:", color="red")
 
         if settings.research_enabled:
             st.badge("Research", icon=":material/travel_explore:", color="blue")
@@ -100,89 +85,19 @@ with st.sidebar:
             # Reported next to the picker that caused it, not at the top of the page: the reader
             # needs to see which entry failed and choose again in one glance.
             st.caption(f":red[Could not switch — {failed_pick}]")
-        # Beside the ceiling, not inside the fold below: this names where the model that is
-        # *running* is served, which the endpoint field does not — that field holds whatever
-        # server the reader is currently pointing Detect at, and the two differ the moment they
-        # go looking at a second one. A local server that is simply not running looks like a
-        # hung turn unless the UI said where it pointed, which is the same reason the CLI banner
-        # gives `endpoint` a line of its own. Unconditional now that there is one kind of
-        # endpoint, and most useful in exactly the case that used to hide it: with nothing
-        # configured this is the documented default, which the reader has never seen.
-        st.caption(f"Endpoint — `{settings.base_url}`")
         st.caption(f"Output ceiling — {bundle.ceiling_label}")
         # Only when on: the CLI banner lists every setting, but this sidebar is for what the
         # reader can act on, and "not tracing" is the default rather than something to fix.
         if bundle.tracing is not None:
             st.caption(f"Traces — `{bundle.tracing.label}`")
-        if bundle.ceiling_crowds_context:
+        if bundle.ceiling_exceeds_model:
             # Its own line, not a suffix on the caption above: the ceiling is a number, this is
-            # "that number cannot be honoured". SPEECHWRITER_MAX_TOKENS is global and outlives
-            # the model it was sized for, and served locally the output shares one window with
-            # the prompt — so an override sized for a roomier model starves the input here.
+            # "that number will be refused". SPEECHWRITER_MAX_TOKENS is global and outlives the
+            # model it was sized for, so an override sized for a roomier model is rejected here.
             st.caption(
-                f":red[Over half this model's {bundle.context_window:,}-token window, leaving "
-                f"little room for the prompt — unset `SPEECHWRITER_MAX_TOKENS`.]"
+                f":red[Above this model's {bundle.profiled_max_tokens:,}-token maximum — lower "
+                f"or unset `SPEECHWRITER_MAX_TOKENS`.]"
             )
-
-        # Always drawn, and that is the point of it: an endpoint that could only be reached
-        # when `SPEECHWRITER_BASE_URL` was already set left the one reader this is for — the
-        # one whose server is on some other port — editing a dotenv and restarting.
-        # Folded away rather than inline because it is a setup step, not a per-turn control,
-        # and the sidebar's primary job is naming the model that is running.
-        with st.expander("Local endpoint", icon=":material/dns:", type="compact"):
-            st.text_input(
-                "OpenAI-compatible server",
-                key=ENDPOINT_KEY,
-                on_change=apply_endpoint,
-                placeholder=DEFAULT_LOCAL_ENDPOINT,
-                help=(
-                    "A local `mlx_lm.server`, vLLM, LM Studio or Ollama. Detect adds the "
-                    "models it serves to the list above, for this session only — the "
-                    "environment stays the durable setting."
-                ),
-            )
-            configured = base_settings()
-            target = session_endpoint()
-            typed = (st.session_state.get(ENDPOINT_KEY) or "").strip()
-            found = detections()
-            st.button(
-                "Detect models",
-                icon=":material/sync:",
-                on_click=detect_models,
-                help="Ask this endpoint which models it serves, and add them to the list above.",
-                width="stretch",
-                # Same rule the suggestion pills follow in `write.py`: a control that takes the
-                # click and silently drops it is worse than one that shows it is unavailable.
-                # Nothing askable in the box means there is no server to ask.
-                disabled=target is None,
-            )
-            if typed and target is None:
-                # Said before a probe is attempted, because "that is not an endpoint" and "that
-                # endpoint answered nothing" are different facts and only one of them is worth
-                # retyping the URL over.
-                #
-                # It names a working example rather than only the verdict, because the reader
-                # facing this did not necessarily type it: the browser restores form fields, and
-                # a malformed `SPEECHWRITER_BASE_URL` is seeded verbatim on purpose. Arriving at
-                # a red caption about text you have no memory of writing is only actionable if
-                # the caption says what the shape should be.
-                st.caption(f":red[Not an HTTP endpoint — try `{DEFAULT_LOCAL_ENDPOINT}`.]")
-            elif found:
-                st.caption(f"Found {len(found)} model(s) — pick one above.")
-            elif found is not None:
-                # Distinct from "never asked": an endpoint that answered with nothing is a real
-                # result, and reads as a broken button if it renders the same as silence.
-                st.caption("That endpoint listed no models — is the server running?")
-            withheld = (
-                target and configured.openai_api_key and not configured.endpoint_api_key_for(target)
-            )
-            if withheld:
-                # Otherwise a hosted endpoint 401s and renders as "listed no models", which
-                # sends the reader to check a server that is answering perfectly well.
-                st.caption(
-                    ":orange[No credential sent — `OPENAI_API_KEY` reaches only the endpoint "
-                    "set in the environment.]"
-                )
 
     # The two on-disk locations are diagnostic, not glanceable, and long absolute paths
     # wrap awkwardly in a narrow sidebar — so they live one fold down rather than crowding

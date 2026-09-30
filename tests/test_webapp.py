@@ -12,7 +12,6 @@ import importlib
 import os
 import re
 import tomllib
-from dataclasses import replace
 
 import pytest
 import streamlit as st
@@ -240,9 +239,8 @@ def test_previews_cannot_break_out_of_their_code_span():
 def test_a_recorded_turn_replays_with_its_truncation_warning(monkeypatch, tmp_path):
     # Replay is the path the user sees after every turn, and it runs without the model —
     # so it is worth proving that a turn which hit the ceiling still says so on redraw.
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -265,16 +263,12 @@ def test_a_recorded_turn_replays_with_its_truncation_warning(monkeypatch, tmp_pa
 
 
 def test_web_app_renders_without_network_or_api_key(monkeypatch, tmp_path):
-    # A machine with nothing configured — no credential of ours anywhere — is the reader this
-    # app is now built for, so "renders" is not the whole assertion: the page has to come up
-    # *usable*. While the gate asked "is an API key present" this was the broken configuration
-    # and the test asserted on the setup error it produced; it is the ordinary configuration
-    # now, and a gate that quietly went back to demanding a key fails here.
+    # With no key the page must still *render* — offline, with no exception — but it must not
+    # pretend to be usable: every turn is sent to Claude, so the chat box is disabled and the
+    # page says what to set. A gate that quietly stopped asking would let a brief through to a
+    # call that can only 401.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    # Unset rather than pointed anywhere: that pins the documented default pair, where an
-    # exported endpoint would aim the run at whatever the developer happens to be serving.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     # The bundle is cached across the process, so a leftover from another test would pin
     # this run to the wrong SPEECHWRITER_HOME.
@@ -283,18 +277,14 @@ def test_web_app_renders_without_network_or_api_key(monkeypatch, tmp_path):
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not app.exception
-    # Nothing to set up: no error panel, and the chat box takes a commission. Still offline —
-    # `_build_model` records `base_url` on the client and never probes it, so this passes with
-    # no server listening on the default port at all.
-    assert not app.error
-    assert not app.chat_input[0].disabled
-    assert _picked(app) == config.local_choice(config.DEFAULT_MODEL, config.DEFAULT_LOCAL_ENDPOINT)
+    assert any("ANTHROPIC_API_KEY" in error.value for error in app.error)
+    assert app.chat_input[0].disabled
+    assert _picked(app) == config.MODEL_CHOICES[0]
 
 
 def test_both_pages_render(monkeypatch, tmp_path):
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -372,9 +362,8 @@ def test_document_reader_reflects_a_newly_written_draft(monkeypatch, tmp_path):
 def test_memory_view_renders_a_seeded_profile(monkeypatch, tmp_path):
     # The browse page's Memory branch (an expander per profile) was never driven by a test,
     # so a crash there would only surface when a human opened the page.
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -454,15 +443,13 @@ def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
         )
 
 
-def test_the_status_badge_gates_on_the_endpoint_shape(monkeypatch, tmp_path):
+def test_the_status_badge_gates_on_the_key(monkeypatch, tmp_path):
     # The badge and the chat input are two independent literals reading one property, and they
     # have disagreed before: the input honoured the documented contract while the badge read a
-    # credential field of its own, so a model served over SPEECHWRITER_BASE_URL ran perfectly
-    # under a red "no key" badge. The contract is `model_endpoint_usable` now — a *shape* check
-    # that opens no socket — and the same two consumers still have to agree about it.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
+    # field of its own. The contract is `model_credentials_present`, and both consumers still
+    # have to agree about it — in both directions.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     st.cache_resource.clear()
 
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
@@ -471,33 +458,26 @@ def test_the_status_badge_gates_on_the_endpoint_shape(monkeypatch, tmp_path):
     # Badges render as Markdown directives, so this reads the rendered text rather than a
     # `st.badge` accessor, which AppTest does not expose.
     assert any("Ready]" in block.value for block in app.markdown)
-    # And the page must not tell a working local setup to go and fix something.
     assert not app.error
     assert not app.chat_input[0].disabled
 
     # The mirror. Without it, hardcoding the badge to "Ready" passes the whole suite — the same
-    # lie this test exists to catch, told in the other direction. An *unset* endpoint is no
-    # longer that mirror: it falls back to the default pair and is perfectly usable. `file://`
-    # is, and it is the value the shape check was written for — `urlopen`'s default opener
-    # installs a `FileHandler`, so an unrejected one reads models straight off local disk.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "file:///Users/you/private")
+    # lie this test exists to catch, told in the other direction.
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
     st.cache_resource.clear()
     bare = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not bare.exception
-    assert any("Endpoint unusable]" in block.value for block in bare.markdown)
+    assert any("No API key]" in block.value for block in bare.markdown)
     assert bare.chat_input[0].disabled
-    # Reported in the page rather than crashing it, and it names the offending string: the
-    # reader has to know *which* value to go and fix.
-    assert any("file:///Users/you/private" in error.value for error in bare.error)
 
 
 def _picked(app) -> config.ModelChoice:
     """The whole ``ModelChoice`` the sidebar picker is showing.
 
-    The isinstance check is the point as well as the narrowing: the widget carries the model and
-    the endpoint as one record, and a refactor that reduced it to a bare id string would take
-    the two apart — which is exactly the state ``ModelChoice`` exists to make unrepresentable.
+    The isinstance check is the point as well as the narrowing: the widget carries the label
+    and the id as one record, and a refactor that reduced it to a bare string would let the
+    caption and the model that is built drift apart.
     """
     value = app.sidebar.selectbox[0].value
     assert isinstance(value, config.ModelChoice), value
@@ -506,48 +486,36 @@ def _picked(app) -> config.ModelChoice:
 
 def test_the_sidebar_picker_rebuilds_the_agent_on_the_chosen_model(monkeypatch, tmp_path):
     # The whole feature, end to end. Picking a model has to *rebuild* the bundle, not merely
-    # record a preference — and what discriminates a rebuild from a no-op had to move. It used
-    # to be the resolved output ceiling, which separated Sonnet 5 (128k) from Haiku 4.5 (64k);
-    # that figure is global now, so every locally served model resolves to the same
-    # `DEFAULT_MAX_TOKENS` and a switch between two of them would pass with no rebuild at all.
-    # `context_window` is the per-entry figure that replaced it: `ModelChoice` carries it,
-    # `_build_model` puts it in the client's profile, and `build_agent` reports it back off the
-    # bundle it built — so it discriminates exactly where the ceiling used to.
+    # record a preference. The resolved ceiling discriminates: the curated models are profiled
+    # at 128k, an unprofiled id resolves to the 32k floor, and `build_agent` reads the figure
+    # off the client it constructed — so a pick that recorded a preference without rebuilding
+    # would leave the caption quoting the old figure.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-not-a-real-model-9")
     monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
     st.cache_resource.clear()
 
-    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
-    # Two models one server would offer, differing in the window they declare. Seeded as
-    # detections because that is the only roster source a test can hand the page: `MODEL_CHOICES`
-    # is empty by design, so every other entry is synthesised from the environment's own pair.
-    app.session_state[webui.DETECTED_KEY] = [
-        config.local_choice("local/roomy", config.DEFAULT_LOCAL_ENDPOINT, 65_536),
-        config.local_choice("local/tight", config.DEFAULT_LOCAL_ENDPOINT, 16_384),
-    ]
-    app.run()
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
 
     assert not app.exception
     picker = app.sidebar.selectbox[0]
-    # Detections first, then the configured pair — the order `model_choices` promises and the
-    # picker's `index=choices.index(current)` depends on.
-    assert list(picker.options) == ["local/roomy", "local/tight", config.DEFAULT_MODEL]
-    assert _picked(app).model == config.DEFAULT_MODEL
-    # `get_bundle` is a process-global `cache_resource`, so this is the very bundle the page
-    # just rendered rather than a second one built here.
-    assert webui.get_bundle().context_window == config.DEFAULT_LOCAL_CONTEXT_WINDOW
-    ceilings = [
-        caption.value for caption in app.sidebar.caption if "Output ceiling" in caption.value
-    ]
-    assert ceilings == [f"Output ceiling — {config.DEFAULT_MAX_TOKENS:,}"], ceilings
+    # The curated roster first, then the off-roster id the environment configured — the order
+    # `model_choices` promises and the picker's `index=choices.index(current)` depends on.
+    labels = [choice.label for choice in config.MODEL_CHOICES]
+    assert list(picker.options) == [*labels, "claude-not-a-real-model-9"]
+    assert _picked(app).model == "claude-not-a-real-model-9"
 
-    app.sidebar.selectbox[0].select("local/tight").run()
+    def ceilings(app) -> list[str]:
+        return [c.value for c in app.sidebar.caption if "Output ceiling" in c.value]
+
+    assert ceilings(app) == [f"Output ceiling — {config.DEFAULT_MAX_TOKENS:,}"]
+
+    app.sidebar.selectbox[0].select(labels[1]).run()
 
     assert not app.exception
-    assert _picked(app).model == "local/tight"
-    assert webui.get_bundle().context_window == 16_384
+    assert _picked(app) == config.MODEL_CHOICES[1]
+    assert webui.get_bundle().settings.model == config.MODEL_CHOICES[1].model
+    assert ceilings(app) == ["Output ceiling — 128,000"], ceilings(app)
 
 
 def test_switching_models_in_the_browser_saves_before_it_invalidates(monkeypatch, tmp_path):
@@ -559,14 +527,11 @@ def test_switching_models_in_the_browser_saves_before_it_invalidates(monkeypatch
     # Driven through `webui` directly rather than through AppTest, because the callback runs
     # between reruns and the widget only reports where it ended up, not what it did on the way.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     st.cache_resource.clear()
 
     # Warm the cache *before* the pick is recorded, which is the real sequence: the callback
-    # fires while the bundle for the previous model is still cached. Setting the choice first
-    # would make `get_bundle()` build the new model inside `switch_model`, and the guard against
-    # switching to what is already running would (correctly) return early.
+    # fires while the bundle for the previous model is still cached.
     webui.get_bundle()
 
     order: list[str] = []
@@ -576,9 +541,7 @@ def test_switching_models_in_the_browser_saves_before_it_invalidates(monkeypatch
     )
     monkeypatch.setattr(webui, "reset_conversation", lambda: order.append("reset"))
 
-    # Any pair the environment is not already running; the roster is synthesised now, so there
-    # is no curated entry to index into.
-    st.session_state[webui.MODEL_KEY] = config.local_choice("local/other")
+    st.session_state[webui.MODEL_KEY] = config.MODEL_CHOICES[1]
     try:
         webui.switch_model()
     finally:
@@ -599,7 +562,6 @@ def test_switching_models_resets_even_when_the_bundle_is_not_cached(monkeypatch,
     # A cold cache at callback time is ordinary, not exotic: `cache_resource` is app-global, so
     # one tab switching clears it for every other tab, and Streamlit also drops it after an edit.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     st.cache_resource.clear()
 
@@ -611,7 +573,7 @@ def test_switching_models_resets_even_when_the_bundle_is_not_cached(monkeypatch,
     monkeypatch.setattr(webui, "reset_conversation", lambda: order.append("reset"))
 
     # No `get_bundle()` first: the cache is cold, exactly as it is for a second tab.
-    st.session_state[webui.MODEL_KEY] = config.local_choice("local/other")
+    st.session_state[webui.MODEL_KEY] = config.MODEL_CHOICES[1]
     try:
         webui.switch_model()
     finally:
@@ -629,27 +591,28 @@ def test_a_model_that_cannot_be_built_leaves_the_page_usable(monkeypatch, tmp_pa
     # it is ever drawn — and the pick survives in session state, so every rerun raises again.
     # The CLI already guards the identical call; this is the browser's half.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
     monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
     st.cache_resource.clear()
 
-    # An endpoint `httpx` refuses to parse, which `ChatOpenAI` rejects at *construction* — no
-    # socket, no request. An unparseable id is no longer the way in: the provider is stated
-    # outright now that there is one client, so any string builds. This one stays reachable
-    # because `config._configured_endpoint` hands a malformed SPEECHWRITER_BASE_URL through
-    # verbatim rather than rewriting it, and `model_choices` synthesises a roster entry from
-    # whatever pair the environment names.
-    st.session_state[webui.MODEL_KEY] = config.ModelChoice("Broken", "qwen", "http://[::1")
+    # `ChatAnthropic` builds for any id, so the failure is injected at the one seam the guard
+    # wraps rather than engineered through a malformed value.
+    real_build = webui.build_agent
+
+    def build(settings=None):
+        if settings is not None and settings.model == "claude-broken":
+            raise ValueError("construction failed")
+        return real_build(settings)
+
+    monkeypatch.setattr(webui, "build_agent", build)
+    st.session_state[webui.MODEL_KEY] = config.ModelChoice("Broken", "claude-broken")
     try:
         bundle = webui.get_bundle()
         reported = webui.build_error()
     finally:
         st.session_state.pop(webui.MODEL_KEY, None)
 
-    # Fell back to the environment's *pair* rather than raising — the model alone would leave a
-    # working id pointed at the endpoint that just failed to build...
+    # Fell back to the environment's model rather than raising...
     assert bundle.settings.model == config.DEFAULT_MODEL
-    assert bundle.settings.base_url == config.DEFAULT_LOCAL_ENDPOINT
     # ...told the page which pick failed, exactly once...
     assert reported is not None and "Broken" in reported
     assert webui.build_error() is None
@@ -657,168 +620,22 @@ def test_a_model_that_cannot_be_built_leaves_the_page_usable(monkeypatch, tmp_pa
     assert webui.selected_choice() is None
 
 
-def test_detected_models_join_the_roster_exactly_once(monkeypatch, tmp_path):
-    # `available_choices` is the dedup that stops Streamlit silently resetting the selection:
-    # `ModelChoice` is a NamedTuple, so a detected entry that differed from the synthesised one
-    # by so much as its label would appear twice *and* leave the selected value unfindable
-    # among the options. Nothing exercised it before.
+def test_a_configured_off_roster_model_survives_a_rerun(monkeypatch, tmp_path):
+    # Streamlit silently resets a selection that is not among a widget's options to option zero.
+    # A reader who configured an older Claude id must still be on it after the next rerun, not
+    # quietly moved onto Sonnet 5.5.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
-    st.cache_resource.clear()
-
-    settings = load_settings()
-    endpoint = "http://localhost:1234/v1"
-    # As if "Detect models" had answered: the configured model, plus one the reader has not
-    # seen. Whole `ModelChoice` records, because that is the shape the session now stores —
-    # seeding bare ids here is what the old pairing code accepted and this one must not.
-    # Three, sorted as `detect_models` stores them, and only one of them configured. Two is not
-    # enough to see the ordering bug below: with a single unconfigured detection it lands last
-    # whether detections are merged before or after the offered pairs, so the assertion passes
-    # under both. The third entry is what makes the two orders differ.
-    st.session_state[webui.DETECTED_KEY] = [
-        config.local_choice("local/granite", endpoint),
-        config.local_choice("local/qwen", endpoint),
-        config.local_choice("local/zephyr", endpoint),
-    ]
-    try:
-        offered = webui.available_choices(settings)
-    finally:
-        st.session_state.pop(webui.DETECTED_KEY, None)
-
-    labels = [choice.label for choice in offered]
-    assert labels.count("local/qwen") == 1, labels
-    assert "local/granite" in labels
-
-    # Order is fixed, and stays fixed once a detected model is the one selected. Detections are
-    # merged *before* the offered configurations for exactly this reason: `offered` varies with
-    # the selection and `detected` does not, so a detection placed after it would be promoted
-    # past the others the moment it was picked — and `index=choices.index(current)` names a row
-    # number that has to mean the same thing on the next render.
-    on_zephyr = replace(settings, model="local/zephyr")
-    st.session_state[webui.DETECTED_KEY] = [
-        config.local_choice("local/granite", endpoint),
-        config.local_choice("local/qwen", endpoint),
-        config.local_choice("local/zephyr", endpoint),
-    ]
-    try:
-        assert [c.label for c in webui.available_choices(on_zephyr)] == labels
-    finally:
-        st.session_state.pop(webui.DETECTED_KEY, None)
-    # Detected entries carry the endpoint they were found at, or picking one would point the
-    # client at the configured server for a model only the detected one has.
-    granite = next(c for c in offered if c.model == "local/granite")
-    assert granite.base_url == endpoint
-
-
-def test_detections_stay_bound_to_the_server_that_answered(monkeypatch, tmp_path):
-    # The failure the whole `list[str]` -> `list[ModelChoice]` change exists to prevent. While
-    # the endpoint could not change, pairing ids with `base_settings().base_url` at *read* time
-    # was sound. It can change now, so ids detected at one server would be relabelled as served
-    # by another the moment the field was retyped — a pair naming a server the model is not on,
-    # which `_build_model` turns into a client pointed straight at it.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
-    st.cache_resource.clear()
-
-    # Detected at 8080, while the field has since been retyped to point at 1234.
-    st.session_state[webui.DETECTED_KEY] = [config.local_choice("qwen", "http://127.0.0.1:8080/v1")]
-    st.session_state[webui.ENDPOINT_KEY] = "http://127.0.0.1:1234/v1"
-    try:
-        offered = webui.available_choices(load_settings())
-    finally:
-        st.session_state.pop(webui.DETECTED_KEY, None)
-        st.session_state.pop(webui.ENDPOINT_KEY, None)
-
-    qwen = next(c for c in offered if c.model == "qwen")
-    assert qwen.base_url == "http://127.0.0.1:8080/v1", (
-        "a detection was relabelled with the endpoint the field happens to hold now"
-    )
-
-
-def test_editing_the_endpoint_is_not_a_model_switch(monkeypatch, tmp_path):
-    # `switch_model`'s three steps are load-bearing and sit one function away, so a contributor
-    # wiring up the endpoint field will reasonably wonder whether they belong here too. They do
-    # not: pointing at a server changes what may be *offered*, never what is running. Doing them
-    # anyway would drop the conversation and rotate the thread every time the box lost focus.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    st.cache_resource.clear()
-
-    calls: list[str] = []
-    monkeypatch.setattr(type(webui.get_bundle), "clear", lambda self: calls.append("invalidate"))
-    monkeypatch.setattr(webui, "reset_conversation", lambda: calls.append("reset"))
-
-    st.session_state[webui.ENDPOINT_KEY] = "localhost:8080"
-    st.session_state[webui.DETECTED_KEY] = [config.local_choice("qwen", "http://elsewhere/v1")]
-    try:
-        webui.apply_endpoint()
-        # Normalised in place, so the reader sees the URL that will actually be asked rather
-        # than the app quietly asking one the box never showed.
-        assert st.session_state[webui.ENDPOINT_KEY] == "http://localhost:8080/v1"
-        # And the previous server's models are gone: kept, they would put two rows reading
-        # "qwen" in the picker, of which `resolve_choice` matches the first by label.
-        assert webui.detections() is None
-    finally:
-        st.session_state.pop(webui.ENDPOINT_KEY, None)
-        st.session_state.pop(webui.DETECTED_KEY, None)
-
-    assert calls == [], f"editing the endpoint ran a model switch: {calls}"
-
-
-def test_junk_in_the_endpoint_field_is_left_alone_rather_than_rewritten(monkeypatch, tmp_path):
-    # Two halves, and the second is the one that bites. `normalize_endpoint` must not raise —
-    # `session_endpoint()` runs on every rerun, so a `ValueError` here is not a bad caption but
-    # a page that throws on every rerun with the offending text still in session state, which is
-    # the unrecoverable shape `get_bundle`'s own `except` exists to prevent. And text that does
-    # not normalise stays exactly as typed, so a typo remains legible instead of being rewritten
-    # into something confidently wrong.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    st.cache_resource.clear()
-
-    st.session_state[webui.ENDPOINT_KEY] = "http://[::1"
-    try:
-        assert webui.session_endpoint() is None
-        webui.apply_endpoint()
-        assert st.session_state[webui.ENDPOINT_KEY] == "http://[::1"
-    finally:
-        st.session_state.pop(webui.ENDPOINT_KEY, None)
-
-
-def test_a_configured_local_model_survives_a_rerun(monkeypatch, tmp_path):
-    # Streamlit replaces a `session_state` value that is not among a widget's options with
-    # option zero, raising nothing — so a roster that did not carry the configured pair would
-    # take a reader on their own endpoint and silently retarget them onto `DEFAULT_MODEL` at the
-    # default port, which is a 404 on the first turn rather than an error the page can name.
-    #
-    # Both runs matter, and not equally: the first proves the configured pair is offered at all,
-    # the second that a *stored* selection is not then silently overwritten — a state the widget
-    # can only reach once it has a value, and one the existing badge test (which runs once)
-    # cannot see.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://localhost:1234/v1")
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5")
     st.cache_resource.clear()
 
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
-    assert _picked(app).model == "local/qwen"
+    assert _picked(app).model == "claude-opus-5"
 
     app.run()
 
     assert not app.exception
-    assert _picked(app).model == "local/qwen"
-    assert _picked(app).base_url == "http://localhost:1234/v1"
-    assert any("Ready]" in block.value for block in app.markdown)
-    # Detect is offered only against a configured endpoint, and it must not have *run* on
-    # render: the suite is offline by construction and CI renders this page dozens of times.
-    # Asserted through the caption the sidebar only draws once an answer exists, not through
-    # `webui.detected()` — that reads this process's session state rather than the rendered
-    # app's, so it returns None either way and the check passed with detection wired to render.
-    assert [button.label for button in app.sidebar.button] == ["Detect models", "New conversation"]
-    captions = [caption.value for caption in app.sidebar.caption]
-    assert not any("listed no models" in caption for caption in captions), captions
-    assert not any("Found" in caption for caption in captions), captions
+    assert _picked(app).model == "claude-opus-5"
+    assert webui.get_bundle().settings.model == "claude-opus-5"
 
 
 def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_path):
@@ -827,9 +644,8 @@ def test_a_lit_suggestion_pill_cannot_recommission_on_a_rerun(monkeypatch, tmp_p
     # appended, the welcome block draws again with the pill still lit — and the same
     # commission fired a second time, unasked. This is that exact state: selection present,
     # transcript empty. Only an `on_change` click may queue a brief now, never a bare rerun.
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -879,9 +695,8 @@ def test_a_typed_brief_does_not_leave_a_suggestion_queued(monkeypatch, tmp_path)
     # second, unasked commission on a later rerun. The two arriving together is not contrived:
     # Streamlit coalesces a pending rerun with a new one and ships every widget state on each
     # message, and the chat box stays typeable while a pill's turn is still running.
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -919,7 +734,8 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
     # audio tests never reach them — they call `workspace.measure_spoken_length` directly.
     # Stubbing the synthesis puts the flag path under test without the audio extra, which CI
     # never installs. The bound is lowered rather than measuring nine drafts.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -986,7 +802,8 @@ def test_new_conversation_disarms_a_queued_suggestion(monkeypatch, tmp_path):
     # If it does not clear the queue, the next visit to Write commissions the speech the reader
     # believed they had abandoned, and spends tokens doing it. Asserted from Workspace on
     # purpose: on the Write page the drain would hide the bug.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -1004,9 +821,8 @@ def test_the_workspace_view_control_cannot_be_deselected(monkeypatch, tmp_path):
     # neither the "Research" nor the "Memory" branch and falls through to the `else`, drawing
     # Speeches with no segment highlighted. Asserted on the widget rather than by driving a
     # deselect, because AppTest's `unselect` bypasses the frontend rule it is testing.
-    # Not "which client" any more — there is one. Unset means the documented default pair,
-    # where an exported endpoint would build this run against whatever the developer serves.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -1084,188 +900,22 @@ def test_measured_length_is_in_the_right_ballpark():
     assert 0.5 * estimate < measured.seconds < 2.0 * estimate
 
 
-def test_the_endpoint_field_is_offered_when_nothing_is_configured(monkeypatch, tmp_path):
-    # The whole reason this feature exists. Every local-model path was gated on
-    # `SPEECHWRITER_BASE_URL` already being set, so the reader it was for — a local server on
-    # some other port, nothing configured — had to edit a dotenv and restart to reach a control
-    # whose entire job is sparing them that. Drawn unconditionally, or it is unreachable.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    monkeypatch.delenv("SPEECHWRITER_MODEL", raising=False)
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    st.cache_resource.clear()
-
-    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
-
-    assert not app.exception
-    assert [field.label for field in app.sidebar.text_input] == ["OpenAI-compatible server"]
-    assert "Detect models" in [button.label for button in app.sidebar.button]
-    # Prefilled with the documented default, where it used to be empty. That inversion followed
-    # the endpoint becoming the *only* place a turn can go: an empty box was honest while a
-    # guessed URL in the *value* would have made Detect probe a port nobody named, but the app
-    # now calls this exact URL whether or not the box shows it, and a field that hid it would
-    # leave the reader guessing which server a failed turn went to. `init_session` seeds it with
-    # `setdefault`, so a reader who clears it is not overwritten on the next rerun.
-    assert app.sidebar.text_input[0].value == config.DEFAULT_LOCAL_ENDPOINT
-    # And the picker offers exactly the environment's own pair while nothing has been detected —
-    # nothing curated (`MODEL_CHOICES` is empty), and one row rather than none, which the
-    # picker's `choices[0]` index arithmetic depends on.
-    assert list(app.sidebar.selectbox[0].options) == [config.DEFAULT_MODEL]
-    # Nothing was probed on render. The suite is offline by construction and CI renders this
-    # page dozens of times per run; asserted through the captions the sidebar only draws once
-    # an answer exists, since `webui.detections()` reads this process's session state rather
-    # than the rendered app's and would return None either way.
-    captions = [caption.value for caption in app.sidebar.caption]
-    assert not any("listed no models" in caption for caption in captions), captions
-    assert not any("Found" in caption for caption in captions), captions
-
-    # And a value that is not an endpoint says what one looks like. The reader seeing this did
-    # not necessarily type it — browsers restore form fields, and a malformed
-    # SPEECHWRITER_BASE_URL is seeded verbatim by design — so a bare verdict about text they do
-    # not remember writing leaves them with nothing to do. Reported by a reader who hit exactly
-    # that: a restored `http://[::1` and "Not an HTTP endpoint."
-    app.sidebar.text_input[0].set_value("http://[::1").run()
-    complaint = next(c.value for c in app.sidebar.caption if "Not an HTTP endpoint" in c.value)
-    assert config.DEFAULT_LOCAL_ENDPOINT in complaint, complaint
-
-
-def test_a_typed_endpoint_survives_a_rerun_and_reaches_the_picker(monkeypatch, tmp_path):
-    # Two reruns, because one cannot see the failure that matters. Streamlit *silently* rewrites
-    # a selection absent from a widget's options to option zero, so a detected entry that were
-    # not re-offered on the next render would take the reader off the model they just picked
-    # with no error anywhere.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    st.cache_resource.clear()
-    monkeypatch.setattr(webui.endpoints, "list_models", lambda url, **kw: ["local/qwen"])
-
-    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
-    # A port the environment does not already name, so what reaches the picker can only have
-    # come from the box: the field is seeded with `DEFAULT_LOCAL_ENDPOINT` now, and typing that
-    # back would prove nothing about the typed path.
-    app.sidebar.text_input[0].set_value("127.0.0.1:1234").run()
-    # Normalised in place, so the box shows the URL that will actually be asked.
-    assert app.sidebar.text_input[0].value == "http://127.0.0.1:1234/v1"
-
-    app.sidebar.button[0].click().run()
-    assert "local/qwen" in list(app.sidebar.selectbox[0].options)
-
-    app.sidebar.selectbox[0].select("local/qwen").run()
-    assert _picked(app).base_url == "http://127.0.0.1:1234/v1"
-    # A keyless machine runs: the badge gates on `model_endpoint_usable`, which a typed local
-    # endpoint satisfies without any key of ours.
-    assert any("Ready]" in block.value for block in app.markdown)
-
-    app.run()
-
-    assert not app.exception
-    assert _picked(app).model == "local/qwen"
-    assert _picked(app).base_url == "http://127.0.0.1:1234/v1"
-
-
 def test_both_front_ends_offer_the_same_roster(monkeypatch, tmp_path):
-    # The seam this feature widens. `cli._roster` and `webui.available_choices` compose the same
-    # arguments into one `model_choices` call, and nothing structural keeps them doing so — they
-    # are two functions in two modules that must agree on *order*, because the REPL prints row
-    # numbers a reader types back and the picker resolves `index=choices.index(current)`. They
-    # already drifted once: the browser learned to widen the roster with detections and the
-    # terminal did not.
+    # `cli._roster` and `webui.available_choices` compose the same arguments into one
+    # `model_choices` call, and nothing structural keeps them doing so — they are two functions
+    # in two modules that must agree on *order*, because the REPL prints row numbers a reader
+    # types back and the picker resolves `index=choices.index(current)`. They already drifted
+    # once, while the roster could be widened by a probe.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5")
     st.cache_resource.clear()
 
     configured = load_settings()
-    detected = [
-        config.local_choice("local/granite", "http://127.0.0.1:8080/v1"),
-        config.local_choice("local/zephyr", "http://127.0.0.1:1234/v1"),
-    ]
     bundle = webui.get_bundle()
-    st.session_state[webui.DETECTED_KEY] = detected
-    try:
-        browser = webui.available_choices(bundle.settings)
-    finally:
-        st.session_state.pop(webui.DETECTED_KEY, None)
-    terminal = cli._roster(configured, bundle, detected)
+
+    browser = webui.available_choices(bundle.settings)
+    terminal = cli._roster(configured, bundle)
 
     assert terminal == browser, "the two front ends disagree about the roster"
-
-
-def test_detect_says_nothing_about_a_server_it_never_contacted(monkeypatch, tmp_path):
-    # `detect_models` wrote `[]` when the field held nothing askable, which looked like the tidy
-    # answer and lied: `[]` is the "asked, and the server offered nothing" state, which the
-    # sidebar reports as "That endpoint listed no models — is the server running?" about a server
-    # that was never contacted. The button is disabled in that state too, so this is the belt to
-    # that braces — and it is the half a contributor could remove without the page looking wrong.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    st.cache_resource.clear()
-    probes: list[str] = []
-    monkeypatch.setattr(webui.endpoints, "list_models", lambda url, **kw: probes.append(url) or [])
-
-    st.session_state[webui.ENDPOINT_KEY] = ""
-    try:
-        webui.detect_models()
-        assert webui.detections() is None, "an empty field recorded a probe that never happened"
-    finally:
-        st.session_state.pop(webui.ENDPOINT_KEY, None)
-        st.session_state.pop(webui.DETECTED_KEY, None)
-    assert probes == [], probes
-
-    # And the button says so before the click, rather than taking it and dropping it — the rule
-    # `write.py`'s suggestion pills already follow. The field is seeded with the default
-    # endpoint now, so "nothing to ask" is a box the reader has *cleared* rather than one they
-    # never filled — a state `init_session` respects, since it seeds with `setdefault`.
-    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
-    app.sidebar.text_input[0].set_value("").run()
-    detect = next(b for b in app.sidebar.button if b.label == "Detect models")
-    assert detect.disabled, "Detect is clickable with no endpoint to ask"
-
-
-def test_a_no_op_edit_keeps_the_models_already_found(monkeypatch, tmp_path):
-    # `apply_endpoint` dropped detections on any text change at all. An edit that lands on the
-    # same server — pasting the URL back, a trailing slash, a stray space — then emptied the
-    # roster and made the reader sit through another probe (up to DEFAULT_TIMEOUT) of a server
-    # that never stopped answering. Only a change of *target* may clear them.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    st.cache_resource.clear()
-    found = [config.local_choice("qwen", "http://localhost:8080/v1")]
-
-    st.session_state[webui.ENDPOINT_KEY] = "http://localhost:8080/v1"
-    st.session_state[webui.DETECTED_KEY] = found
-    try:
-        # Same server, spelled differently.
-        st.session_state[webui.ENDPOINT_KEY] = "  http://localhost:8080/v1/  "
-        webui.apply_endpoint()
-        assert st.session_state[webui.ENDPOINT_KEY] == "http://localhost:8080/v1"
-        assert webui.detections() == found, "a no-op edit re-probed a server that was answering"
-
-        # A different server does clear them, which is the half that must keep working.
-        st.session_state[webui.ENDPOINT_KEY] = "http://localhost:1234/v1"
-        webui.apply_endpoint()
-        assert webui.detections() is None
-    finally:
-        st.session_state.pop(webui.ENDPOINT_KEY, None)
-        st.session_state.pop(webui.DETECTED_KEY, None)
-
-
-def test_the_sidebar_names_where_the_running_model_is_served(monkeypatch, tmp_path):
-    # The endpoint field holds whatever server Detect is pointed at, which is not necessarily
-    # where the *running* model is served — they differ the moment the reader goes looking at a
-    # second one. With the old "Serving the selected model." caption gone in that state and the
-    # label carrying no host, nothing on the page named the endpoint being called. That is the
-    # affordance the CLI banner gives its own line: a local server that is simply not running
-    # looks like a hung turn unless the UI said where it pointed.
-    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "local/qwen")
-    st.cache_resource.clear()
-
-    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60).run()
-    captions = [caption.value for caption in app.sidebar.caption]
-    assert any("http://127.0.0.1:8080/v1" in caption for caption in captions), captions
-
-    # Still named after the reader points the field somewhere else entirely.
-    app.sidebar.text_input[0].set_value("http://127.0.0.1:1234/v1").run()
-    captions = [caption.value for caption in app.sidebar.caption]
-    assert any("http://127.0.0.1:8080/v1" in caption for caption in captions), captions
+    # Not vacuous: the off-roster configured id is on both, after the curated entries.
+    assert browser[-1].model == "claude-opus-5"

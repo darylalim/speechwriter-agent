@@ -51,7 +51,6 @@ from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter, SpanExportResult
 
-from speechwriter import endpoints
 from speechwriter.config import Settings
 
 logger = logging.getLogger(__name__)
@@ -94,11 +93,11 @@ def collector_url(endpoint: str) -> str | None:
     proxy at ``http://host/phoenix`` receives at ``http://host/phoenix/v1/traces``. A value
     already ending in ``/v1/traces`` is used as written.
 
-    The shape check is :func:`~speechwriter.endpoints.usable_endpoint`'s, for the reason it
+    The shape check is :func:`_usable_endpoint`'s, for the reason it
     exists: a missing scheme or host fails at *export*, on a background thread, far from the
     typo — and ``file://`` has no business being a place drafts are sent.
     """
-    usable = endpoints.usable_endpoint(endpoint)
+    usable = _usable_endpoint(endpoint)
     if usable is None:
         return None
     parts = urlsplit(usable)
@@ -116,7 +115,7 @@ def server_url(endpoint: str) -> str | None:
     ``/v1/traces`` removed — the API lives at the server's root, and a client handed the
     collector URL would ask for ``/v1/traces/v1/datasets``. A proxy prefix is kept, as there.
     """
-    usable = endpoints.usable_endpoint(endpoint)
+    usable = _usable_endpoint(endpoint)
     if usable is None:
         return None
     parts = urlsplit(usable)
@@ -289,3 +288,27 @@ def _warn_if_langsmith_still_traces() -> None:
             "to Phoenix only.",
             " / ".join(on),
         )
+
+
+# Only these reach the network. A collector is meant to be an HTTP service; anything else is a
+# typo at best, and an exporter handed `file:///…` would be asked to write traces somewhere no
+# one meant.
+_ALLOWED_SCHEMES = frozenset({"http", "https"})
+
+
+def _usable_endpoint(text: str) -> str | None:
+    """``text`` unchanged if it is an HTTP(S) URL with a host, otherwise ``None``. Never raises.
+
+    Accepts or rejects and never rewrites, because an operator's configured collector may carry
+    a path prefix or query a proxy in front of it needs.
+    """
+    raw = text.strip()
+    if not raw:
+        return None
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        return None
+    if parts.scheme.lower() not in _ALLOWED_SCHEMES or not parts.netloc:
+        return None
+    return raw

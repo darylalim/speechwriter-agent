@@ -294,32 +294,25 @@ def _harness_module():
 def test_the_eval_judge_does_not_follow_the_model_under_test(monkeypatch, tmp_path):
     # `--model` moves the system under test; the judge must stay put. `grade()` builds its model
     # from `load_settings()`, which reads the same SPEECHWRITER_MODEL that `apply_model` sets —
-    # so without the pinned pair, comparing two models grades each one with *itself*, changing
-    # the instrument and the subject together and making the comparison meaningless.
+    # so without the pinned settings, comparing two models grades each one with *itself*,
+    # changing the instrument and the subject together and making the comparison meaningless.
     #
     # This exists because the bug shipped: the `judge` parameter was threaded into the
     # experiment-recording path and not into the plain live path, and nothing noticed.
-    #
-    # The whole *pair* is pinned, and asserted as a pair. With every model served over an
-    # endpoint, two models under comparison are routinely two servers, so a judge that carried
-    # the pinned id but read its endpoint from the environment would be built pointing at the
-    # server the run had just moved to — the same instrument-follows-subject bug, one field down.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "judge-model")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:9999/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5-5")
 
     harness = _harness_module()
     # Captured before the override, exactly where `main()` captures it.
     pinned = harness.configured_settings()
 
-    # ...and now the system under test moves, both halves of it.
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "model-under-test")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    # ...and now the system under test moves.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-sonnet-5-5")
 
-    graded_with: list[tuple[str, str]] = []
+    graded_with: list[str] = []
 
     def spy_build(settings):
-        graded_with.append((settings.model, settings.base_url))
+        graded_with.append(settings.model)
         return object()
 
     monkeypatch.setattr("speechwriter.agent._build_model", spy_build)
@@ -328,15 +321,15 @@ def test_the_eval_judge_does_not_follow_the_model_under_test(monkeypatch, tmp_pa
 
     harness.grade("final_response", harness.CANNED, {}, no_judge=False, judge=pinned)
 
-    assert graded_with == [("judge-model", "http://127.0.0.1:9999/v1")], (
-        "the judge followed the environment instead of the pinned pair, so every model "
+    assert graded_with == ["claude-opus-5-5"], (
+        "the judge followed the environment instead of the pinned settings, so every model "
         "would be graded by itself"
     )
 
-    # And with no override in play the judge is the configured pair, exactly as before.
+    # And with no override in play the judge is the configured model, exactly as before.
     graded_with.clear()
     harness.grade("final_response", harness.CANNED, {}, no_judge=False)
-    assert graded_with == [("model-under-test", "http://127.0.0.1:8080/v1")]
+    assert graded_with == ["claude-sonnet-5-5"]
 
 
 def test_every_live_grading_path_pins_the_judge_when_the_model_is_overridden():
@@ -361,41 +354,26 @@ def test_every_live_grading_path_pins_the_judge_when_the_model_is_overridden():
 
 def test_the_model_flag_accepts_the_label_the_front_ends_actually_show(monkeypatch, tmp_path):
     # `--model` is documented as taking "a roster label", and the roster a reader sees in
-    # `/model` or the sidebar is `model_choices(...)`. That used to be the curated tuple plus a
-    # locally served entry labelled "<id> (local)", and resolving against the curated tuple
-    # alone passed that whole string through as a literal model id. The tuple is empty now, so
-    # the same mistake is total rather than partial: a harness matching MODEL_CHOICES would
-    # resolve *nothing*, and every `--model` would fall through to the pass-through branch.
-    #
-    # Which is why the endpoint is the assertion. Resolving a roster entry materialises the
-    # whole pair into the environment; falling through sets the id and leaves the endpoint to
-    # whatever the dotenv says next. Started absent, so the two are distinguishable — and that
-    # is also the surviving half of the deleted test about `apply_model` never leaving the
-    # endpoint for a later `load_settings()` to fill in.
+    # `/model` or the sidebar is `model_choices(...)`. Resolving against anything narrower once
+    # passed the label through as a literal model id, which 404s at the first turn of every
+    # graded example — long after the temp homes are set up.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5")
 
     harness = _harness_module()
-    # Not a literal: the label a reader copies out of the picker is whatever `local_choice`
-    # builds, which is the bare id now and was the suffixed one before.
-    (entry,) = config.model_choices(config.load_settings())
-    assert entry.label == "mlx-community/Qwen3.8-27B-4bit", (
-        "the roster label changed shape; this test copies it the way a reader does"
-    )
+    roster = config.model_choices(config.load_settings())
 
-    harness.apply_model(entry.label)
-    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Qwen3.8-27B-4bit"
-    assert os.environ["SPEECHWRITER_BASE_URL"] == config.DEFAULT_LOCAL_ENDPOINT, (
-        "the label resolved to an id without its endpoint, so the pair came apart"
-    )
+    # A curated label resolves to its id...
+    harness.apply_model(config.MODEL_CHOICES[1].label)
+    assert os.environ["SPEECHWRITER_MODEL"] == config.MODEL_CHOICES[1].model
+    # ...and so does the off-roster entry the environment configured, labelled as it is shown.
+    harness.apply_model(roster[-1].label)
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-5"
 
     # An id nothing on the roster matches is still passed through verbatim — the operator may
-    # mean a model the environment has never named — and the endpoint is left alone.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
-    harness.apply_model("mlx-community/Llama-3.3-70B-Instruct-4bit")
-    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Llama-3.3-70B-Instruct-4bit"
-    assert "SPEECHWRITER_BASE_URL" not in os.environ
+    # mean a model the environment has never named.
+    harness.apply_model("claude-opus-4-8")
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-4-8"
 
 
 def _evaluators_module():
@@ -567,12 +545,9 @@ def test_a_graded_runs_temp_home_can_build_the_agent_with_its_skills(tmp_path, m
     # this test possible at all.
     shutil.copytree(REPO_ROOT / "skills", tmp_path / "skills")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    # Pinned to the DEFAULT pair. An exported SPEECHWRITER_BASE_URL no longer swaps the client
-    # -- there is only one -- but it still decides which server this build is aimed at, and a
-    # developer driving their own would otherwise be testing a different configuration than CI.
-    # No key is set: a locally served model is sent LOCAL_API_KEY_PLACEHOLDER, so build_agent()
-    # needs no credential of ours to construct its client.
-    monkeypatch.delenv("SPEECHWRITER_BASE_URL", raising=False)
+    # No key is set, as in CI: `ChatAnthropic` constructs without one and fails only at the
+    # first call, so build_agent() needs no credential to wire the graph up.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
     from speechwriter.agent import build_agent
     from speechwriter.prompts import orchestrator_prompt
@@ -702,23 +677,23 @@ class _StubModel:
         return self._verdicts.pop(0)
 
 
-def test_the_judge_asks_for_structured_output_a_local_server_can_answer():
-    # `langchain-openai` defaults `with_structured_output` to method="json_schema", which sends
-    # `response_format: {"type": "json_schema", ...}`. That is a *server* feature, not an API
-    # one, and `mlx_lm.server` -- the server DEFAULT_LOCAL_ENDPOINT names -- answers 400 to it.
-    # While the judge was hosted this never showed. With every model served locally it fails
-    # every judged example on the transport, uniformly enough to read as "the judge disagrees"
-    # rather than "the judge never ran" -- the same family of measurement bug this file already
-    # documents five of, all of which made the agent look worse than it is.
+def test_the_judge_asks_for_structured_output_without_forcing_a_tool():
+    # `langchain-anthropic` defaults `with_structured_output` to method="function_calling",
+    # which binds the schema as a tool and *forces* the call. The 5.5 models reject forced tool
+    # choice with a 400, so on the default path every judged example fails on the transport —
+    # uniformly enough to read as "the judge disagrees" rather than "the judge never ran", the
+    # same family of measurement bug this file already documents five of, all of which made the
+    # agent look worse than it is. `json_schema` goes through `output_config.format` instead.
     #
     # The literal is pinned here rather than compared against the module's own constant, which
-    # would pass for any value: what makes `function_calling` right is what the local servers
-    # implement, not what evaluators.py says about itself.
+    # would pass for any value: what makes `json_schema` right is what the API accepts, not what
+    # evaluators.py says about itself. It was `function_calling` while the judge ran on
+    # `mlx_lm.server`, which is the other half of why it is pinned.
     ev = _evaluators_module()
-    assert ev.JUDGE_STRUCTURED_OUTPUT_METHOD == "function_calling"
+    assert ev.JUDGE_STRUCTURED_OUTPUT_METHOD == "json_schema"
 
     # All three call sites, because `_structured` exists precisely so none of them can forget:
-    # a site that did would not fail here, it would fail at the endpoint, once, in whichever
+    # a site that did would not fail here, it would fail at the API, once, in whichever
     # criterion happened to use it.
     hits = _StubModel([{"verdict": "mention", "reason": "quoted in order to reject it"}])
     ev.judge_literal_hits(
@@ -738,10 +713,41 @@ def test_the_judge_asks_for_structured_output_a_local_server_can_answer():
     ev.judge_criteria(criteria, "must_cover", "a speech", ["names the occasion"])
 
     for stub in (hits, questions, criteria):
-        assert stub.methods == ["function_calling"], (
-            f"a judge call asked for structured output as {stub.methods!r}; json_schema is a "
-            f"400 on mlx_lm.server, so every judged example would fail on the transport"
+        assert stub.methods == ["json_schema"], (
+            f"a judge call asked for structured output as {stub.methods!r}; function_calling "
+            f"forces a tool call, which is a 400 on the 5.5 models"
         )
+
+
+def test_the_real_judge_client_sends_no_forced_tool_choice(monkeypatch, tmp_path):
+    # The stub above proves the helper *asks* for json_schema; this proves what that means on
+    # the wire for the client the judge is actually built from. A langchain-anthropic that
+    # started forcing a tool under json_schema too would pass the stub test and 400 every call.
+    from langchain_core.messages import HumanMessage
+    from langchain_core.runnables import RunnableSequence
+
+    from speechwriter.agent import _build_model
+
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    ev = _evaluators_module()
+    model = _build_model(config.load_settings())
+    schema = {
+        "title": "Probe",
+        "type": "object",
+        "properties": {"count": {"type": "integer"}},
+        "required": ["count"],
+    }
+
+    bound = ev._structured(model, schema)
+    # `with_structured_output` returns model | parser; the bound model's kwargs are the payload
+    # additions it would send.
+    assert isinstance(bound, RunnableSequence)
+    first = bound.first
+    kwargs = getattr(first, "kwargs", {})
+    payload = model._get_request_payload([HumanMessage("hi")], **kwargs)
+
+    assert "tool_choice" not in payload, payload.get("tool_choice")
+    assert payload.get("output_config", {}).get("format"), sorted(payload)
 
 
 def test_a_banned_phrase_escalates_instead_of_failing_outright(monkeypatch, tmp_path):
@@ -848,9 +854,8 @@ def test_a_silent_judge_leaves_the_question_cap_unscored_rather_than_passing_it(
     # is `<= cap` for every cap -- so a judge that said nothing acquitted the only runs it was
     # ever asked about.
     #
-    # Reachable, not hypothetical: `with_structured_output(..., method="function_calling")`
-    # returns None rather than raising when the model emits no tool call, which is the
-    # local-server case JUDGE_STRUCTURED_OUTPUT_METHOD explicitly warns is not universal.
+    # Reachable, not hypothetical: a refused or truncated structured reply arrives with nothing
+    # to parse, whatever structured-output method was asked for.
     ev = _evaluators_module()
     over_cap = ev.RunRecord("Who is speaking? To whom? How long?", ())
     out = {"max_questions": 1}
@@ -864,7 +869,7 @@ def test_a_silent_judge_leaves_the_question_cap_unscored_rather_than_passing_it(
         "asked about is the one it must not acquit by default"
     )
     # The judge really was consulted; this is not passing because the escalation never fired.
-    assert silent.methods == ["function_calling"]
+    assert silent.methods == ["json_schema"]
 
     # And a judge that DOES answer is still scored, in both directions.
     assert (
@@ -974,102 +979,51 @@ def test_the_judge_is_given_the_examples_own_grading_notes():
     )
 
 
-def test_an_ambiguous_model_flag_is_refused_rather_than_sent_to_the_wrong_server(
-    monkeypatch, tmp_path
-):
+def test_an_ambiguous_model_flag_is_refused_rather_than_passed_through(monkeypatch, tmp_path):
     # `apply_model` passes an unrecognised `--model` through verbatim, which is right for "no
-    # such entry" and wrong for "two entries by that name" — it sets SPEECHWRITER_MODEL while
-    # leaving SPEECHWRITER_BASE_URL alone, so the id goes to whichever server the environment
-    # already named and 404s at the first turn of every graded example. That became reachable
-    # when `resolve_choice` started answering None on ambiguity instead of silently returning
-    # whichever entry was merged first.
-    #
-    # The collision used to be a curated Anthropic entry meeting its locally served namesake.
-    # With the curated tuple empty it is the one CLAUDE.md calls a known ambiguity — **one model
-    # id served by two machines** — and it is now *harder* to see, not easier: `local_choice`
-    # labels both entries with the bare id, so the two rows are indistinguishable by name and
-    # only their `base_url` column tells them apart.
-    #
-    # The second entry reaches a front end's roster by detection; `apply_model` builds its
-    # roster from one `Settings` and so can only ever hold one, which is why the collision is
-    # seeded through MODEL_CHOICES here. Everything downstream of the seed is the real thing:
-    # `model_choices`' dedup, `local_choice`'s label, `matching_choices`, `resolve_choice`.
+    # such entry" and wrong for "two entries by that name" — it would set SPEECHWRITER_MODEL to
+    # the literal label, which is no model id at all. `matching_choices` is what tells the two
+    # Nones apart. A curated roster only collides by label, so the collision is seeded.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "mlx-community/Qwen3.8-27B-4bit")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-sonnet-5-5")
     monkeypatch.setattr(
         config,
         "MODEL_CHOICES",
         (
-            config.local_choice(
-                "mlx-community/Qwen3.8-27B-4bit", "http://workstation.local:8080/v1"
-            ),
+            config.ModelChoice("Opus", "claude-opus-5-5"),
+            config.ModelChoice("Opus", "claude-opus-5"),
         ),
     )
 
     harness = _harness_module()
     with pytest.raises(SystemExit) as refused:
-        harness.apply_model("mlx-community/Qwen3.8-27B-4bit")
+        harness.apply_model("Opus")
 
-    assert "mlx-community/Qwen3.8-27B-4bit" in str(refused.value)
+    assert "Opus" in str(refused.value)
     # And nothing was changed on the way out: a half-applied override is worse than none.
-    assert os.environ["SPEECHWRITER_BASE_URL"] == "http://127.0.0.1:8080/v1"
-    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Qwen3.8-27B-4bit"
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-sonnet-5-5"
 
-    # The way out is the row number, not the label: two servers serving one id have the same
-    # label by construction, since `local_choice` must stay a pure function of the pair. Picked
-    # by index, the *other* server is what gets applied — both halves of it.
-    harness.apply_model("1")
-    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Qwen3.8-27B-4bit"
-    assert os.environ["SPEECHWRITER_BASE_URL"] == "http://workstation.local:8080/v1"
+    # The way out is the row number, which is never ambiguous.
+    harness.apply_model("2")
+    assert os.environ["SPEECHWRITER_MODEL"] == "claude-opus-5"
 
 
-def test_the_pinned_judge_keeps_the_credential_its_endpoint_needs(monkeypatch, tmp_path):
-    # The judge is captured before `--model` moves the system under test, and it used to be
-    # captured as a ModelChoice and re-applied to a fresh `load_settings()` at grading time.
-    # That broke when `applied_to` began moving the *credential* with the pair: by then
-    # `apply_model` has blanked SPEECHWRITER_BASE_URL, so the judge's endpoint is compared
-    # against None, judged a stranger, and stripped of the key — every judge call 401s, on the
-    # one path that has a judge to pin. Capturing the settings whole sidesteps the question.
-    # Two servers, because that is what makes `--model` move the *endpoint* at all: a roster
-    # synthesised from one configuration names one pair, and an id it does not know is passed
-    # through with the endpoint left alone. Seeded through MODEL_CHOICES for the same reason
-    # the ambiguity test above seeds it — in a front end the second entry arrives by detection.
+def test_the_pinned_judge_is_used_as_captured(monkeypatch, tmp_path):
+    # The judge is captured whole, before `--model` moves the system under test, and used as
+    # captured — never re-derived from the environment at grading time, which by then names the
+    # model under test. A judge rebuilt from `load_settings()` would silently become the subject.
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "gpt-4o")
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
-    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-gateway")
-    monkeypatch.setattr(
-        config,
-        "MODEL_CHOICES",
-        (config.local_choice("mlx-community/Qwen3.8-27B-4bit", "http://127.0.0.1:8080/v1"),),
-    )
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-opus-5-5")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
 
     harness = _harness_module()
     judge = harness.configured_settings()
-    harness.apply_model("mlx-community/Qwen3.8-27B-4bit")
+    harness.apply_model(config.MODEL_CHOICES[0].label)
 
-    # The judge still names the pair that was in force, and still holds its bearer token.
-    assert judge.model == "gpt-4o"
-    assert judge.base_url == "https://gateway.example.com/v1"
-    assert judge.endpoint_api_key == "sk-real-gateway", (
-        "the pinned judge lost the credential its endpoint needs, so every judge call 401s"
-    )
-    # ...while the system under test really did move, both halves of it, which is what
-    # --model is for.
-    assert os.environ["SPEECHWRITER_MODEL"] == "mlx-community/Qwen3.8-27B-4bit"
-    assert os.environ["SPEECHWRITER_BASE_URL"] == "http://127.0.0.1:8080/v1"
-
-    # Anti-vacuity: the trap those assertions dodge is still live. A judge captured as a
-    # ModelChoice and re-applied to the environment as it stands *now* is compared against the
-    # server the run moved to, judged a stranger, and stripped of the key it needs.
-    rederived = config.ModelChoice(judge.model, judge.model, judge.base_url).applied_to(
-        config.load_settings()
-    )
-    assert rederived.openai_api_key is None, (
-        "re-applying a captured pair no longer strips the credential, so this test is passing "
-        "for a reason other than the one it was written for -- re-read its premise"
-    )
+    assert judge.model == "claude-opus-5-5"
+    assert judge.anthropic_api_key == "sk-ant-dummy"
+    # ...while the system under test really did move, which is what --model is for.
+    assert os.environ["SPEECHWRITER_MODEL"] == config.MODEL_CHOICES[0].model
 
 
 def test_a_recorded_run_grades_like_a_local_one():
@@ -1252,18 +1206,14 @@ def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
     assert seen == ["1"]
 
 
-def test_an_experiment_name_never_carries_the_endpoints_password(monkeypatch, tmp_path):
-    # The name is stored in Phoenix and printed in every link to the experiment, and it used to
-    # be built from the URL's netloc -- which is `user:password@host:port` when the endpoint
-    # carries credentials. Host and port are all that tell two servers apart.
+def test_an_experiment_is_named_after_the_model_under_test(monkeypatch, tmp_path):
+    # Two models' experiments must not be indistinguishable in the mirror, which is the reason
+    # the model is selectable at all. With one API serving every model the id alone identifies
+    # the system under test; it used to carry the serving host, which separated two machines.
     harness = _harness_module()
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    monkeypatch.setenv("SPEECHWRITER_MODEL", "qwen")
 
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://alice:s3cr3t@GPU-box.lan:8443/v1")
-    assert harness.model_slug() == "qwen-gpu-box-lan-8443"
-    # Without credentials the name is what it always was, so existing experiments still group.
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "http://127.0.0.1:8080/v1")
-    assert harness.model_slug() == "qwen-127-0-0-1-8080"
-    monkeypatch.setenv("SPEECHWRITER_BASE_URL", "https://gateway.example.com/v1")
-    assert harness.model_slug() == "qwen-gateway-example-com"
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-sonnet-5-5")
+    assert harness.model_slug() == "claude-sonnet-5-5"
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "Claude_Opus/5.5")
+    assert harness.model_slug() == "claude-opus-5-5"

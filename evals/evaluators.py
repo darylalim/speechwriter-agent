@@ -690,26 +690,26 @@ def judge_literal_hits(model: Any, run: RunRecord, out: dict[str, Any]) -> list[
 
 # How the judge is asked for structured output, and it is deliberately not the library default.
 #
-# `langchain-openai` 1.6 defaults `with_structured_output` to `method="json_schema"`, which
-# sends `response_format: {"type": "json_schema", ...}`. That is a *server* feature, not an API
-# feature: `mlx_lm.server` — the server `DEFAULT_LOCAL_ENDPOINT` names — does not implement it
-# and answers 400. While the judge was hosted this never showed; with every model served
-# locally it would fail every judged example on the transport rather than on its merits, and
-# uniformly enough to read as "the judge disagrees" rather than "the judge never ran".
+# `langchain-anthropic` defaults `with_structured_output` to `method="function_calling"`, which
+# binds the schema as a tool and **forces** the call with `tool_choice={"type": "tool", ...}`.
+# The 5.5 models reject forced tool choice outright — a 400, `tool_choice: type "tool" and "any"
+# are not supported for this model` — so on the default path every judged example would fail on
+# the transport rather than on its merits, uniformly enough to read as "the judge disagrees"
+# rather than "the judge never ran".
 #
-# `function_calling` asks for the same schema over the tool-call surface, which is the broadest
-# thing the servers this repo documents agree on (mlx-lm, vLLM, Ollama, LM Studio). It is not
-# universal — it needs a model whose chat template emits tool calls — and the failure is **quiet**,
-# which is the part that matters: langchain-openai parses this path with
-# `JsonOutputKeyToolsParser(first_tool_only=True)`, which returns `None` when no tool call comes
-# back rather than raising. Every caller must therefore treat a falsy reply as *unscored*, never
-# as a passing answer. An earlier version of this comment claimed the opposite and one caller
-# believed it; see :func:`judge_question_count`.
+# `json_schema` asks through `output_config.format` instead: structured outputs, which these
+# models support natively and which constrains the reply to the schema rather than merely
+# requesting it. It is also the path that would have been wrong while the judge ran on
+# `mlx_lm.server`, which does not implement a JSON-schema response format — the constant has
+# flipped twice for the same reason, which is that it is a property of the transport.
+#
+# Every caller still treats a falsy reply as *unscored*, never as a passing answer — a refusal
+# or a truncated reply can arrive with nothing to parse. See :func:`judge_question_count`.
 #
 # Deliberately a constant and not a `SPEECHWRITER_*` knob: that prefix is a contract with the
 # example template (`test_env_example_documents_every_setting`), and this is a property of the
 # judging transport rather than a setting for the machine.
-JUDGE_STRUCTURED_OUTPUT_METHOD = "function_calling"
+JUDGE_STRUCTURED_OUTPUT_METHOD = "json_schema"
 
 
 def _structured(model: Any, schema: dict[str, Any]) -> Any:

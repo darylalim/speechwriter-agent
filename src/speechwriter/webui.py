@@ -29,13 +29,12 @@ from typing import Literal
 import streamlit as st
 from streamlit.delta_generator import DeltaGenerator
 
-from speechwriter import endpoints, workspace
+from speechwriter import workspace
 from speechwriter.agent import SpeechwriterAgent, build_agent
 from speechwriter.config import (
     ModelChoice,
     Settings,
     load_settings,
-    local_choice,
     model_choices,
 )
 from speechwriter.transcript import Event, clip, iter_events
@@ -57,31 +56,9 @@ _PREVIEW_LEN = 110
 SUGGESTION_KEY = "suggestion"
 _QUEUED = "queued_prompt"
 
-# The model picker's widget key, and the cache of what "Detect models" last found.
-#
-# `MODEL_KEY` holds a whole `ModelChoice`, never a bare id, so the model and the endpoint that
-# serves it can never be set independently — picking a locally served id while `base_url` stays
-# None builds an *Anthropic* client and raises inside `build_agent`, which at module scope in
-# `streamlit_app.py` is a page-level traceback rather than a field error.
-#
-# `DETECTED_KEY` holds whole `ModelChoice` records rather than bare ids, and that shape *is* the
-# endpoint field's correctness argument. Ids alone have to be paired with an endpoint when they
-# are read, which was sound only while the endpoint could not change; it can now, so a list
-# detected at one server would be relabelled as served by another the moment the field was
-# retyped — a pair naming a server the model is not on, which builds a client pointed at it.
-# Detected as a pair, stored as a pair, offered as a pair.
-#
-# It still distinguishes three states, which is why it is not simply a list: absent means
-# "never asked", `[]` means "asked, and the server offered nothing", and a populated list is a
-# real answer. Collapsing the first two would make a dead endpoint indistinguishable from one
-# that was never queried.
+# The model picker's widget key. It holds a whole `ModelChoice`, never a bare id, so the label
+# the picker shows and the id that is built can never drift apart.
 MODEL_KEY = "model_choice"
-DETECTED_KEY = "detected_models"
-# The endpoint this session asks. Seeded from `SPEECHWRITER_BASE_URL` by `init_session`, so the
-# field always *shows* what will be asked and clearing it genuinely means "ask nothing" rather
-# than "quietly fall back to the environment". It never reaches the agent: the running model is
-# changed by the picker alone, and this only decides which server `detect_models` interrogates.
-ENDPOINT_KEY = "model_endpoint"
 # Set when a picked model could not be built, so the page can say so after recovering. Held in
 # session state rather than raised, because the raise is what takes the page down.
 _BUILD_ERROR = "model_build_error"
@@ -144,10 +121,10 @@ def get_bundle() -> SpeechwriterAgent:
         # the reader undo it is ever drawn — and the pick survives in session state, so every
         # rerun raises again. Recovery would mean clearing browser state.
         #
-        # `init_chat_model` raises at construction for an id whose provider it cannot infer and
-        # for an OpenAI-family id with no key, both reachable from a detected entry served by
-        # something that lists ids it will not accept. Fall back to the environment's model and
-        # let the page render, so the picker is available to choose again.
+        # Construction validates every field the client is given, so a pick can fail here — a
+        # stale option carried across a restart, or a future roster entry some setting no longer
+        # suits. Fall back to the environment's model and let the page render, so the picker is
+        # available to choose again.
         logger.warning("Could not build %r: %s: %s", choice.label, type(exc).__name__, exc)
         st.session_state[_BUILD_ERROR] = f"{choice.label}: {type(exc).__name__}: {exc}"
         st.session_state.pop(MODEL_KEY, None)
@@ -166,8 +143,8 @@ def base_settings() -> Settings:
     Cached so the dotenv is read once rather than on every rerun, and — unlike
     :func:`get_bundle` — deliberately *not* invalidated by :func:`switch_model`: this is what
     the environment says, which a pick does not change. It is the second configuration
-    :func:`~speechwriter.config.model_choices` needs, so that selecting a Claude entry (which
-    clears ``base_url``) cannot delete the locally served entry the reader came from.
+    :func:`~speechwriter.config.model_choices` needs, so that selecting a curated entry cannot
+    delete an off-roster ``SPEECHWRITER_MODEL`` the reader came from.
     """
     return load_settings()
 
@@ -179,113 +156,16 @@ def selected_choice() -> ModelChoice | None:
 
 
 def available_choices(settings: Settings) -> tuple[ModelChoice, ...]:
-    """Everything the picker offers: the curated roster, the configured pair, and detections.
-
-    Deduplication is on ``(model, base_url)`` rather than on the label, because the pair is the
-    identity and the label is presentation — and every entry is built through
-    :func:`~speechwriter.config.local_choice`, so a model that is both configured and detected
-    produces one row rather than two that differ only in how they are spelled.
+    """Everything the picker offers: the curated roster plus both configurations.
 
     The whole roster is assembled by one call, which is what keeps the two front ends agreeing
     about *order*: ``cli._roster`` composes the same arguments. Passing both the configuration
     the session started on and the one now in force is the rule
-    :func:`~speechwriter.config.model_choices` documents — selecting a curated entry clears
-    ``base_url``, so a roster built from the live settings alone would delete the locally
-    served entry the reader came from.
+    :func:`~speechwriter.config.model_choices` documents — selecting a curated entry replaces
+    the id, so a roster built from the live settings alone would delete an off-roster
+    ``SPEECHWRITER_MODEL`` the reader came from.
     """
-    # `or ()` collapses the three-state read to the two the roster cares about: "never
-    # asked" and "asked and got nothing" both mean no rows to add. The distinction is a
-    # caption's business, not the picker's.
-    return model_choices(base_settings(), settings, detected=detections() or ())
-
-
-def detections() -> list[ModelChoice] | None:
-    """What "Detect models" last found: ``None`` if never asked, possibly empty if it was."""
-    found = st.session_state.get(DETECTED_KEY)
-    return found if isinstance(found, list) else None
-
-
-def session_endpoint() -> str | None:
-    """The endpoint this session's Detect button asks, normalised; ``None`` if it has none.
-
-    Reads through :func:`~speechwriter.endpoints.usable_endpoint`, which *accepts or rejects*
-    and never rewrites — not :func:`~speechwriter.endpoints.normalize_endpoint`, which is for
-    what a reader types. The field is seeded from ``SPEECHWRITER_BASE_URL``, and normalising on
-    read therefore rewrote the operator's own endpoint: an Azure URL lost its required
-    ``?api-version=`` query and a root-served proxy gained a ``/v1``. Editing is the reader's
-    act and normalises; reading is not and does not.
-
-    Neither function raises, which matters here because this runs on the render path — the
-    sidebar consults it every rerun, so a ``ValueError`` escaping would not be a bad caption but
-    a page that throws on *every* rerun with the offending text still in session state.
-    """
-    return endpoints.usable_endpoint(st.session_state.get(ENDPOINT_KEY) or "")
-
-
-def apply_endpoint() -> None:
-    """Tidy the typed endpoint and forget the previous server's models. The field's ``on_change``.
-
-    Writing the normalised form back into the widget's own key is what makes the transform
-    *visible*: the reader types ``localhost:8080`` and sees ``http://127.0.0.1:8080/v1``, rather
-    than the app quietly asking a URL the box never showed. Text that does not normalise is left
-    exactly as typed, so a typo stays legible and correctable instead of being rewritten into
-    something confidently wrong.
-
-    Detections are dropped when — and only when — the target actually moved, which is the cheap
-    half of the endpoint-binding rule: they describe a server this session is no longer pointed
-    at. Keeping them across a real change would put two rows labelled ``qwen (local)`` in the
-    picker — identical text, different endpoints. Dropping them across a *no-op* edit is the
-    opposite mistake, and costs a second probe of a server that never stopped answering.
-
-    Deliberately **not** a model switch: no persist, no cache invalidation, no thread rotation.
-    Editing this field changes which server is *asked what it has*, never which model is
-    running. The three steps of :func:`switch_model` belong to the picker alone.
-    """
-    # `normalize_endpoint`, not `session_endpoint()`: this is the one place a value is the
-    # reader's own fresh input, so it is the one place the tidying edits belong. Reading goes
-    # through `usable_endpoint`, which never rewrites.
-    tidied = endpoints.normalize_endpoint(st.session_state.get(ENDPOINT_KEY) or "")
-    if tidied is not None:
-        st.session_state[ENDPOINT_KEY] = tidied
-    # Cleared only when the server actually changed. The callback runs *after* the widget's
-    # value has moved, so "what was it before?" cannot be read from the field — but it does not
-    # need to be: every detection carries the endpoint it was found at, which is the whole point
-    # of storing pairs. An edit landing on that same target (pasting the URL back, a trailing
-    # slash, a stray space) keeps them, rather than making the reader sit through another probe
-    # of a server that never stopped answering.
-    answered = next((choice.base_url for choice in detections() or ()), None)
-    if tidied != answered:
-        st.session_state.pop(DETECTED_KEY, None)
-
-
-def detect_models() -> None:
-    """Ask this session's endpoint what it serves. Runs as the Detect button's ``on_click``.
-
-    On a click only — never on render, and never as the field's ``on_change`` either. A probe
-    on blur reads as a user action but fires on every tab away from the box, and when an edit
-    and a click arrive together Streamlit runs ``on_change`` first, so the server is asked
-    twice for one gesture — up to two full timeouts of blocked rerun against a host that
-    black-holes. ``build_agent()`` must not touch the network and CI renders this page dozens
-    of times per run; "click handler only" is what keeps both true.
-
-    Ids become :class:`~speechwriter.config.ModelChoice` records **here**, while the endpoint
-    that answered is still in hand, so nothing downstream ever has to guess which server a
-    model came from. :mod:`speechwriter.endpoints` swallows every failure, so this cannot raise
-    into the page.
-    """
-    target = session_endpoint()
-    if target is None:
-        # Nothing askable, so nothing is recorded — the three states stay honest. Writing `[]`
-        # here looked like the tidy answer and lied: it put the session into "asked, and the
-        # server offered nothing", which the sidebar reports as "That endpoint listed no models
-        # — is the server running?" about a server that was never contacted. The button is
-        # disabled in this state anyway; this is the belt to that braces.
-        return
-    configured = base_settings()
-    found = endpoints.list_models(target, api_key=configured.endpoint_api_key_for(target))
-    st.session_state[DETECTED_KEY] = [
-        local_choice(model, target, configured.context_window) for model in found
-    ]
+    return model_choices(base_settings(), settings)
 
 
 def switch_model() -> None:
@@ -392,15 +272,10 @@ def spoken_length(text: str) -> workspace.SpokenLength:
 
 
 def init_session() -> None:
-    """Ensure this browser session has a transcript, a seen-set, an endpoint, and its own thread."""
+    """Ensure this browser session has a transcript, a seen-set, and its own thread."""
     st.session_state.setdefault(_TRANSCRIPT, [])
     st.session_state.setdefault(_SEEN, set())
     st.session_state.setdefault(_PENDING, False)
-    # Seeded from the environment so the field shows what Detect will actually ask, and so a
-    # reader who configured an endpoint finds it already filled in. `setdefault`, not an
-    # assignment: once the reader has typed here — including clearing the box — that is the
-    # answer, and a rerun must not put the environment's value back underneath them.
-    st.session_state.setdefault(ENDPOINT_KEY, base_settings().base_url)
     # Guarded rather than `setdefault(...)` so the id is not re-minted on every rerun just
     # to be thrown away — and so it is obvious that the thread does *not* rotate per run.
     if _THREAD not in st.session_state:
