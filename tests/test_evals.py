@@ -1273,6 +1273,37 @@ def test_a_memory_recall_example_runs_against_its_seeded_profile(monkeypatch, tm
     assert "Warm and dry" in profile, profile
 
 
+def test_a_conditional_write_requirement_only_applies_to_a_run_that_drafts():
+    # The memory-recall example licenses asking about gaps the seeded profile does not cover,
+    # and marks its write paths `required_write_paths_conditional`. The scorer ignored the flag,
+    # so on the baseline run an agent that read the profile, asked three in-scope questions and
+    # stopped failed `required_write_paths` -- the one example that sets the flag, and the only
+    # failure in a 118/119 run.
+    ev = _evaluators_module()
+    example = next(
+        e
+        for e in json.loads((REPO_ROOT / "evals/datasets/trajectory.json").read_text())
+        if e["metadata"]["id"] == "edge-cases-memory-recall-housewarming"
+    )
+
+    def writes(*paths):
+        return ev.RunRecord("", tuple(ev.ToolCall("write_file", {"file_path": p}) for p in paths))
+
+    def row(run):
+        return next(
+            s
+            for s in ev.score_example("trajectory", run, example)
+            if s.key == "required_write_paths"
+        )
+
+    # Asked and stopped: not applicable, so unscored -- never a free pass.
+    assert row(writes()).score is None
+    # Drafted but never updated the profile: the requirement applies, and fails.
+    assert row(writes("/workspace/speeches/housewarming.md")).score == 0.0
+    # Drafted and remembered: passes.
+    assert row(writes("/workspace/speeches/housewarming.md", "/memories/daryl.md")).score == 1.0
+
+
 def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
     # `--keep` is how a surprising result gets inspected, and a recorded experiment is exactly
     # where one is looked at after the fact. It was once set only after the recording path had

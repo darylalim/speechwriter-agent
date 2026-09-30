@@ -255,14 +255,30 @@ def score_trajectory(run: RunRecord, out: dict[str, Any], meta: dict[str, Any]) 
         )
     )
 
-    unwritten = _prefix_hits(run.writes, out.get("required_write_paths") or [])
-    scores.append(
-        Score(
-            "required_write_paths",
-            float(not unwritten),
-            f"never written: {unwritten}" if unwritten else "ok",
+    # A conditional requirement applies "only to a run that drafts at all" (path_semantics): an
+    # example like the memory-recall one licenses asking about gaps the seeded profile does not
+    # cover and stopping there. Ignored, that flag failed a run which read the profile, asked
+    # three in-scope questions and wrote nothing -- exactly what the example allows. A run that
+    # did not draft is therefore *unscored* here, never passed: whether its questions were the
+    # right ones is the intake criteria's call, not this one's.
+    drafted = any(w.startswith("/workspace/speeches/") for w in run.writes)
+    if meta.get("required_write_paths_conditional") and not drafted:
+        scores.append(
+            Score(
+                "required_write_paths",
+                None,
+                "not applicable: conditional on drafting, and this run did not draft",
+            )
         )
-    )
+    else:
+        unwritten = _prefix_hits(run.writes, out.get("required_write_paths") or [])
+        scores.append(
+            Score(
+                "required_write_paths",
+                float(not unwritten),
+                f"never written: {unwritten}" if unwritten else "ok",
+            )
+        )
     for key in ("forbidden_write_paths", "forbidden_write_attempt_paths"):
         hit = [p for p in out.get(key) or [] if any(path_matches(w, p) for w in run.writes)]
         scores.append(Score(key, float(not hit), f"wrote {hit}" if hit else "none"))
