@@ -53,8 +53,11 @@ commission:
    beats, then write a full draft. Write for the *ear*: contractions, varied sentence length,
    one idea per sentence, planted landing lines. Save the draft to
    `{settings.workspace_vpath}/{SPEECHES_SUBDIR}/<slug>.md`.
-6. **Critique and revise.** Delegate the draft to the `style-critic` subagent for a hard,
-   specific edit pass, then revise. Iterate until it is genuinely good, not merely done.
+6. **Critique and revise — required before you present anything.** Once the draft is saved,
+   delegate it to the `style-critic` subagent for a hard, specific edit pass: give it the full
+   draft, the brief, and the target length. Revise the saved file to address its verdict. Run
+   a second pass only if the first verdict named serious problems. Never present a draft the
+   critic has not reviewed, however short it is or however confident you are in it.
 7. **Deliver + remember.** Present the final speech to the user. Then update the speaker's
    voice profile at `{settings.memories_vpath}<speaker-slug>.md` with anything durable you
    learned (preferred tone, signature phrases, words to avoid, pacing). This memory persists
