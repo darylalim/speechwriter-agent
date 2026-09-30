@@ -54,9 +54,10 @@ jobs:
 
       - run: uv sync --locked
 
-      # Never add ANTHROPIC_API_KEY or TAVILY_API_KEY here. Their absence is what checks
-      # CLAUDE.md's "building the agent must not call the model or the network"
-      # invariant, and it pins the no-Tavily `[VERIFY]` prompt branch.
+      # Never add ANTHROPIC_API_KEY, TAVILY_API_KEY, DEEPGRAM_API_KEY or any LANGSMITH_*
+      # variable here. Their absence is what checks CLAUDE.md's "building the agent must not
+      # call the model or the network" invariant, pins the no-Tavily `[VERIFY]` prompt branch,
+      # keeps the opt-in Deepgram test skipped, and keeps every run untraced.
       - run: uv run pytest -q
 
       # After sync and inside the matrix: [tool.ty.environment] points ty at ./.venv, so

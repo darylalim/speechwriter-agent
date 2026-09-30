@@ -8,10 +8,14 @@ be discovered by a human opening a browser.
 
 from __future__ import annotations
 
-import importlib
+import contextlib
+import json
 import os
 import re
+import threading
 import tomllib
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import streamlit as st
@@ -730,12 +734,14 @@ def _click_measure(app) -> None:
 
 
 def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypatch, tmp_path):
-    # `_measured`/`_remember`/`_forget` are the most intricate new logic on the page and the
-    # audio tests never reach them — they call `workspace.measure_spoken_length` directly.
-    # Stubbing the synthesis puts the flag path under test without the audio extra, which CI
-    # never installs. The bound is lowered rather than measuring nine drafts.
+    # `_measured`/`_remember`/`_forget` are the most intricate logic on the page and the
+    # synthesis tests never reach them — they call `workspace.measure_spoken_length` directly.
+    # Stubbing the synthesis puts the flag path under test with no key and no network, which is
+    # how CI runs. The bound is lowered rather than measuring nine drafts.
     # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    # Dummy too, and never sent — `spoken_length` is stubbed below. Set so the button is enabled.
+    monkeypatch.setenv("DEEPGRAM_API_KEY", "dg-dummy")
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
     st.cache_resource.clear()
 
@@ -748,11 +754,13 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
         )
 
     monkeypatch.setattr(webui, "MEASURE_CACHE_ENTRIES", 2)
-    monkeypatch.setattr(
-        webui,
-        "spoken_length",
-        lambda text: workspace.SpokenLength(seconds=90.0, wav=b"", sample_rate=24_000),
-    )
+    keys: list[str | None] = []
+
+    def measured(text: str, _api_key: str | None) -> workspace.SpokenLength:
+        keys.append(_api_key)
+        return workspace.SpokenLength(seconds=90.0, wav=b"", sample_rate=24_000)
+
+    monkeypatch.setattr(webui, "spoken_length", measured)
 
     app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
     app.run().switch_page("app_pages/browse.py").run()
@@ -764,6 +772,8 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
     assert not app.exception
     # A measured draft reports the synthesised figure beside the estimate...
     assert any(metric.label == "Measured" for metric in app.metric)
+    # ...measured with the key the environment configured, handed through the cache...
+    assert keys and set(keys) == {"dg-dummy"}
     # ...and the flag list is held to the cache's own size, so a flag cannot outlive its WAV
     # by more than the bound. Without `del flags[:-MEASURE_CACHE_ENTRIES]` this would be 3.
     assert len(app.session_state["measured"]) == 2
@@ -780,19 +790,41 @@ def test_the_measured_set_is_bounded_and_a_failure_puts_the_button_back(monkeypa
 
     # A failed synthesis must forget the draft, or the flag re-raises on every rerun with no
     # way back to the button — the page becomes unrecoverable rather than merely unmeasured.
-    def _unavailable(_text: str) -> workspace.SpokenLength:
-        raise workspace.AudioUnavailable("install the audio extra")
+    def _rejected(_text: str, _api_key: str | None) -> workspace.SpokenLength:
+        raise workspace.SynthesisFailed("Deepgram answered 401: invalid credentials")
 
-    monkeypatch.setattr(webui, "spoken_length", _unavailable)
+    monkeypatch.setattr(webui, "spoken_length", _rejected)
     app.main.selectbox[0].select(app.main.selectbox[0].options[0]).run()
     _click_measure(app)
 
     assert not app.exception
-    assert any("install the audio extra" in info.value for info in app.info)
+    assert any("invalid credentials" in info.value for info in app.info)
     # Forgotten — the count drops rather than the failed draft staying flagged forever.
     assert len(app.session_state["measured"]) == 1
-    # And the button is back, which is also what you want after installing the extra.
+    # And the button is back, which is also what you want after fixing the key.
     assert any(button.label == "Measure" for button in app.button)
+
+
+def test_the_measure_button_says_what_turns_it_on_without_a_key(monkeypatch, tmp_path):
+    # Knowable up front now that the requirement is a key rather than an installed extra, so the
+    # button is disabled rather than taking a click only to complain — and it stays visible, so
+    # the reader learns the feature exists and what to set.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("DEEPGRAM_API_KEY", raising=False)
+    st.cache_resource.clear()
+    _write(
+        load_settings().workspace_dir / config.SPEECHES_SUBDIR / "toast.md",
+        "A toast. " + " ".join(["word"] * 40),
+        mtime=1_000_000,
+    )
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+
+    assert not app.exception
+    button = next(button for button in app.button if button.label == "Measure")
+    assert button.disabled
+    assert "DEEPGRAM_API_KEY" in (button.help or "")
 
 
 def test_new_conversation_disarms_a_queued_suggestion(monkeypatch, tmp_path):
@@ -833,39 +865,145 @@ def test_the_workspace_view_control_cannot_be_deselected(monkeypatch, tmp_path):
     assert app.segmented_control[0].proto.required
 
 
-def _without_the_audio_extra(monkeypatch):
-    """Make every `mlx_audio` import fail, as it does in CI and any default install."""
-    real = importlib.import_module
+@contextlib.contextmanager
+def _deepgram(*, status: int = 200, body: bytes | None = None, redirect_to: str | None = None):
+    """A loopback stand-in for Deepgram's /v1/speak that keeps every request it is sent.
 
-    def blocked(name, *args, **kwargs):
-        if name.startswith("mlx_audio"):
-            raise ImportError(f"No module named {name!r}")
-        return real(name, *args, **kwargs)
+    Answers each request with one second of silence at 24 kHz (48,000 bytes of linear16), so a
+    measurement's duration is exactly the number of chunks it sent.
+    """
+    received: list[tuple[str, dict[str, str], dict[str, str]]] = []
 
-    monkeypatch.setattr(importlib, "import_module", blocked)
-    # The per-process model cache would otherwise satisfy the call before the import runs.
-    monkeypatch.setattr(workspace, "_TTS_MODELS", {})
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler's own spelling
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            payload = json.loads(self.rfile.read(length) or b"{}")
+            received.append((self.path, dict(self.headers), payload))
+            if redirect_to is not None:
+                # 302, the redirect urllib's default handler actually follows for a POST: it
+                # re-sends as a GET, dropping the body but keeping Authorization. (It refuses a
+                # 307 on a POST outright, so a 307 here would pass with the guard removed.)
+                self.send_response(302)
+                self.send_header("Location", redirect_to)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            reply = body if body is not None else b"\x00\x00" * 24_000
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(reply)))
+            self.end_headers()
+            self.wfile.write(reply)
+
+        # Every method records, so a redirected request is seen whatever verb it arrives as.
+        do_GET = do_PUT = do_POST  # noqa: N815 - BaseHTTPRequestHandler's own spelling
+
+        def log_message(self, format, *args):  # noqa: A002 - the base class's own parameter name
+            """Silence the default stderr access log."""
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1/speak", received
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
-def test_measuring_without_the_audio_extra_names_the_install_command(monkeypatch):
-    # The extra is genuinely optional, so this path is a normal state the UI has to explain.
-    # A bare ImportError escaping here would surface in the browser as a red traceback on a
-    # page whose other five features work fine.
-    _without_the_audio_extra(monkeypatch)
-
+def test_measuring_without_a_key_names_the_variable_that_turns_it_on():
+    # The key is genuinely optional, so this path is a normal state the UI has to explain. A
+    # generic failure escaping here would surface in the browser as an error with no remedy.
     with pytest.raises(workspace.AudioUnavailable) as excinfo:
-        workspace.measure_spoken_length("Good evening, and thank you all for coming.")
+        workspace.measure_spoken_length("Good evening, and thank you all for coming.", api_key=None)
 
-    assert "--extra audio" in str(excinfo.value)
+    assert "DEEPGRAM_API_KEY" in str(excinfo.value)
 
 
-def test_measuring_an_unspoken_draft_needs_no_model_at_all(monkeypatch):
-    # A header-only file has nothing to say, and loading a TTS model to discover that would
-    # cost seconds for a guaranteed zero. Asserted with imports blocked, so a regression that
-    # moved the short-circuit below the model load fails here rather than merely getting slow.
-    _without_the_audio_extra(monkeypatch)
+def test_a_draft_is_synthesised_in_chunks_and_timed_from_the_audio():
+    # The whole request, on the wire: the key in Deepgram's own `Token` scheme (Bearer is for
+    # short-lived JWTs, and a key sent that way 401s like a bad key), the raw-PCM query that
+    # makes duration arithmetic, and a draft longer than one request's limit split into several
+    # — whose audio is joined into one WAV and timed as one speech.
+    sentence = "Good evening, and thank you all for coming out tonight to celebrate with us. "
+    draft = "---\nspeaker: Ana\n---\n\n" + sentence * 60  # ~4,600 characters, three requests
 
-    measured = workspace.measure_spoken_length("---\nspeaker: Ana\n---\n\n[pause]\n")
+    with _deepgram() as (endpoint, received):
+        measured = workspace.measure_spoken_length(draft, api_key="dg-test", endpoint=endpoint)
+
+    assert len(received) >= 3, f"{len(received)} request(s) for a draft over the chunk limit"
+    for path, headers, payload in received:
+        query = parse_qs(urlsplit(path).query)
+        assert query == {
+            "model": [workspace.TTS_MODEL],
+            "encoding": ["linear16"],
+            "container": ["none"],
+            "sample_rate": [str(workspace.TTS_SAMPLE_RATE)],
+        }, query
+        assert {k.lower(): v for k, v in headers.items()}["authorization"] == "Token dg-test"
+        assert len(payload["text"]) <= workspace.TTS_CHUNK_CHARS
+    # Nothing dropped or duplicated at the seams, and the header block never sent.
+    sent = " ".join(payload["text"] for _, _, payload in received)
+    assert sent.split() == workspace._spoken_text(sentence * 60).split()
+    assert "speaker" not in sent
+
+    # One second of audio per request, so the duration is the request count — measured off
+    # the joined PCM, not off any header Deepgram wrote for a single chunk.
+    assert measured.seconds == pytest.approx(len(received))
+    assert measured.sample_rate == workspace.TTS_SAMPLE_RATE
+    assert measured.wav.startswith(b"RIFF")
+
+
+def test_a_rejected_request_names_what_deepgram_said():
+    # Errors come back as JSON while success is binary audio, so the status decides which one a
+    # body is. Deepgram's own message names the fix — a wrong key, a model the project cannot
+    # use — so it is carried to the reader rather than replaced with a generic failure.
+    body = b'{"err_code":"INVALID_AUTH","err_msg":"Invalid credentials."}'
+    with (
+        _deepgram(status=401, body=body) as (endpoint, _),
+        pytest.raises(workspace.SynthesisFailed) as excinfo,
+    ):
+        workspace.measure_spoken_length("Hello there.", api_key="dg-wrong", endpoint=endpoint)
+
+    assert "401" in str(excinfo.value)
+    assert "Invalid credentials" in str(excinfo.value)
+
+
+def test_the_key_never_follows_a_redirect():
+    # urllib copies Authorization onto a redirected request, so a 3xx from anywhere on the path
+    # would hand the key to wherever it pointed. The endpoint has no reason to redirect, so a
+    # redirect is refused outright — and the host it pointed at must see nothing at all.
+    with _deepgram() as (elsewhere, stolen), _deepgram(redirect_to=elsewhere) as (endpoint, _):
+        with pytest.raises(workspace.SynthesisFailed):
+            workspace.measure_spoken_length("Hello there.", api_key="dg-test", endpoint=endpoint)
+
+    assert stolen == [], "the key followed a redirect to another host"
+
+
+def test_chunks_break_at_sentences_and_never_exceed_the_limit():
+    # A cut mid-sentence changes the prosody Deepgram gives it, so sentences come first; a
+    # sentence longer than the limit falls back to words, and a single overlong "word" — a pasted
+    # URL — is cut where it must be. Nothing is lost at any seam.
+    first = "One two three four five six seven."  # 34 characters
+    second = "Eight nine ten eleven twelve thirteen."  # 38: the two cannot share a 50-char chunk
+    # A word packer would fill the first chunk to 50 and cut `second` after "ten"; breaking at
+    # the sentence keeps each one whole.
+    assert workspace.tts_chunks(f"{first} {second}", limit=50) == [first, second]
+
+    text = "Short one. " + "long " * 30 + "end of a very long sentence. " + "x" * 55
+    chunks = workspace.tts_chunks(text, limit=50)
+
+    assert all(len(chunk) <= 50 for chunk in chunks), chunks
+    assert "".join(chunks).replace(" ", "") == text.replace(" ", "")
+
+
+def test_measuring_an_unspoken_draft_needs_no_request_at_all():
+    # A header-only file has nothing to say, and a billed request to discover that would cost
+    # money for a guaranteed zero. Asserted with no key and a dead endpoint, so a regression that
+    # moved the short-circuit below the key check or the request fails here.
+    measured = workspace.measure_spoken_length(
+        "---\nspeaker: Ana\n---\n\n[pause]\n", api_key=None, endpoint="http://127.0.0.1:9"
+    )
 
     assert measured.seconds == 0.0
     assert measured.wav == b""
@@ -883,18 +1021,18 @@ def test_measured_and_estimated_lengths_describe_the_same_words():
 
 
 @pytest.mark.skipif(
-    not os.environ.get("SPEECHWRITER_TEST_AUDIO"),
-    reason="needs `uv sync --extra audio` and downloads a TTS model; set SPEECHWRITER_TEST_AUDIO=1",
+    not (os.environ.get("SPEECHWRITER_TEST_AUDIO") and os.environ.get("DEEPGRAM_API_KEY")),
+    reason="calls Deepgram (billed per character); set SPEECHWRITER_TEST_AUDIO=1 and "
+    "DEEPGRAM_API_KEY",
 )
 def test_measured_length_is_in_the_right_ballpark():
-    # Opt-in, because it is the one test here that is neither free nor offline: the first run
-    # downloads Kokoro. Asserts a *range* rather than a figure -- the point is that the
-    # measurement is real and roughly agrees with the words-per-minute estimate, not that a
-    # particular voice hits a particular duration.
+    # Opt-in, because it is the one test here that is neither free nor offline. Asserts a
+    # *range* rather than a figure -- the point is that the measurement is real and roughly
+    # agrees with the words-per-minute estimate, not that a voice hits a particular duration.
     words = "Good evening, and thank you all for coming out tonight. " * 10
-    measured = workspace.measure_spoken_length(words)
+    measured = workspace.measure_spoken_length(words, api_key=os.environ["DEEPGRAM_API_KEY"])
 
-    assert measured.sample_rate > 0
+    assert measured.sample_rate == workspace.TTS_SAMPLE_RATE
     assert measured.wav.startswith(b"RIFF")
     estimate = workspace.spoken_words(words) / config.WORDS_PER_MINUTE * 60
     assert 0.5 * estimate < measured.seconds < 2.0 * estimate

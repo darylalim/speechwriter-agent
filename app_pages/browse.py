@@ -35,14 +35,15 @@ def _humanize(key: str) -> str:
 # boolean per digest, because the agent revises in place: every rewrite mints a fresh digest,
 # so per-digest keys would accumulate for the life of the session and — worse — outlive the
 # LRU cache they stand for. A flag whose WAV has been evicted sends the next page render
-# straight back into a ~9s synthesis with no button pressed, which is the one thing gating
+# straight back into a billed synthesis with no button pressed, which is the one thing gating
 # the measurement behind a button was meant to prevent. Bounded to the cache's own size and
 # refreshed on every hit, so the list ages the way the cache does — `st.cache_resource` is LRU
 # and reorders on read, where a list that only ever appended would evict by *first* request.
 # The two still cannot be made identical: that cache is process-global while these flags are
 # per-session, so another tab can evict a WAV this session is flagging. When that happens the
 # next render of that draft pays one synthesis and both are consistent again — the bound buys
-# a list that cannot grow without limit and a divergence that costs 9s once, not a guarantee.
+# a list that cannot grow without limit and a divergence that costs one extra synthesis, not a
+# guarantee.
 _MEASURED = "measured"
 
 
@@ -72,7 +73,7 @@ def _measure_flag(document: workspace.Document) -> str:
 
     Keyed on the text's digest, not just the slug. The agent revises a speech **in place**, so
     a slug-only key stays True across a rewrite — and since `spoken_length` is cached on the
-    text, the next visit would miss the cache and silently run a full ~9s synthesis on page
+    text, the next visit would miss the cache and silently run a full billed synthesis on page
     render, which is exactly what gating it behind a button was meant to prevent.
     """
     digest = hashlib.sha256(document.text.encode("utf-8")).hexdigest()[:12]
@@ -92,7 +93,7 @@ def _measure_if_requested(
     Any failure forgets the draft. Without that the page is unrecoverable: `st.cache_resource`
     does not cache exceptions, so a sticky flag re-attempts and re-raises on every rerun, and a
     traceback out of here stops the rest of the page rendering. Clearing it puts the button
-    back, which is also what you want after installing the extra the first branch complains
+    back, which is also what you want after setting the key the first branch complains
     about.
     """
     flag = _measure_flag(document)
@@ -100,10 +101,10 @@ def _measure_if_requested(
         return None, ""
     try:
         # `show_time` because this is the one wait in the app long enough to look hung — a
-        # three-minute speech is ~9s of synthesis, and the cache declares `show_spinner=False`,
-        # so this is the only progress the reader gets.
+        # three-minute speech is a few seconds of Deepgram requests, and the cache declares
+        # `show_spinner=False`, so this is the only progress the reader gets.
         with st.spinner("Synthesising the draft…", show_time=True):
-            measured = spoken_length(document.text)
+            measured = spoken_length(document.text, get_bundle().settings.deepgram_api_key)
         # That read just refreshed the cache entry, so refresh the flag with it — otherwise
         # the flag list evicts by first request while the cache evicts by last use, and a
         # still-flagged draft whose WAV has gone re-synthesises on plain page render.
@@ -113,9 +114,9 @@ def _measure_if_requested(
         _forget(flag)
         return None, str(exc)
     except Exception as exc:
-        # Broad on purpose. Everything past the import guard is someone else's failure mode —
-        # a first-run model download with no network, an HF rate limit, a full disk, mlx
-        # raising on a pathological draft — and none of them should take the page down.
+        # Broad on purpose. Everything past the key check is someone else's failure mode — a
+        # rejected key, a rate limit, no network — and none of them should take the page down.
+        # `SynthesisFailed` carries Deepgram's own error text, which names the fix.
         _forget(flag)
         return None, f"Could not measure this draft: {exc}"
 
@@ -124,11 +125,22 @@ def _measure_button(document: workspace.Document) -> None:
     """The control that opts into a measurement, rendered inside the metric row."""
     flag = _measure_flag(document)
     # Rerun on click so the button is *replaced* by the result rather than sitting beside it.
+    # Disabled, not hidden, without a key: the reader learns the feature exists and what turns
+    # it on. The same rule the suggestion pills follow — a control that takes a click and then
+    # only complains is worse than one that shows it is unavailable. Knowable up front now that
+    # the requirement is a key rather than an installed extra.
+    enabled = get_bundle().settings.measurement_enabled
     if st.button(
         "Measure",
         key=f"button-{flag}",
         icon=":material/graphic_eq:",
-        help="Synthesise the draft and time it, instead of estimating from word count.",
+        help=(
+            "Synthesise the draft with Deepgram and time it, instead of estimating from word "
+            "count. Billed per character."
+            if enabled
+            else "Set DEEPGRAM_API_KEY to time drafts by synthesising them."
+        ),
+        disabled=not enabled,
     ):
         _remember(flag)
         st.rerun()
@@ -204,8 +216,8 @@ def document_browser(
                     delta_color="off",
                     border=True,
                     width="content",
-                    help="Synthesised with Kokoro. Times the words only — a bracketed cue "
-                    "adds no silence, so this is time-to-say, not time-on-stage.",
+                    help="Synthesised with Deepgram Aura-2. Times the words only — a bracketed "
+                    "cue adds no silence, so this is time-to-say, not time-on-stage.",
                 )
         # Pushed to the far edge so it reads as an action, not a third stat card.
         with st.container(horizontal_alignment="right"):

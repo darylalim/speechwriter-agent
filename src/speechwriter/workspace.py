@@ -15,12 +15,16 @@ Two things this module refuses to re-derive, because a second copy would drift:
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
+import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from langgraph.store.base import BaseStore
 
@@ -125,32 +129,39 @@ def spoken_words(text: str) -> int:
     return _count_spoken(body)
 
 
-# Kokoro is small (82M), Apple-Silicon-native via MLX, and runs at roughly RTF 0.06 — a
-# three-minute speech is synthesised in about nine seconds. Named here rather than in
-# `config.py` because, unlike SPEECHES_SUBDIR or WORDS_PER_MINUTE, nothing else in the
-# project consumes them: there is no second subsystem to drift from.
-TTS_MODEL = "mlx-community/Kokoro-82M-bf16"
-TTS_VOICE = "af_heart"
+# Deepgram's Aura-2 text-to-speech, reached over its REST endpoint. Named here rather than in
+# `config.py` because, unlike SPEECHES_SUBDIR or WORDS_PER_MINUTE, nothing else in the project
+# consumes them: there is no second subsystem to drift from. Thalia is a clear, even-paced
+# American English voice — a neutral reader, which is what a timing measurement wants.
+TTS_MODEL = "aura-2-thalia-en"
+TTS_ENDPOINT = "https://api.deepgram.com/v1/speak"
+# Raw 16-bit little-endian mono PCM at this rate (`encoding=linear16&container=none`), so the
+# duration is arithmetic on the byte count and the WAV header is written here, by `wave`, over
+# the whole joined speech — rather than trusting a header Deepgram wrote for one chunk.
+TTS_SAMPLE_RATE = 24_000
+_BYTES_PER_SAMPLE = 2
+# Deepgram's REST endpoint takes at most 2,000 characters of text per request, and a
+# three-minute speech is roughly twice that — so a draft is sent in sentence-bounded pieces and
+# the audio joined. Kept a little under the limit so a count that disagrees with Deepgram's by a
+# character or two (it strips control characters first) never trips it.
+TTS_CHUNK_CHARS = 1_900
+# Per request. Synthesis is faster than real time, so a chunk's audio arrives in seconds; this
+# only bounds a server that accepts the connection and then stalls.
+TTS_TIMEOUT = 60.0
 
-# Loading the weights costs ~0.5s and building the phonemiser pipeline rather more, so the
-# model is kept per process. A plain dict rather than `functools.lru_cache` because the
-# value is an unhashable, lazily-imported object and this keeps the module's top-level
-# imports exactly as light as they were.
-# `Any`, explicitly rather than by omission. A Protocol declaring `generate` would be the
-# precise alternative and it cannot work here: with the extra installed `load_model` returns
-# `nn.Module`, which does not satisfy such a Protocol, while in CI the symbol is unresolvable
-# and satisfies anything — so the annotation would fail in exactly one of the two
-# environments. Same bind as the suppression comment below, one level up.
-_TTS_MODELS: dict[str, Any] = {}
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
 
 
 class AudioUnavailable(RuntimeError):
-    """Raised when spoken-length measurement is requested without the ``audio`` extra.
+    """Raised when spoken-length measurement is requested with no ``DEEPGRAM_API_KEY``.
 
-    A distinct type rather than letting ``ImportError`` escape: the caller is a UI that must
-    tell the reader *how to fix it*, and catching bare ``ImportError`` around a call this
-    deep would also swallow a genuine broken install inside the TTS stack.
+    A distinct type rather than a generic failure: the caller is a UI that must tell the reader
+    *how to fix it* — a missing key is a setup step, where a rejected request is an error.
     """
+
+
+class SynthesisFailed(RuntimeError):
+    """Raised when Deepgram answered a synthesis request with an error, or not at all."""
 
 
 @dataclass(frozen=True)
@@ -168,101 +179,149 @@ class SpokenLength:
         return self.seconds / 60
 
 
-def _load_tts(model_id: str) -> Any:
-    """Load (once per process) the MLX TTS model, or explain why it cannot be loaded."""
-    cached = _TTS_MODELS.get(model_id)
-    if cached is not None:
-        return cached
-    # Resolved by name at call time rather than imported at module scope: `mlx_audio` is an
-    # optional extra pulling a torch/spacy stack, and a top-level import would charge every
-    # `import speechwriter` for it — the same lazy-import discipline `__init__.py` applies to
-    # the langchain stack.
+def tts_chunks(text: str, limit: int = TTS_CHUNK_CHARS) -> list[str]:
+    """Split ``text`` into pieces of at most ``limit`` characters, at sentence ends if possible.
+
+    Sentence boundaries first, because a cut mid-sentence changes the prosody Deepgram gives it
+    — a sentence read as two sounds like two, and the timing drifts with it. A sentence longer
+    than the limit (a speech can build to one) falls back to word boundaries, and a single
+    "word" longer than the limit — a pasted URL — is cut where it must be.
+    """
+    pieces: list[str] = []
+    for sentence in _SENTENCE_END.split(text.strip()):
+        if len(sentence) <= limit:
+            pieces.append(sentence)
+            continue
+        line = ""
+        for word in sentence.split():
+            while len(word) > limit:
+                if line:
+                    pieces.append(line)
+                    line = ""
+                pieces.append(word[:limit])
+                word = word[limit:]
+            candidate = f"{line} {word}" if line else word
+            if len(candidate) > limit:
+                pieces.append(line)
+                line = word
+            else:
+                line = candidate
+        if line:
+            pieces.append(line)
+
+    chunks: list[str] = []
+    current = ""
+    for piece in pieces:
+        candidate = f"{current} {piece}" if current else piece
+        if len(candidate) > limit:
+            chunks.append(current)
+            current = piece
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse every redirect, so the API key never leaves the host it was meant for.
+
+    ``urllib`` copies every header except the body's length and type onto a redirected request,
+    ``Authorization`` included — so a 3xx from anywhere on the path would hand the key to
+    wherever it pointed. The endpoint is a fixed HTTPS URL with no reason to redirect, which
+    makes refusing outright both the simplest guard and the correct one.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
+def _synthesise(chunk: str, *, api_key: str, model: str, endpoint: str, timeout: float) -> bytes:
+    """One Deepgram request: ``chunk`` in, raw linear16 PCM out."""
+    query = urllib.parse.urlencode(
+        {
+            "model": model,
+            "encoding": "linear16",
+            "container": "none",
+            "sample_rate": TTS_SAMPLE_RATE,
+        }
+    )
+    request = urllib.request.Request(
+        f"{endpoint}?{query}",
+        data=json.dumps({"text": chunk}).encode("utf-8"),
+        # `Token`, not `Bearer`: Deepgram reserves Bearer for short-lived JWTs, and an API key
+        # sent that way is a 401 that reads like a bad key.
+        headers={"Authorization": f"Token {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        from importlib import import_module
-
-        generate = import_module("mlx_audio.tts.generate")
-        hub = import_module("mlx_audio.utils")
-    except ImportError as exc:  # pragma: no cover - exercised only without the extra
-        raise AudioUnavailable(
-            "Measuring spoken length needs the optional audio extra. "
-            "Install it with: uv sync --extra audio"
-        ) from exc
-
-    # Resolved in two steps on purpose. `load_model` is annotated `model_path: Path` and means
-    # it — handed a Hub id as a Path it looks for a literal directory, misses the download
-    # branch, and raises FileNotFoundError. `get_model_path` is the half that takes a repo-id
-    # *string*, downloads if needed, and returns the real snapshot directory.
-    #
-    # To reproduce the type error the collapsed form causes, you must check **with the extra
-    # installed**: ty resolves `import_module` with a literal argument and types `load_model`
-    # precisely. Run it in the CI state instead and mlx_audio is unresolvable, everything is
-    # Any, and the error does not appear — which reads as though the rule were stale.
-    #
-    # Collapsing these into one `load_model(model_id)` call is the obvious-looking tidy-up and
-    # it is a trap: it works at runtime but only type-checks with a suppression, and *that*
-    # has no correct form. With the extra installed the suppression is required; in CI, which
-    # installs no extras, the same comment is an unused-suppression warning and `ty` exits 1.
-    # Two correctly-typed calls need no suppression, so both environments stay green.
-    model = generate.load_model(hub.get_model_path(model_id))
-    _TTS_MODELS[model_id] = model
-    return model
+        with _OPENER.open(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        # Errors come back as JSON (`err_code`, `err_msg`); success is binary audio — so the
+        # status decides which one this is, never an attempt to parse the body.
+        detail = exc.read()[:300].decode("utf-8", "replace")
+        raise SynthesisFailed(f"Deepgram answered {exc.code}: {detail}") from exc
+    except OSError as exc:  # URLError, timeouts, refused connections
+        raise SynthesisFailed(f"Could not reach Deepgram: {exc}") from exc
 
 
 def measure_spoken_length(
-    text: str, *, model_id: str = TTS_MODEL, voice: str = TTS_VOICE
+    text: str,
+    *,
+    api_key: str | None,
+    model: str = TTS_MODEL,
+    endpoint: str = TTS_ENDPOINT,
+    timeout: float = TTS_TIMEOUT,
 ) -> SpokenLength:
-    """Synthesise a draft and report how long it actually takes to say.
+    """Synthesise a draft with Deepgram and report how long it actually takes to say.
 
     ``WORDS_PER_MINUTE`` is a single constant standing in for pace, and it cannot know that
     one draft is dense with long words while another is short and punchy. This measures the
-    real thing — at the cost of running a TTS model, which is why the caller decides when to
-    pay it rather than it happening on every page render.
+    real thing — at the cost of a billed API call per ~2,000 characters, which is why the caller
+    decides when to pay it rather than it happening on every page render.
 
     Measured over the same corpus :attr:`Document.words` counts (header block and bracketed
     delivery cues removed), so the two figures are comparable. The consequence worth knowing:
-    a ``[pause]`` contributes *no* silence here, so this is the time to say the words, not
-    the time the performance runs.
+    a ``[pause]`` contributes *no* silence here, so this is the time to say the words, not the
+    time the performance runs. Each chunk also carries the short lead-in and tail silence of a
+    separate utterance, so a long draft reads a little longer than one continuous read would.
 
-    Raises :class:`AudioUnavailable` if the ``audio`` extra is not installed.
+    Raises :class:`AudioUnavailable` with no key, and :class:`SynthesisFailed` if Deepgram
+    rejects a request or cannot be reached. A draft with nothing to say returns zero without a
+    request, key or no key.
     """
     _, body = _split_front_matter(text)
     spoken = _spoken_text(body).strip()
     if not spoken:
         return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
+    if not api_key:
+        raise AudioUnavailable(
+            "Measuring spoken length needs a Deepgram API key. Set DEEPGRAM_API_KEY in the "
+            "project's dotenv file and restart."
+        )
 
-    segments = list(_load_tts(model_id).generate(text=spoken, voice=voice))
+    pcm = b"".join(
+        _synthesise(chunk, api_key=api_key, model=model, endpoint=endpoint, timeout=timeout)
+        for chunk in tts_chunks(spoken)
+    )
+    # A torn final sample would shift every frame after it in the joined stream; drop it.
+    pcm = pcm[: len(pcm) - len(pcm) % _BYTES_PER_SAMPLE]
 
-    # Imported *after* the guard above, not at the top of the function. numpy reaches this
-    # project only transitively — through streamlit — so it is neither a declared base
-    # dependency nor part of the `audio` extra. Imported earlier, an install without it would
-    # raise a bare ModuleNotFoundError past the one error type this API promises, and past the
-    # empty-draft return that needs no audio stack at all. Here, `_load_tts` has already
-    # succeeded, so mlx-audio is installed and numpy came with it.
-    import io
-    import wave
-
-    import numpy as np
-
-    if not segments:  # pragma: no cover - defensive; the model yields at least one segment
-        return SpokenLength(seconds=0.0, wav=b"", sample_rate=0)
-
-    sample_rate = int(segments[0].sample_rate)
-    pcm = np.concatenate([np.asarray(segment.audio, dtype=np.float32) for segment in segments])
-
-    # Kokoro emits float samples nominally in [-1, 1]; clip before the int16 cast so an
-    # overshoot wraps to the opposite rail as a loud click instead of silently inverting.
-    ints = (np.clip(pcm, -1.0, 1.0) * 32767).astype(np.int16)
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav:
         wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(sample_rate)
-        wav.writeframes(ints.tobytes())
+        wav.setsampwidth(_BYTES_PER_SAMPLE)
+        wav.setframerate(TTS_SAMPLE_RATE)
+        wav.writeframes(pcm)
 
     return SpokenLength(
-        seconds=len(pcm) / sample_rate,
+        seconds=len(pcm) / (_BYTES_PER_SAMPLE * TTS_SAMPLE_RATE),
         wav=buffer.getvalue(),
-        sample_rate=sample_rate,
+        sample_rate=TTS_SAMPLE_RATE,
     )
 
 

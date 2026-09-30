@@ -158,6 +158,11 @@ class Settings:
     # read by LangChain on every run, and a copy on Settings would be one more place for the two
     # to disagree. The three Phoenix fields that sat here went with the Phoenix exporter; they
     # were last, so removing them shifted nothing positional. See `speechwriter.tracing`.
+    #
+    # Appended and defaulted, like `anthropic_api_key`. Enables the browser's "Measure" button,
+    # which times a draft by synthesising it with Deepgram (`workspace.measure_spoken_length`).
+    # Optional in the way Tavily's key is: without it the button says what to set.
+    deepgram_api_key: str | None = None
 
     # -- derived helpers -------------------------------------------------
 
@@ -165,6 +170,11 @@ class Settings:
     def research_enabled(self) -> bool:
         """Live web research is only possible when a Tavily key is present."""
         return bool(self.tavily_api_key)
+
+    @property
+    def measurement_enabled(self) -> bool:
+        """Measured spoken length is only possible when a Deepgram key is present."""
+        return bool(self.deepgram_api_key)
 
     @property
     def model_credentials_present(self) -> bool:
@@ -261,6 +271,7 @@ def load_settings() -> Settings:
 
     * ``ANTHROPIC_API_KEY``  — the Claude API key; required for any turn to run.
     * ``TAVILY_API_KEY``     — enables the live-research subagent; optional.
+    * ``DEEPGRAM_API_KEY``   — enables measuring a draft's spoken length; optional.
     * ``SPEECHWRITER_MODEL`` — the Claude model id (default ``claude-sonnet-5-5``).
     * ``SPEECHWRITER_HOME``  — override the project root the agent operates in.
     * ``SPEECHWRITER_MAX_RESEARCH_RESULTS`` — Tavily results per query (default 5).
@@ -332,6 +343,7 @@ def load_settings() -> Settings:
         skills_dir=skills_dir,
         store_path=store_path,
         max_research_results=_int_env("SPEECHWRITER_MAX_RESEARCH_RESULTS", 5),
+        deepgram_api_key=_optional_env("DEEPGRAM_API_KEY"),
     )
 
 

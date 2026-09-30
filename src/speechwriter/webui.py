@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 # How many measured drafts `spoken_length` keeps. Exported because `browse.py` bounds its
 # "already measured" flags to the same number: a flag that outlives its cache entry sends the
-# next page render straight back into a ~9s synthesis, which is what the button exists to stop.
+# next page render straight back into a billed synthesis, which is what the button exists to stop.
 MEASURE_CACHE_ENTRIES = 8
 
 # Material Symbols, coloured via Streamlit's Markdown directives rather than CSS.
@@ -179,7 +179,7 @@ def switch_model() -> None:
     2. ``get_bundle.clear()``, not ``st.cache_resource.clear()``. The global form evicts *every*
        ``cache_resource`` cache, including :func:`spoken_length`'s synthesised WAVs — while
        ``browse.py``'s per-session "already measured" flags survive, which sends the next render
-       of a flagged draft straight back into a ~9s synthesis with no button pressed.
+       of a flagged draft straight back into a billed synthesis with no button pressed.
     3. ``reset_conversation()``. ``build_agent`` also mints a fresh ``MemorySaver``, so the old
        ``thread_id`` names a checkpoint the new graph has never seen. Without this the page keeps
        displaying a conversation the agent cannot remember.
@@ -257,18 +257,22 @@ def documents(directory: Path) -> list[workspace.Document]:
 # hands back the object itself, which is safe here because `SpokenLength` is frozen and its
 # payload is immutable bytes. Bounded so the store cannot grow with every draft measured.
 @st.cache_resource(show_spinner=False, max_entries=MEASURE_CACHE_ENTRIES)
-def spoken_length(text: str) -> workspace.SpokenLength:
+def spoken_length(text: str, _api_key: str | None) -> workspace.SpokenLength:
     """Measured delivery time for a draft, synthesised once per distinct text.
 
     Keyed on the draft's own text rather than its path or slug, so a revised speech — which
     the agent rewrites *in place* — measures again while a mere rerun does not. That matters
-    more here than for :func:`documents`: this costs a TTS pass (~9s for a three-minute
-    speech), where that costs a file read.
+    more here than for :func:`documents`: this costs billed Deepgram requests (one per ~2,000
+    characters), where that costs a file read.
+
+    ``_api_key`` is excluded from the cache key by its leading underscore — Streamlit's own
+    convention — so the key never becomes part of what the cache stores or hashes, and a
+    measurement does not repeat just because the key was rotated.
 
     The caching lives here rather than in :mod:`speechwriter.workspace` for the usual reason:
     that module stays free of any Streamlit import.
     """
-    return workspace.measure_spoken_length(text)
+    return workspace.measure_spoken_length(text, api_key=_api_key)
 
 
 def init_session() -> None:
