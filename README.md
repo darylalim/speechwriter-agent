@@ -57,18 +57,19 @@ uv sync                      # install into .venv from the lockfile
 cp .env.example .env         # then fill in your keys
 ```
 
-**There is no model API key to set.** The agent runs on a model served on your own machine, over
-any OpenAI-compatible endpoint, and it defaults to `http://127.0.0.1:8080/v1` —
-`mlx_lm.server`'s own port. Start a server first; see [Running a local model](#running-a-local-model).
-
-Both keys in `.env` are optional:
+Every turn is sent to **Claude**, so one key is required; the rest are optional:
 
 ```ini
+ANTHROPIC_API_KEY=sk-ant-...     # required — the model that writes
 TAVILY_API_KEY=tvly-...          # optional — enables live web research
-OPENAI_API_KEY=...               # optional — only if a gateway fronts your server
+DEEPGRAM_API_KEY=...             # optional — enables measuring a draft's spoken length
+LANGSMITH_TRACING=true           # optional — trace every turn to LangSmith
+LANGSMITH_API_KEY=lsv2_...       #   (with the key it uploads with)
 ```
 
 Without a Tavily key the agent still works; it writes from its own knowledge and marks anything it can't verify with `[VERIFY]`. With one, a `researcher` subagent pulls current, sourced facts.
+
+Without an Anthropic key both front ends still open — so you can see what is configured — but they refuse to run a commission and say what to set.
 
 ---
 
@@ -103,21 +104,28 @@ thing it lets you change without a restart is the model:
 - **Write** — commission a speech and watch the agent plan, research, draft, and self-critique in a live activity log; each finished turn is snapshotted immediately (a closed tab runs no shutdown hook, so waiting until exit would usually mean never).
 - **Workspace** — browse saved drafts (with a spoken-length estimate, and a **Measure** button that synthesizes the draft for a real one), research notes, and the voice profiles the agent has learned, read straight from the live Store.
 
-It binds to `localhost` only by default; the app drives your model server and reads and writes your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
+It binds to `localhost` only by default; the app spends your API budget and reads and writes your workspace, so it is not meant to face the network. Override with `--server.address` if you genuinely intend to share it.
 
 ### Configuration knobs
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `SPEECHWRITER_MODEL` | `mlx-community/Qwen3.8-27B-4bit` | The model id to *start* on — whatever your server actually serves. Half of a pair: it travels with `SPEECHWRITER_BASE_URL` and is never set alone. Both front ends can switch models mid-session; see [Switching models](#switching-models). |
-| `SPEECHWRITER_MAX_TOKENS` | `12288` | Overrides the output-token ceiling. The default is pinned rather than left to the client, whose own default is "let the server decide" — an unbounded thinking budget on a reasoning model. It is bounded both ways: **above** by `DEFAULT_LOCAL_CONTEXT_WINDOW` (32768), since output and input share one window locally and a ceiling over half of it is flagged in both front ends; **below** by the longest speech anyone commissions — a 25-minute keynote is ~3,250 words, ~4.5k tokens before the model reasons at all. |
-| `SPEECHWRITER_BASE_URL` | `http://127.0.0.1:8080/v1` | The OpenAI-compatible endpoint serving the model — `mlx_lm.server`, vLLM, LM Studio, Ollama. There is no hosted fallback, so unset means the default above rather than "off". A value that *is* set is passed through byte for byte, never rewritten. See [Running a local model](#running-a-local-model). |
-| `OPENAI_API_KEY` | — | Sent to that endpoint. Local servers ignore it, so it is optional; a gateway in front of one (LiteLLM, a reverse proxy) may want a real one. It is sent **only to an endpoint you named yourself** — not to a server typed in at runtime, and not to the default endpoint when `SPEECHWRITER_BASE_URL` is unset. A key with no named server is not a credential for *this* server, so the placeholder goes instead. |
+| `ANTHROPIC_API_KEY` | — | Required. Checked for presence before a turn is spent; a wrong key fails at the first turn with Anthropic's own 401. |
+| `SPEECHWRITER_MODEL` | `claude-sonnet-5-5` | The Claude model to *start* on. Both front ends can switch mid-session; see [Switching models](#switching-models). |
+| `SPEECHWRITER_MAX_TOKENS` | model's own | Overrides the output-token ceiling. Left unset, a model LangChain profiles keeps its real maximum (128k for the 5.5 models); an id it does not profile gets a 32,000 floor rather than LangChain's silent 4,096, which adaptive thinking alone can exhaust. |
 | `SPEECHWRITER_MAX_RESEARCH_RESULTS` | `5` | Tavily results per query. |
 | `SPEECHWRITER_HOME` | repo root | Root dir the agent reads/writes under. |
-| `PHOENIX_COLLECTOR_ENDPOINT` | — | A self-hosted [Phoenix](https://arize.com/docs/phoenix) to trace every turn to, e.g. `http://localhost:6006`. Unset means no tracing — there is deliberately no default. See [Tracing with Phoenix](#tracing-with-phoenix). |
-| `PHOENIX_PROJECT` | `speechwriter-agent` | The Phoenix project traces land in. `PHOENIX_PROJECT_NAME` is read as an alias, as Phoenix itself does. |
-| `PHOENIX_API_KEY` | — | Only for a Phoenix running with authentication on. Sent to that collector and nowhere else. |
+| `LANGSMITH_TRACING` | — | `true` traces every turn to [LangSmith](https://docs.smith.langchain.com). See [Tracing with LangSmith](#tracing-with-langsmith). |
+| `LANGSMITH_API_KEY` | — | The key LangSmith uploads with. Also what the eval mirror and experiments use. |
+| `LANGSMITH_PROJECT` | `speechwriter-agent` | The project traces land in. Defaulted here, rather than LangSmith's shared `default`. |
+| `LANGSMITH_ENDPOINT` | hosted API | Only for a self-hosted LangSmith. |
+| `DEEPGRAM_API_KEY` | — | Enables the **Measure** button. See [Measuring spoken length for real](#measuring-spoken-length-for-real). |
+
+Every call also carries settings that are fixed in code rather than knobs, because each one is
+load-bearing for the 5.5 models: adaptive thinking with summarized display, `effort: medium`,
+thinking blocks that are *dropped* rather than rejected when context compaction rewrites history,
+and Anthropic's server-side refusal fallback. No `temperature`, `top_p` or `top_k` is ever sent —
+the 5.5 models reject them.
 
 ### Switching models
 
@@ -126,205 +134,90 @@ without a restart — the sidebar dropdown in the browser, `/model` in the termi
 
 ```
 › /model
- › 1  mlx-community/Qwen3.8-27B-4bit   http://127.0.0.1:8080/v1
-   2  qwen3-8b                         http://127.0.0.1:8080/v1
-   3  mistral-small-24b                http://192.168.1.40:8000/v1
+ › 1  Sonnet 5.5   claude-sonnet-5-5
+   2  Opus 5.5     claude-opus-5-5
 Switch with /model <number> or /model <name>.
 ```
 
-Every row is a `(model, endpoint)` **pair**, and the endpoint column is not decoration: one id
-served by two machines is two rows, and `/model <name>` refuses an ambiguous name rather than
-guessing which server you meant. Pick by number when that happens.
+Sonnet 5.5 is the default: a strong writer at a sensible price. Opus 5.5 is the one to reach for
+when the draft matters most. A `SPEECHWRITER_MODEL` that is not on the list — a pinned older
+Claude, say — gets a row of its own and stays in the list after you switch away, so the trip is
+never one-way.
 
-Three things follow from how the switch works, and they are the same in both front ends.
+Two things follow from how the switch works, and they are the same in both front ends.
 
 - **It is a rebuild, not a setting.** The output ceiling is resolved from the constructed
   client, so it has to be. Learned voice profiles are snapshotted *first* and rehydrated by the
   rebuild, so they survive; the conversation does not — the new agent has a new checkpointer and
   cannot resume the old thread, so the thread is rotated and the transcript starts fresh.
-- **No entry is hard-coded.** `config.MODEL_CHOICES` is the empty tuple; every row you see is
-  synthesised from a configuration that exists. Two ways in, and both **stay** in the list after
-  you switch away, so the trip is never one-way. Configure `SPEECHWRITER_BASE_URL` and
-  `SPEECHWRITER_MODEL` and that pair is offered from the first render; or point at a server
-  without configuring anything — **Local endpoint** in the browser sidebar, `/endpoint <url>` in
-  the REPL — and everything it serves joins the list for this session. Either way the probe runs
-  on a click (or a command) only, never on page load. A shipped list of local endpoints would be
-  a guess about which server you happen to be running, dead on every machine that guessed wrong.
 - **`SPEECHWRITER_MAX_TOKENS` is global and wins over every model.** An override sized for one
-  model follows you to the next, and locally that bites in a way it never did against a hosted
-  window: output and input come out of the *same* budget, so a large ceiling starves the prompt
-  rather than merely being refused. The ceiling line says so before you spend a turn:
-  `Output ceiling — 24,000 — over half this model's 32,768-token window, leaving little room
-  for the prompt`.
+  model follows you to the next, and a ceiling above what a model can emit is rejected at the
+  first turn. The ceiling line says so before you spend one:
+  `Output ceiling — 200,000 — above this model's 128,000-token maximum`.
 
-### Running a local model
+### Tracing with LangSmith
 
-This is the only way it runs — no API key, no per-token cost, no model text leaving the laptop.
-Any OpenAI-compatible server works; on Apple Silicon, [MLX](https://github.com/ml-explore/mlx-lm) is the fastest path:
-
-```bash
-uv tool install mlx-lm
-hf download mlx-community/Qwen3.8-27B-4bit   # what the defaults name; ~15 GB
-mlx_lm.server --port 8080                    # serves your whole HF cache
-```
-
-The download is the step that is easy to skip. `mlx_lm.server` serves whatever is already in
-your Hugging Face cache and pulls nothing itself, so on a fresh machine it starts happily,
-reports **Ready**, and then 404s on the first turn — `SPEECHWRITER_MODEL` has to name weights
-you actually hold. `/model` (or **Detect models**) asks the server what those are.
-
-Then point the agent at it, without restarting anything:
-
-- **In the browser** — open **Local endpoint** in the sidebar, type `127.0.0.1:8080`, press
-  **Detect models**, and pick one from the list above it.
-- **In the REPL** — `/endpoint 127.0.0.1:8080`, then `/model` to see what it found.
-
-The URL is tidied as you type it: a missing scheme becomes `http`, and a missing path becomes
-`/v1`, which is where every OpenAI-compatible server actually answers. This is a *session*
-setting — the environment stays the durable one.
-
-With those weights cached, the defaults already name that pair and a server on port 8080 needs
-no configuration at all. To serve anything else, set both halves — never just the id:
-
-```ini
-SPEECHWRITER_BASE_URL=http://192.168.1.40:8000/v1
-SPEECHWRITER_MODEL=mistral-small-24b
-```
-
-`SPEECHWRITER_BASE_URL` selects the *client*, not just the address — a local model name carries
-no provider prefix for LangChain to infer, so the endpoint is what makes the choice
-unambiguous. It is also passed through **byte for byte**: an Azure deployment URL keeps its
-`?api-version=` query, and a LiteLLM front end serving the API at the root does not silently
-gain a `/v1` that 404s. Only what you type into the endpoint *field* gets tidied.
-
-A few things worth knowing:
-
-- **Context compaction is sized from an assumed window.** deepagents decides when to summarize
-  from the model's LangChain profile, and an unprofiled id — which every locally served one is —
-  would otherwise get a flat 170000-token trigger. No local server has a window that large, so
-  the conversation would outgrow it and the server would error before compaction ever fired.
-  A locally served model is therefore given a minimal profile built from
-  `DEFAULT_LOCAL_CONTEXT_WINDOW` (32768), and compacts at a fraction of that. There is no
-  environment variable for it, deliberately — it is a property of a *model*, not of the
-  machine, and a new `SPEECHWRITER_*` knob is a documentation contract this does not deserve.
-  A server with a genuinely larger window is declared by giving that roster entry a
-  `context_window` — `config.local_choice(model, base_url, context_window)` — or by passing one
-  to `build_agent` directly.
-  Note also that the injected profile *replaces* any the id would otherwise have, which shows
-  up only for a profiled id served locally — `gpt-4o` on LM Studio. That is intended: a local
-  server's model *name* says nothing about the weights it actually loaded, so the conservative
-  floor beats inheriting the hosted model's numbers.
-- **The ceiling is two tiers, not three.** `SPEECHWRITER_MAX_TOKENS` if you set it, else
-  `DEFAULT_MAX_TOKENS` (8192). There used to be a middle tier that kept a ceiling the client had
-  resolved for itself, which is gone by construction rather than by choice: `init_chat_model`
-  fills `max_tokens` from a model profile only on the Anthropic path, so with `ChatOpenAI` it
-  could never fire — not even for a *profiled* id like `gpt-4o` behind LiteLLM. A branch that
-  reads as live protection and is dead is worse than no branch, so it was deleted.
-- **The ceiling travels as `max_completion_tokens`.** That is what `langchain-openai` 1.6
-  sends, and what `mlx_lm.server` reads. Some OpenAI shims accept only the older `max_tokens`
-  and drop unknown fields silently — if a local turn seems to run forever, that is the first
-  thing to check.
-- **Reasoning effort is worth tuning.** Qwen3.8's chat template defaults to
-  `reasoning_effort: xhigh`, which spends ~1400 tokens deliberating before it writes a line.
-  For prose, `low` is both faster and better; pass it via the server's
-  `chat_template_args`.
-
-Sizing, on 32GB unified memory: the 4-bit 27B weighs 15GB on disk and peaks at ~15.5GB
-resident, generating ~21 tok/s on an M2 Max — comfortably inside the ~24GB macOS allows the
-GPU by default, with headroom left for the KV cache.
-
-### Tracing with Phoenix
-
-Every turn can be traced to a [Phoenix](https://arize.com/docs/phoenix) you run yourself: each
-model call, tool call and subagent run becomes a span, so you can see what the orchestrator
+Every turn can be traced to [LangSmith](https://docs.smith.langchain.com): each model call, tool
+call and subagent run becomes a run in the trace, so you can see what the orchestrator
 delegated, what the `researcher` searched for, and what the `style-critic` said — nested the way
-it actually happened. Drafts never leave your machine to get there.
-
-Start Phoenix (either works; the UI and the collector share port 6006):
-
-```bash
-docker run -d --name phoenix -p 6006:6006 -v phoenix-data:/mnt/data \
-  -e PHOENIX_WORKING_DIR=/mnt/data arizephoenix/phoenix:latest
-# or, without Docker:
-uvx --from arize-phoenix phoenix serve
-```
-
-Then point the agent at it, in `.env`:
+it actually happened.
 
 ```ini
-PHOENIX_COLLECTOR_ENDPOINT=http://localhost:6006
-PHOENIX_PROJECT=speechwriter-agent   # optional; this is the default
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=lsv2_...
+LANGSMITH_PROJECT=speechwriter-agent   # optional; this is the default
 ```
 
-Both front ends say where traces are going before a turn is spent — the banner's `traces` line,
-the sidebar's **Traces** caption — and every entry point is traced alike: the REPL, the web UI,
-the eval harness, and `build_agent()` used as a library. Four things worth knowing:
+LangChain does the tracing itself — there is no exporter here to configure. Both front ends say
+where traces are going before a turn is spent (the banner's `traces` line, the sidebar's
+**Traces** caption), and every entry point is traced alike: the REPL, the web UI, the eval
+harness, and `build_agent()` used as a library. Three things worth knowing:
 
-- **One conversation is one Phoenix session.** Sessions are keyed by the agent's `thread_id`, so
-  the **Sessions** view follows a conversation turn by turn, and a new one starts exactly when
-  the agent does (after `Ctrl-C` in the terminal, or **New conversation** in the browser).
-- **Phoenix being down never costs you a speech.** Spans are exported in the background; if
-  nothing is listening you get one warning saying so, not a line per batch, and `exit` waits at
-  most a few seconds to deliver the last of them.
-- **It replaced LangSmith tracing.** If your `.env` still sets `LANGSMITH_TRACING=true`, every
-  turn goes to *both* — the agent warns at startup. Remove that line to trace to Phoenix only.
-  Nothing here reads `LANGSMITH_API_KEY` any more; the evals moved to Phoenix too (below).
-- **It is plain OpenTelemetry (OTLP over HTTP)**, so any OTLP collector works, not only
-  Phoenix — the endpoint gets `/v1/traces` appended, as Phoenix's own client does.
+- **One conversation is one LangSmith thread.** Threads are keyed by the agent's `thread_id`, so
+  a conversation reads turn by turn, and a new one starts exactly when the agent does (after
+  `Ctrl-C` in the terminal, or **New conversation** in the browser).
+- **Tracing switched on without a key is called out, not hidden.** The label says uploads will
+  be rejected, instead of a warning per batch far from the cause.
+- **The REPL waits for the last turn's runs at `exit`.** The tracer uploads on a background
+  thread, so a short session would otherwise end with its final turn still queued.
 
-### Evals in Phoenix
+### Evals in LangSmith
 
-`evals/datasets/` holds 55 graded examples across four datasets. The same Phoenix that
-receives traces keeps a mirror of them and records experiments against it — no extra settings:
+`evals/datasets/` holds 55 graded examples across four datasets. The LangSmith workspace that
+receives traces keeps a mirror of them and records experiments against it:
 
 ```bash
-uv run python evals/sync_datasets.py          # is the Phoenix mirror in sync? (read-only)
-uv run python evals/sync_datasets.py --push   # make it so — each push is a new dataset version
-uv run python evals/run_experiment.py --phoenix --dataset trajectory --limit 1   # costs tokens
+uv run python evals/sync_datasets.py          # is the LangSmith mirror in sync? (read-only)
+uv run python evals/sync_datasets.py --push   # make it so
+uv run python evals/run_experiment.py --langsmith --dataset trajectory --limit 1   # costs tokens
 ```
 
-The files in the repo are the source of truth, and a push never destroys anything: an example
-dropped from the latest version is still in the one before it. An experiment refuses to run
-against a stale mirror, so it always grades against what the file says. Each run in Phoenix
-opens onto the agent's full trace — every model call, tool call and subagent — and each
-criterion is its own annotation, with anything no scorer could measure reported as
+The files in the repo are the source of truth. A push creates and updates examples; it deletes
+one only with `--allow-delete`, because a LangSmith delete cannot be undone. An experiment
+refuses to run against a stale mirror, so it always grades against what the file says. Each
+row opens onto the agent's full trace — every model call, tool call and subagent — and each
+criterion is its own feedback column, with anything no scorer could measure reported as
 `criteria_coverage` rather than counted as a pass.
 
 ### Measuring spoken length for real
 
 `WORDS_PER_MINUTE` is one constant standing in for pace, and it cannot know that one draft is
-dense with long words while another is short and punchy. With the optional `audio` extra, the
-Workspace page grows a **Measure** button that synthesizes the draft with
-[Kokoro](https://huggingface.co/mlx-community/Kokoro-82M-bf16) and reports the real duration
+dense with long words while another is short and punchy. With `DEEPGRAM_API_KEY` set, the
+Workspace page's **Measure** button synthesizes the draft with
+[Deepgram Aura-2](https://developers.deepgram.com/docs/tts-models) and reports the real duration
 next to the estimate — and plays it back, since hearing a draft is the fastest way to catch
-what a "speakability" critique can only infer.
+what a "speakability" critique can only infer. Without the key the button is disabled and says
+what to set.
 
-```bash
-uv sync --extra audio
-```
+It is a button rather than something the page computes on load because it is billed per
+character: a three-minute speech is a couple of requests. Each distinct draft is measured once
+and cached, and a revised draft measures again.
 
-**Apple Silicon (or aarch64 Linux) only** — `mlx` publishes no x86-64 Linux wheels and no
-sdist, so this extra will fail to resolve elsewhere. CI never installs it, so nothing catches
-that for you.
-
-It is off by default because it pulls a torch/spaCy stack that the rest of the project has no
-use for. Everything else works untouched without it; the button explains itself if the extra
-is missing. Synthesis runs at about RTF 0.06 — roughly nine seconds for a three-minute speech
-— which is why it is a button rather than something the page computes on load.
-
-**Read the two numbers as different things, not as right-and-wrong.** Measured against the
-three drafts in this repo, Kokoro comes in consistently *shorter* than the estimate:
-
-| Draft | Words | Estimated | Measured | Effective rate |
-|---|---|---|---|---|
-| `marguerite-okonkwo-retirement-toast` | 366 | 169s | 158s | 139 wpm |
-| `sam-priya-wedding-toast` | 272 | 126s | 93s | 175 wpm |
-| `sam-priya-rehearsal-dinner-toast` | 108 | 50s | 36s | 180 wpm |
-
-None of those drafts contains a single `[pause]` cue, so this is not stripped silence — it is
-that a TTS voice reads at 140–180 wpm and does not stop for laughter, applause, or breath.
-130 wpm may well be the better guide to *time on stage*; the measurement is the better guide
-to *time to say the words*. The gap between them is the interesting part.
+**Read the two numbers as different things, not as right-and-wrong.** A TTS voice reads faster
+than a speaker on a stage and does not stop for laughter, applause, or breath — a `[pause]` cue
+adds no silence to the measurement. 130 wpm may well be the better guide to *time on stage*; the
+measurement is the better guide to *time to say the words*. The gap between them is the
+interesting part.
 
 ---
 
@@ -359,10 +252,10 @@ src/speechwriter/
 ├── tools.py       Lazy Tavily research tool (degrades gracefully with no key)
 ├── subagents.py   researcher + style-critic SubAgent definitions
 ├── memory.py      Persistent Store: JSON snapshot load/save + exhaustive read
-├── tracing.py     Opt-in OpenTelemetry tracing to a self-hosted Phoenix
+├── tracing.py     Reports (and flushes) the LangSmith tracing LangChain does itself
 ├── agent.py       build_agent() — composes every layer into one graph
 ├── cli.py         Rich streaming REPL
-├── workspace.py   UI-free reader: drafts, research notes, voice profiles
+├── workspace.py   UI-free reader: drafts, research notes, voice profiles, Deepgram timing
 └── webui.py       Streamlit glue: stream a turn, record it, replay it
 streamlit_app.py   Web entry point (router) + app_pages/ (Write, Workspace)
 skills/            On-demand rhetoric library (SKILL.md, progressive disclosure)
@@ -370,7 +263,7 @@ skills/            On-demand rhetoric library (SKILL.md, progressive disclosure)
 ├── speech-structures/      audience-and-occasion/
 tests/             Offline tests — build the graph, toggle research, round-trip memory,
                    render both pages headlessly (all without the model or network)
-evals/             Eval datasets, pure scorers, and the Phoenix mirror + experiment harness
+evals/             Eval datasets, pure scorers, and the LangSmith mirror + experiment harness
 ```
 
 ## Development
