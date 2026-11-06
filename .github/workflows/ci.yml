@@ -16,7 +16,7 @@ env:
   # Pinned, unlike the bare `uvx ruff` / `uvx ty` in .claude/hooks — unpinned, uvx
   # resolves the newest release at run time, so an Astral release could redden a PR that
   # changed nothing. ty is pre-1.0 and moves fastest; bump both together, on purpose.
-  RUFF_VERSION: "0.16.0"
+  RUFF_VERSION: "0.17.4"
   TY_VERSION: "0.0.63"
 
 jobs:

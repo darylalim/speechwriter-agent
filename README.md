@@ -234,8 +234,8 @@ evals/               Eval datasets, scorers and the LangSmith harness
 
 ```bash
 uv run pytest               # offline: no API key or network needed
-uvx ruff@0.16.0 check .
-uvx ruff@0.16.0 format .
+uvx ruff@0.17.4 check .
+uvx ruff@0.17.4 format .
 uvx ty@0.0.63 check
 ```
 

@@ -60,7 +60,7 @@ command -v uvx >/dev/null 2>&1 || {
 # source states that satisfy neither. That is what a304a89 fixed. Pinning here costs the
 # early warning of an Astral release, which CI's own bump is the better place to absorb.
 # test_tool_pins_agree_wherever_they_are_declared keeps all five sites in step.
-RUFF_VERSION="0.16.0"
+RUFF_VERSION="0.17.4"
 TY_VERSION="0.0.63"
 
 # --- Autofix what is mechanically fixable (line-length 100, isort via lint select "I"). ---

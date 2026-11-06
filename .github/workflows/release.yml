@@ -22,7 +22,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  RUFF_VERSION: "0.16.0"
+  RUFF_VERSION: "0.17.4"
   TY_VERSION: "0.0.63"
 
 jobs:
