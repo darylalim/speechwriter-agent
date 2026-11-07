@@ -1,7 +1,7 @@
 # Upgrade plan
 
-Written 2026-11-06 for a new implementation session. Only the `ruff` pin bump has been done. The
-rest is not implemented yet.
+Written 2026-11-06 for a new implementation session. Workstream 1 is mostly done, and the Progress
+table lists what is still open. Nothing after it has started.
 
 Four workstreams and one release. Read `CLAUDE.md` first. It holds the invariants this plan relies
 on, and it overrides this plan if the two disagree.
@@ -27,7 +27,7 @@ names and results under the relevant phase.
 
 | Part | Status | Expected spend | Notes |
 |---|---|---|---|
-| Workstream 1: Dependency upgrade | Not started | Under $1 | `ruff` pin already moved to 0.17.4 |
+| Workstream 1: Dependency upgrade | In progress | Under $1 | Open items are listed below |
 | Workstream 2, Phase 0: Prove the evals | Not started | Priced in Phase 0, Step 2 | Includes about an hour of the user's reading |
 | Workstream 2, Phase 1: Effort option | Not started | Free | |
 | Workstream 2, Phase 2: Main sweep | Not started | About $45 to $50 | |
@@ -37,6 +37,24 @@ names and results under the relevant phase.
 | Workstream 3: Theme | Not started | Free | |
 | Workstream 4: Layout | Not started | Free | |
 | Release 0.3.0 | Not started | Free | Needs the user's go-ahead |
+
+### Workstream 1 status (2026-11-06)
+
+Done: the lock upgrade, `ty` 0.0.99, the CI fixes and the `.gitignore` fix. A live draft, critique
+and revise turn passed on API version `2026-10-21` with no 400. Both web UI pages load on Streamlit
+1.67, and **Measure** worked (397 words: 2.6 min measured against a ~3.1 min estimate). The dataset
+mirror is in sync.
+
+Still open:
+
+1. **Step 6, the `--langsmith --limit 1` experiment.** Not run. LangSmith rejects trace uploads with
+   a 429, `Monthly unique traces usage limit exceeded`. The sync check still passes, because reading
+   datasets is not metered the same way.
+2. **The double-tracing check for `opentelemetry-api`.** It needs traces to land, so it waits on the
+   same limit. Any `--langsmith` run in Workstream 2 is blocked by this too.
+3. **The `.claude/settings.json` permission rules.** Auto mode denied this edit as self-modification,
+   so the user must make it. The docs confirm the wildcard form is valid, but they warn that a `*`
+   before the subcommand may trigger a startup warning.
 
 ## Commits
 
