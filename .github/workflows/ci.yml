@@ -63,3 +63,27 @@ jobs:
       # After sync and inside the matrix: [tool.ty.environment] points ty at ./.venv, so
       # it resolves imports and infers its target version from the synced interpreter.
       - run: uvx ty@"$TY_VERSION" check
+
+  # The one check a ruleset on `main` should require. Requiring the matrix legs by name ties
+  # the ruleset to `python-version`: drop or add a version and every PR waits forever on a
+  # check that never runs, with no error to say why. This name never changes.
+  #
+  # `if: always()` is load-bearing. Without it, a failed gate makes this job *skipped*, and
+  # GitHub counts a skipped required check as passing, so the rule would wave through exactly
+  # the runs it exists to stop. `needs` must name every other job here, and
+  # test_ci_ok_requires_every_gate keeps it that way.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every gate to have passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "gate results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || exit 1
+          done

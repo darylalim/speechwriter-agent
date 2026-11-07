@@ -918,8 +918,10 @@ One release, after all four workstreams. Phase 4 can be left out if it was not n
 ## Open questions for the user
 
 **Should CI block merges?** Nothing requires the checks today, so a red run is advisory. Making
-them real means requiring `ruff check` and `pytest + ty (py3.11|3.12|3.13)` on `main` in the repo
-settings. The user commits directly to `main`, so a strict rule could block those pushes, and a
+them real means requiring one aggregate check, `ci-ok` (added 2026-11-07), on `main` in the repo
+settings. The recommendation, agreed with the user on 2026-11-07, is a ruleset that requires `ci-ok`
+with no required reviews, no up-to-date rule, admin bypass on so direct pushes still work, and
+auto-merge enabled. The user commits directly to `main`, so a strict rule could block those pushes, and a
 required check only stops changes that go through a pull request. This is a repo setting and the
 user's decision. Do not change it, and do not describe CI as enforcing anything until it does.
 

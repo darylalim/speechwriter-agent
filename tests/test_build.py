@@ -837,6 +837,28 @@ def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
         cache_clear()
 
 
+def test_ci_ok_requires_every_gate():
+    # `ci-ok` is the single check a ruleset on `main` requires, so it is only as strong as its
+    # `needs` list. A gate added to ci.yml but left out of that list would run, could fail,
+    # and would still let `ci-ok` pass: the merge goes green over a red job, which is the one
+    # thing requiring a check is meant to stop.
+    workflow = yaml.safe_load(
+        (config._PKG_DIR.parents[1] / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    )
+    jobs = workflow["jobs"]
+    aggregate = jobs["ci-ok"]
+    gates = set(jobs) - {"ci-ok"}
+    assert gates, "anti-vacuity: ci.yml must still define gates"
+    assert set(aggregate["needs"]) == gates, (
+        f"ci-ok needs {sorted(aggregate['needs'])}, but ci.yml defines {sorted(gates)}"
+    )
+    # Without always(), a failed gate makes ci-ok *skipped*, and GitHub counts a skipped
+    # required check as passing.
+    assert aggregate.get("if") == "always()"
+    # The ruleset refers to this name, so it is a contract with the repo settings.
+    assert aggregate["name"] == "ci-ok"
+
+
 def test_tool_pins_agree_wherever_they_are_declared():
     # ruff and ty versions are five independent literals — ci.yml, release.yml,
     # .claude/hooks/ruff-ty-gate.sh, and the commands CLAUDE.md and README.md tell a human to
