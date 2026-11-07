@@ -175,8 +175,9 @@ model may change.
 ## Commits
 
 Commit or push only when the user asks. Per project memory, commits go straight to `main` with no
-feature branch. After each push, check the result with `gh run list --limit 3`, because a red CI run
-blocks nothing and is easy to miss.
+feature branch, though Workstreams 3 and 4 went through PRs at the user's request. Since
+2026-11-07 a ruleset requires `ci-ok` before a PR merges, so a red PR cannot land. A direct push
+bypasses it as admin, so after each push to `main`, check the result with `gh run list --limit 3`.
 
 ## Workstream 1: Dependency upgrade
 
@@ -917,13 +918,11 @@ One release, after all four workstreams. Phase 4 can be left out if it was not n
 
 ## Open questions for the user
 
-**Should CI block merges?** Nothing requires the checks today, so a red run is advisory. Making
-them real means requiring one aggregate check, `ci-ok` (added 2026-11-07), on `main` in the repo
-settings. The recommendation, agreed with the user on 2026-11-07, is a ruleset that requires `ci-ok`
-with no required reviews, no up-to-date rule, admin bypass on so direct pushes still work, and
-auto-merge enabled. The user commits directly to `main`, so a strict rule could block those pushes, and a
-required check only stops changes that go through a pull request. This is a repo setting and the
-user's decision. Do not change it, and do not describe CI as enforcing anything until it does.
+**Should CI block merges? Settled 2026-11-07.** The user chose light protection. The ruleset
+`main: require ci-ok` (id 26777226) requires the aggregate `ci-ok` check from GitHub Actions, with
+no required reviews, no up-to-date rule and admin bypass on, so direct pushes still land.
+Auto-merge is enabled. A red PR can no longer merge, and a direct push is checked after it lands.
+Changing the ruleset is a repo setting and still the user's decision.
 
 ## Verification
 
