@@ -51,10 +51,11 @@ Still open:
    a 429, `Monthly unique traces usage limit exceeded`. The sync check still passes, because reading
    datasets is not metered the same way.
 2. **The double-tracing check for `opentelemetry-api`.** It needs traces to land, so it waits on the
-   same limit. Any `--langsmith` run in Workstream 2 is blocked by this too.
-3. **The `.claude/settings.json` permission rules.** Auto mode denied this edit as self-modification,
-   so the user must make it. The docs confirm the wildcard form is valid, but they warn that a `*`
-   before the subcommand may trigger a startup warning.
+   same limit. Any `--langsmith` run in Workstream 2 is blocked by this too. The limit resets on
+   2026-12-01.
+3. **The startup check on the `.claude/settings.json` permission rules.** The user made this edit,
+   and the wildcard form is valid. The docs warn that a `*` before the subcommand may trigger a
+   startup warning, so check for one, and confirm that the pinned commands run without a prompt.
 
 ## Commits
 
