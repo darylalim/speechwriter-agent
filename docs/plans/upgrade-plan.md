@@ -91,6 +91,16 @@ orchestrator prompt says to give the critic the full draft. This is a real agent
 and not fixed, because Phase 0 changes no prompts. One run is not a rate: the Step 2 baseline
 should count how often it happens, and a scored check must exist before Phase 2.
 
+**The scored check now exists: `critic_received_draft`.** It is deterministic and free, and it
+runs on every dataset whenever the critic is called. It rebuilds the draft as it stood at each
+critic `task` from the `write_file` and `edit_file` calls before it, not from the file on disk,
+which holds the final revision. It then measures how much of the draft's spoken text appears, in
+order, in the `task` description. The bar is 90%, and a test pins it from both sides: half the
+draft fails, and a lightly tidied draft passes. There is no row when the critic is never called,
+and the row is unscored when no draft came before the call. Regraded with `--regrade`, the kept
+2026-11-07 run now scores **9/10**, with the critic given 12% of the draft. Phase 2 can count this
+row directly.
+
 ## Commits
 
 Commit or push only when the user asks. Per project memory, commits go straight to `main` with no

@@ -1683,3 +1683,143 @@ def test_an_experiment_names_the_effort_it_ran_at(monkeypatch, tmp_path):
     assert harness.experiment_name("rag", None).endswith(f"-{config.DEFAULT_EFFORT}")
     assert harness.experiment_dir("rag", "max").name.startswith("speechwriter-rag-")
     assert "-max-" in harness.experiment_dir("rag", "max").name
+
+
+_DRAFT = (
+    "---\ntitle: Best man toast\nlength: ~3 min at 130 wpm\n---\n\n"
+    + " ".join(
+        f"Joel rode mile {n} through the rain, and Nadia was waiting at the end of it."
+        for n in range(1, 21)
+    )
+    + "\n\n[pause]\n\nTo Joel and Nadia."
+)
+
+
+def _critic_run(*calls):
+    ev = _evaluators_module()
+    return ev, ev.RunRecord("Done.", tuple(ev.ToolCall(name, args) for name, args in calls))
+
+
+def _write(content, path="/workspace/speeches/toast.md"):
+    return ("write_file", {"file_path": path, "content": content})
+
+
+def _critic(description):
+    return ("task", {"subagent_type": "style-critic", "description": description})
+
+
+def _critic_row(ev, run):
+    rows = [s for s in ev.score_critic_received_draft(run) if s.key == "critic_received_draft"]
+    return rows[0] if rows else None
+
+
+def test_the_critic_must_be_handed_the_draft_not_pointed_at_it(monkeypatch, tmp_path):
+    # orchestrator_prompt says to give the critic the full draft. On 2026-11-07 a live run sent
+    # a brief and "saved at ... (read it)" instead, and nothing scored it: order constraints
+    # compare positions, and the run went 9/9. A critic told to read the file finds whatever is
+    # there -- an older revision, or nothing, if the write and the task shared a message.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    body = _DRAFT.split("---\n\n", 1)[1]
+
+    # Handed over -- without the header block or the [pause] cue, which are not what is said.
+    ev, run = _critic_run(
+        _write(_DRAFT), _critic(f"Review this draft:\n\n{body.replace('[pause]', '')}")
+    )
+    assert _critic_row(ev, run).score == 1.0
+
+    # The shape the live run actually sent: a brief and a path.
+    ev, run = _critic_run(
+        _write(_DRAFT),
+        _critic(
+            "Review the best-man draft saved at /workspace/speeches/toast.md (read it). "
+            "Joel and Nadia, rain, clean jokes, 3 minutes. Give line edits and a score."
+        ),
+    )
+    row = _critic_row(ev, run)
+    assert row.score == 0.0, row
+    assert "not the draft" in row.comment
+
+
+def test_the_draft_is_the_one_that_stood_when_the_critic_was_called(monkeypatch, tmp_path):
+    # The file on disk is the final revision; the critic reviewed the first. Rebuilt from the
+    # stream, edits applied in order, so a correct hand-over is not failed against a later
+    # rewrite -- and an edit before the call is part of what had to be handed over.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    revised = "An entirely different speech about something else. " * 30
+
+    ev, run = _critic_run(_write(_DRAFT), _critic(_DRAFT), _write(revised))
+    assert _critic_row(ev, run).score == 1.0, "graded against a revision written after the call"
+
+    # An edit that rewrites most of the speech, so applying it or not is decisive: a one-word
+    # change stays above the bar either way, which is the bar working as meant.
+    body = _DRAFT.split("---\n\n", 1)[1]
+    edit = (
+        "edit_file",
+        {"file_path": "/workspace/speeches/toast.md", "old_string": body, "new_string": revised},
+    )
+    edited = _DRAFT.replace(body, revised)
+    ev, run = _critic_run(_write(_DRAFT), edit, _critic(edited))
+    assert _critic_row(ev, run).score == 1.0
+    ev, run = _critic_run(_write(_DRAFT), edit, _critic(_DRAFT))
+    assert _critic_row(ev, run).score == 0.0, "an edit made before the call was not applied"
+
+    # A note saved elsewhere is not the speech, however recent.
+    ev, run = _critic_run(
+        _write(_DRAFT), _write("Remember: warm, dry.", "/memories/joel.md"), _critic(_DRAFT)
+    )
+    assert _critic_row(ev, run).score == 1.0
+
+
+def test_the_critic_check_applies_only_where_it_can_be_measured(monkeypatch, tmp_path):
+    # No critic call: the rule does not apply, so no row -- an absent row neither passes nor
+    # drags down coverage. A call with no draft before it: the rule applies but cannot be
+    # checked, so unscored, never a free pass. Two calls: both must pass.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+
+    ev, run = _critic_run(_write(_DRAFT))
+    assert ev.score_critic_received_draft(run) == []
+
+    ev, run = _critic_run(_critic(_DRAFT))
+    assert _critic_row(ev, run).score is None
+
+    ev, run = _critic_run(_write(_DRAFT), _critic(_DRAFT), _critic("Read it again, please."))
+    assert _critic_row(ev, run).score == 0.0, "a second, pointer-only call was let through"
+
+    # Scored on every dataset, because the rule is the orchestrator's, not one dataset's.
+    example = json.loads((REPO_ROOT / "evals/datasets/final_response.json").read_text())[0]
+    ev, run = _critic_run(_write(_DRAFT), _critic("see the file"))
+    keys = [s.key for s in ev.score_example("final_response", run, example)]
+    assert keys.count("critic_received_draft") == 1
+
+
+def test_the_critic_bar_sits_between_a_tidied_draft_and_half_of_one(monkeypatch, tmp_path):
+    # Pinned from both sides. A brief shares a handful of words with a speech, so it fails a bar
+    # set almost anywhere -- which is how a bar of 0.1 first passed this suite. Half the draft
+    # must fail too; a draft with one word tidied in every sentence must still count as handed over.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    body = _DRAFT.split("---\n\n", 1)[1]
+    sentences = body.split(". ")
+
+    half = ". ".join(sentences[: len(sentences) // 2])
+    ev, run = _critic_run(_write(_DRAFT), _critic(half))
+    assert _critic_row(ev, run).score == 0.0, "half the draft counted as the draft"
+
+    tidied = body.replace("through the rain", "through the sleet")
+    ev, run = _critic_run(_write(_DRAFT), _critic(tidied))
+    assert _critic_row(ev, run).score == 1.0, "a lightly tidied draft was failed"
+
+
+def test_the_header_and_cues_are_not_part_of_what_must_be_handed_over(monkeypatch, tmp_path):
+    # The rule is about the speech, so it is measured on what is said aloud -- the same rule
+    # the word count uses. On a short toast a header block is a large share of the file, and
+    # an orchestrator that sent only the spoken text must not fail for leaving it out.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    spoken = "To Joel and Nadia, who met in the rain and never once complained about it. Cheers."
+    draft = (
+        "---\ntitle: A very short toast for the rehearsal dinner on Friday evening\n"
+        "speaker: the best man, who has known the groom since their second year at university\n"
+        "length: about twenty seconds at one hundred and thirty words per minute\n---\n\n"
+        f"[smile] {spoken} [raise glass] [pause]"
+    )
+    ev, run = _critic_run(_write(draft), _critic(spoken))
+    assert _critic_row(ev, run).score == 1.0

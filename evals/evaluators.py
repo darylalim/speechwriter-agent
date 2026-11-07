@@ -36,10 +36,11 @@ from __future__ import annotations
 import fnmatch
 import re
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from typing import Any
 
 from speechwriter.config import SPEECHES_SUBDIR, WORDS_PER_MINUTE, load_settings
-from speechwriter.workspace import spoken_words
+from speechwriter.workspace import spoken_text, spoken_words
 
 BOUND_TOOLS = ("ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "task")
 
@@ -482,6 +483,86 @@ def path_matches(path: str, pattern: str) -> bool:
     return re.fullmatch(regex, path) is not None
 
 
+# --- the critic's input: was it handed the draft, or told where to find it? ---
+
+CRITIC = "style-critic"
+CRITIC_DRAFT_COVERAGE = 0.9
+"""Share of the draft's spoken words that must reach the critic, in order, to count as the draft.
+
+Not 1.0: the orchestrator may tidy a line or drop a stage direction on the way, and that is
+still handing over the draft. A brief that only *describes* the draft lands far below this --
+the 2026-11-07 run that sent a summary and a file path covered under a fifth of it."""
+
+_WORD = re.compile(r"[\w']+")
+
+
+def _words(text: str) -> list[str]:
+    return _WORD.findall(text.casefold())
+
+
+def _apply_edit(text: str, args: dict[str, Any]) -> str:
+    old, new = str(args.get("old_string", "")), str(args.get("new_string", ""))
+    if not old:
+        return text
+    return text.replace(old, new) if args.get("replace_all") else text.replace(old, new, 1)
+
+
+def critic_inputs(run: RunRecord) -> list[tuple[str | None, str]]:
+    """``(draft as it stood, what the critic was sent)`` for every ``task`` to the critic.
+
+    The draft is rebuilt from the call stream, not read off disk, because the file on disk is
+    the *final* revision: the critic reviews the first draft, and the agent rewrites it after.
+    It is the speech most recently written or edited before the call -- ``None`` when the stream
+    never carried one (a draft only a subagent wrote, or a run that never drafted).
+    """
+    speeches = f"{load_settings().workspace_vpath}/{SPEECHES_SUBDIR}/"
+    drafts: dict[str, str] = {}
+    latest: str | None = None
+    inputs: list[tuple[str | None, str]] = []
+    for call in run.calls:
+        if call.path.startswith(speeches):
+            if call.name == "write_file" and isinstance(call.args.get("content"), str):
+                drafts[call.path] = call.args["content"]
+                latest = call.path
+            elif call.name == "edit_file" and call.path in drafts:
+                drafts[call.path] = _apply_edit(drafts[call.path], call.args)
+                latest = call.path
+        elif call.name == "task" and call.subagent == CRITIC:
+            draft = drafts.get(latest) if latest is not None else None
+            inputs.append((draft, str(call.args.get("description", ""))))
+    return inputs
+
+
+def draft_coverage(draft: str, sent: str) -> float:
+    """Share of the draft's spoken words found, in order, in what was sent."""
+    said = _words(spoken_text(draft))
+    if not said:
+        return 0.0
+    blocks = SequenceMatcher(None, said, _words(sent), autojunk=False).get_matching_blocks()
+    return sum(block.size for block in blocks) / len(said)
+
+
+def score_critic_received_draft(run: RunRecord) -> list[Score]:
+    """``orchestrator_prompt`` says to give the critic the full draft. Did it?
+
+    A critic told to read the file can find an older revision, or none, if the write and the
+    ``task`` share a message -- and nothing else here would see it: ``order`` constraints compare
+    list positions, so parallel calls pass. No row at all when the critic was never called,
+    because then the rule does not apply; ``None`` when it was called but no draft in the stream
+    preceded it, because then the rule cannot be checked. Every call must pass.
+    """
+    inputs = critic_inputs(run)
+    if not inputs:
+        return []
+    if any(draft is None or not _words(spoken_text(draft)) for draft, _ in inputs):
+        return [Score("critic_received_draft", None, "no draft in the stream before the critic")]
+    shares = [draft_coverage(draft, sent) for draft, sent in inputs if draft is not None]
+    ok = all(share >= CRITIC_DRAFT_COVERAGE for share in shares)
+    detail = ", ".join(f"{share:.0%}" for share in shares)
+    verdict = "the draft itself" if ok else "a description of the draft, not the draft"
+    return [Score("critic_received_draft", float(ok), f"critic got {verdict} ({detail})")]
+
+
 def score_example(dataset: str, run: RunRecord, example: dict[str, Any]) -> list[Score]:
     """Every machine-checkable criterion for one example, plus an explicit unscored tail.
 
@@ -501,7 +582,9 @@ def score_example(dataset: str, run: RunRecord, example: dict[str, Any]) -> list
                 f"{len(run.text.split())} words returned" if alive else "NO TEXT RETURNED",
             ),
         )
-    return scores
+    # Every dataset, not only trajectory: the rule is the orchestrator prompt's, and any run that
+    # reaches the critic is a run that can break it.
+    return scores + score_critic_received_draft(run)
 
 
 # --- the judge half: prose criteria a substring check cannot reach ---

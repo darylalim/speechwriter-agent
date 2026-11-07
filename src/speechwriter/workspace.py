@@ -125,8 +125,18 @@ def spoken_words(text: str) -> int:
     ``---`` header block first, then the bracketed delivery cues, exactly as
     :attr:`Document.words` does.
     """
+    return len(spoken_text(text).split())
+
+
+def spoken_text(text: str) -> str:
+    """What is said aloud in a draft, given the file's full text: :func:`spoken_words`' words.
+
+    Public for the eval check that the style critic was handed the draft, which compares the
+    draft's spoken words against what the critic was sent -- by the same rule the word count
+    uses, so a header block or a ``[pause]`` cue the orchestrator left out is not a miss.
+    """
     _, body = _split_front_matter(text)
-    return _count_spoken(body)
+    return _spoken_text(body)
 
 
 # Deepgram's Aura-2 text-to-speech, reached over its REST endpoint. Named here rather than in
