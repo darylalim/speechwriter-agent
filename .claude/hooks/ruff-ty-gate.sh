@@ -61,7 +61,7 @@ command -v uvx >/dev/null 2>&1 || {
 # early warning of an Astral release, which CI's own bump is the better place to absorb.
 # test_tool_pins_agree_wherever_they_are_declared keeps all five sites in step.
 RUFF_VERSION="0.17.4"
-TY_VERSION="0.0.63"
+TY_VERSION="0.0.99"
 
 # --- Autofix what is mechanically fixable (line-length 100, isort via lint select "I"). ---
 before=$(cksum < "$file")

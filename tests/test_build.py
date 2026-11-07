@@ -786,7 +786,7 @@ def test_load_settings_reopens_the_langsmith_env_cache(monkeypatch, tmp_path):
 
     # `@overload` stubs on get_env_var shadow the lru_cache wrapper, so whether a type checker
     # can see cache_clear depends on the checker's version: ty 0.0.78 reports
-    # unresolved-attribute, while ty 0.0.63 — the pin in ci.yml — resolves it and then flags the
+    # unresolved-attribute, while ty 0.0.63 — the pin back then — resolves it and then flags the
     # suppression itself as an unused ignore. A direct access needs a `ty: ignore` that is
     # correct under exactly one of them; going through getattr needs none and agrees with both.
     # The assert keeps the loud failure a bare attribute access would have given, and says more.
@@ -862,8 +862,8 @@ def test_tool_pins_agree_wherever_they_are_declared():
         "README.md",
     )
     # Two spellings, which is what lets a docs file be a site at all. The named form covers the
-    # YAML (`TY_VERSION: "0.0.63"`) and shell (`TY_VERSION="0.0.63"`) declarations; the
-    # invocation form covers the commands the docs tell a human to type (`uvx ty@0.0.63`).
+    # YAML (`TY_VERSION: "0.0.99"`) and shell (`TY_VERSION="0.0.99"`) declarations; the
+    # invocation form covers the commands the docs tell a human to type (`uvx ty@0.0.99`).
     # Neither matches `uvx ruff@"$RUFF_VERSION"` — the version must start with a digit — so the
     # hook's use sites are read from its declaration, not from themselves.
     named = re.compile(r'\b(RUFF|TY)_VERSION\b\s*[:=]\s*"?([0-9][0-9A-Za-z.\-]*)"?')

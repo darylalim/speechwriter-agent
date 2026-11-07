@@ -236,7 +236,7 @@ evals/               Eval datasets, scorers and the LangSmith harness
 uv run pytest               # offline: no API key or network needed
 uvx ruff@0.17.4 check .
 uvx ruff@0.17.4 format .
-uvx ty@0.0.63 check
+uvx ty@0.0.99 check
 ```
 
 The tests build the full agent graph without calling the model or the network, so they're free to run.

@@ -797,7 +797,7 @@ For every workstream, after each code phase, all of these must pass:
 ```bash
 uv run pytest
 uvx ruff@0.17.4 check .
-uvx ty@0.0.63 check
+uvx ty@0.0.99 check
 uv run python evals/run_experiment.py --dry-run
 printf 'exit\n' | uv run speechwriter
 ```

@@ -23,7 +23,7 @@ concurrency:
 
 env:
   RUFF_VERSION: "0.17.4"
-  TY_VERSION: "0.0.63"
+  TY_VERSION: "0.0.99"
 
 jobs:
   check:
