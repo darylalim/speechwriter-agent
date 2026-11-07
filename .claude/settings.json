@@ -4,9 +4,9 @@
     "allow": [
       "Bash(uv sync:*)",
       "Bash(uv run pytest:*)",
-      "Bash(uvx ruff check:*)",
-      "Bash(uvx ruff format:*)",
-      "Bash(uvx ty check:*)",
+      "Bash(uvx ruff@* check:*)",
+      "Bash(uvx ruff@* format:*)",
+      "Bash(uvx ty@* check:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)"
     ],
