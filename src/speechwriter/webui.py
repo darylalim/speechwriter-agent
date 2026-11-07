@@ -70,6 +70,11 @@ logger = logging.getLogger(__name__)
 # next page render straight back into a billed synthesis, which is what the button exists to stop.
 MEASURE_CACHE_ENTRIES = 8
 
+# The measure of every column of prose, in pixels: a chat reply here, and a draft on the
+# Workspace page. About 74 characters of Literata at 16px at the longest. Tune it against the
+# rendered line, not by arithmetic, and re-check it if the font or `baseFontSize` changes.
+READING_WIDTH = 560
+
 # Material Symbols, coloured via Streamlit's Markdown directives rather than CSS.
 _CALL_ICON = ":blue[:material/bolt:]"
 _OK_ICON = ":green[:material/check_circle:]"
@@ -347,7 +352,7 @@ def run_turn(bundle: SpeechwriterAgent, prompt: str) -> Turn:
     seen: set[str] = st.session_state[_SEEN]
 
     status = st.status("Working…", expanded=True)
-    prose = st.container()
+    prose = st.container(width=READING_WIDTH)
 
     payload = {"messages": [{"role": "user", "content": prompt}]}
     try:
@@ -388,7 +393,7 @@ def render_turn(turn: Turn) -> None:
     with st.chat_message("assistant"):
         label, state = _status_shape(turn)
         status = st.status(label, state=state, expanded=False)
-        prose = st.container()
+        prose = st.container(width=READING_WIDTH)
         for event in turn.events:
             _render_event(event, status, prose)
         _render_footnotes(turn, get_bundle(), prose)

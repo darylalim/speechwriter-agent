@@ -8,6 +8,7 @@ be discovered by a human opening a browser.
 
 from __future__ import annotations
 
+import ast
 import colorsys
 import contextlib
 import json
@@ -15,6 +16,7 @@ import os
 import re
 import threading
 import tomllib
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlsplit
 
@@ -22,11 +24,16 @@ import pytest
 import streamlit as st
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.store.memory import InMemoryStore
+from streamlit.proto.Block_pb2 import Block as BlockProto
+from streamlit.proto.GapSize_pb2 import GapSize
 from streamlit.testing.v1 import AppTest
+from streamlit.testing.v1.element_tree import Block
 
 from speechwriter import cli, config, webui, workspace
 from speechwriter.config import load_settings
 from speechwriter.prompts import orchestrator_prompt, researcher_prompt
+
+FlexContainer = BlockProto.FlexContainer
 
 _REPO_ROOT = config._PKG_DIR.parents[1]
 
@@ -948,6 +955,173 @@ def test_the_workspace_view_control_cannot_be_deselected(monkeypatch, tmp_path):
 
     assert not app.exception
     assert app.segmented_control[0].proto.required
+
+
+# The layout tests below read the containers Streamlit actually built — their pixel widths,
+# gap sizes and wrap flags — off the element tree. AppTest does not render, so they cannot
+# see where a row wraps or whether a table overflows; the manual browser check in the plan
+# is the real guard on that. What they do pin is every number and flag the browser is given.
+
+
+def _flex_blocks(node: Block) -> Iterator[Block]:
+    """Every flex container under ``node``, depth first, in page order."""
+    for child in node.children.values():
+        if isinstance(child, Block):
+            # A chat message or an expander carries its own inner proto, not a Block one.
+            proto = child.proto
+            if isinstance(proto, BlockProto) and proto.WhichOneof("type") == "flex_container":
+                yield child
+            yield from _flex_blocks(child)
+
+
+def _workspace_constants() -> dict[str, int]:
+    """The browse page's integer layout constants, read without running the page script."""
+    tree = ast.parse((_REPO_ROOT / "app_pages" / "browse.py").read_text("utf-8"))
+    return {
+        node.targets[0].id: node.value.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, int)
+    }
+
+
+def _page_layouts(path) -> list[str]:
+    """The ``layout=`` of every ``st.set_page_config`` call in one script."""
+    return [
+        keyword.value.value
+        for node in ast.walk(ast.parse(path.read_text("utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "set_page_config"
+        for keyword in node.keywords
+        if keyword.arg == "layout"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, str)
+    ]
+
+
+def _workspace_home(monkeypatch, tmp_path) -> config.Settings:
+    """Point the app at ``tmp_path`` with a fresh bundle, before anything is seeded into it."""
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+    return load_settings()
+
+
+def _open_workspace(view: str | None = None) -> AppTest:
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+    if view is not None:
+        app.segmented_control[0].set_value(view).run()
+    assert not app.exception
+    return app
+
+
+def _workspace_row(app: AppTest) -> tuple[Block, Block, Block]:
+    """The centred frame, the rail and the reading column, asserting the shape that holds them."""
+    constants = _workspace_constants()
+    page_width = constants["RAIL_WIDTH"] + constants["LARGE_GAP"] + webui.READING_WIDTH
+    frames = [b for b in _flex_blocks(app.main) if b.proto.width_config.pixel_width == page_width]
+    assert len(frames) == 1, f"no single {page_width}px frame: PAGE_WIDTH has drifted from its sum"
+
+    rows = [
+        b
+        for b in _flex_blocks(frames[0])
+        if b.proto.flex_container.direction == FlexContainer.Direction.HORIZONTAL
+        and b.proto.flex_container.gap_config.gap_size == GapSize.LARGE
+    ]
+    assert len(rows) == 1
+    row = rows[0]
+    # Wrapping is the whole design: it is how a phone and a tablet stack without a breakpoint.
+    assert row.proto.flex_container.wrap
+    rail, column = row.children.values()
+    assert isinstance(rail, Block) and isinstance(column, Block)
+    # The rail stretches, so it fills the row when stacked; the frame is what caps it.
+    assert rail.proto.width_config.use_stretch
+    assert column.proto.width_config.pixel_width == webui.READING_WIDTH
+    # No wrap, so a wide table scrolls inside the column rather than the page; and only one
+    # child, because an unwrapped row would lay any second child beside the speech.
+    assert not column.proto.flex_container.wrap
+    assert len(column.children) == 1
+    return frames[0], rail, column
+
+
+def test_the_workspace_is_a_reading_column_beside_a_rail(monkeypatch, tmp_path):
+    settings = _workspace_home(monkeypatch, tmp_path)
+    _write(
+        settings.workspace_dir / config.SPEECHES_SUBDIR / "toast.md",
+        "---\nSpeaker: Daryl (best man)\n---\n\nGood evening, everyone.",
+        mtime=1_000_000,
+    )
+    app = _open_workspace()
+    _, rail, column = _workspace_row(app)
+
+    # The picker, the stats and the speaker details live in the rail, and only the speech in
+    # the column: on a phone the rail stacks first, so the reader sees who and what before
+    # reading on.
+    assert len(rail.selectbox) == 1
+    assert [metric.label for metric in rail.metric] == ["Words", "Spoken length"]
+    assert any(block.value == "**Speaker** — Daryl (best man)" for block in rail.markdown)
+    assert [block.value for block in column.markdown] == ["Good evening, everyone."]
+    # Unbordered metrics: on a phone the borders cost height the speech needs.
+    assert not any(metric.proto.show_border for metric in app.metric)
+    # No caption under the title: the segmented control already names the three views.
+    assert not app.main.caption
+
+
+def test_research_notes_share_the_reading_column(monkeypatch, tmp_path):
+    settings = _workspace_home(monkeypatch, tmp_path)
+    table = "| Source | Claim |\n|---|---|\n| https://example.com/a/very/long/path | x |"
+    _write(settings.workspace_dir / config.RESEARCH_SUBDIR / "brief.md", table, mtime=1_000_000)
+    app = _open_workspace("Research")
+    _, rail, column = _workspace_row(app)
+
+    # A research note is not spoken, so it gets a word count and no length.
+    assert [metric.label for metric in rail.metric] == ["Words"]
+    assert [block.value for block in column.markdown] == [table]
+
+
+def test_memory_profiles_read_at_the_reading_width(monkeypatch, tmp_path):
+    _workspace_home(monkeypatch, tmp_path)
+    bundle = webui.get_bundle()
+    bundle.store.put(("speechwriter", "memories"), "mayor.md", {"content": "warm, plainspoken"})
+    app = _open_workspace("Memory")
+
+    columns = [
+        b for b in _flex_blocks(app.main) if b.proto.width_config.pixel_width == webui.READING_WIDTH
+    ]
+    assert len(columns) == 1
+    assert any("warm, plainspoken" in block.value for block in columns[0].markdown)
+
+
+def test_a_chat_reply_takes_the_same_reading_width(monkeypatch, tmp_path):
+    # Dummy, and never sent: set so the key gate is open and the page renders its usable state.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-dummy")
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.session_state["transcript"] = [
+        webui.Turn(prompt="A toast", events=[webui.Event(kind="prose", text="Here it is.")])
+    ]
+    app.run()
+
+    assert not app.exception
+    prose = [
+        b for b in _flex_blocks(app.main) if b.proto.width_config.pixel_width == webui.READING_WIDTH
+    ]
+    assert len(prose) == 1
+    assert [block.value for block in prose[0].markdown] == ["Here it is."]
+
+
+def test_only_the_workspace_page_is_wide():
+    # A page's own `st.set_page_config` overrides the router's for that page alone, which is
+    # how Write stays one centred column while Workspace gets room for its rail.
+    assert _page_layouts(_REPO_ROOT / "streamlit_app.py") == ["centered"]
+    assert _page_layouts(_REPO_ROOT / "app_pages" / "browse.py") == ["wide"]
+    assert _page_layouts(_REPO_ROOT / "app_pages" / "write.py") == []
 
 
 @contextlib.contextmanager
