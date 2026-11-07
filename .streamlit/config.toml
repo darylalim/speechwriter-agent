@@ -5,102 +5,101 @@
 # deliberately (`--server.address 0.0.0.0`) if you actually intend to share it.
 address = "localhost"
 
-# One Light by day, One Dark Pro by night — Atom's sibling palettes, kept as a pair so the
-# mode switch changes the light in the room rather than the identity of the app.
+# "The Chamber": the green of a parliamentary bench, in daylight and with the house lights down.
 #
-# This app's main job is reading long prose, so both modes are tuned for sustained reading
-# rather than dashboard glanceability. The two body-text contrasts are deliberately *not*
-# equal: 10.86:1 in light, 6.57:1 in dark. Dark mode wants the lower number — light text on a
-# dark field halates, and carrying light mode's ratio across is exactly what makes most
-# shipped dark themes (13-17:1) tiring over a four-minute speech. This pair replaced Solarized
-# Light + a deepened Solarized Dark; the light half of that had 4.13:1 body text, under WCAG AA.
+# The palette comes from where speeches are given, not from a code editor. Both modes are one
+# green at hue ~160: a reading copy on the bench by day, the room itself by night. Every role keeps
+# its place across the switch, so the mode changes the light rather than the identity of the app.
+#
+# This app's main job is reading long prose aloud, so the type is a screen-reading serif at 16px,
+# and the two body contrasts are deliberately not equal: about 11:1 in light and 8:1 in dark.
+# Light text on a dark field halates, so carrying light mode's ratio across would tire the eye.
 #
 # Defining both [theme.light] and [theme.dark] makes Streamlit follow the viewer's system
 # preference and adds a System/Light/Dark switch to the settings menu; a single-mode [theme]
 # locks every viewer to one mode.
 #
 # Only what is genuinely mode-independent lives in [theme]: typography, radii, border flags.
-# The two palettes give the same hue different values (blue is #4078f2 by day, #61afef by
-# night), so accents and chart colors live in the per-mode tables even though Streamlit would
-# accept them here — sharing one accent set across two palettes is what left the old config's
-# primary at 3.80:1 on dark surfaces it was never picked against. Theming stays in this file
-# rather than in injected CSS, which is Streamlit's documented preference and keeps the page
-# files free of styling concerns.
+# Theming stays in this file rather than in injected CSS, which is Streamlit's documented
+# preference and keeps the page files free of styling concerns.
 [theme]
-# Underlined, not colour-only. Restoring the default costs a little quiet and buys the one
-# cue that survives both palettes: a link at #61afef sits 1.11:1 against dark-mode body text
-# (#abb2bf), so on the mode this app is most often read in, colour alone marks nothing — the
-# WCAG F73 failure. Set explicitly rather than deleted, so this block stays a complete
-# typographic contract rather than half-inheriting.
+# Underlined, not colour-only: link and body text are too close in dark mode for colour alone to
+# mark a link, which is the WCAG F73 failure. Set explicitly so this block stays complete.
 linkUnderline = true
 showWidgetBorder = true
 showSidebarBorder = true
 baseRadius = "4px"
 buttonRadius = "4px"
-font = "'Source Sans 3':https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap"
+# Literata was drawn for long reading on screens. Streamlit has no separate UI font, so it carries
+# the controls too, which is why the size is 16px rather than the 14px a sans would allow.
+font = "Literata:https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600;7..72,700&display=swap"
 codeFont = "'Source Code Pro':https://fonts.googleapis.com/css2?family=Source+Code+Pro:wght@400;500&display=swap"
-codeFontSize = "0.875rem"
-baseFontSize = 14
+codeFontSize = "0.8125rem"
+baseFontSize = 16
 baseFontWeight = 400
-headingFontSizes = ["32px", "24px", "20px", "16px", "14px", "12px"]
+headingFontSizes = ["36px", "27px", "22px", "18px", "16px", "14px"]
 headingFontWeights = [600, 600, 600, 600, 600, 600]
 
-# Light mode — One Light (atom/one-light-syntax). Body #383a42 on #fafafa is 10.86:1.
+# Known limit: Streamlit renders captions as a 60% mix of text and background, and no key sets that
+# colour. They measure 3.49:1 in light and 4.04:1 in dark, under AA, so keep anything a reader needs
+# out of `st.caption`. Reaching 4.5:1 through textColor would cost the reading contrast above.
+
+# Light mode — daylight on the bench. Body is about 11:1 on the page.
 [theme.light]
-backgroundColor = "#fafafa"
-secondaryBackgroundColor = "#eaeaeb"
-codeBackgroundColor = "#f0f0f1"
-textColor = "#383a42"
-codeTextColor = "#383a42"
-borderColor = "#c6c6c8"
+backgroundColor = "#f4f7f5"
+secondaryBackgroundColor = "#e5ece8"
+codeBackgroundColor = "#ecf1ee"
+textColor = "#2b3a33"
+codeTextColor = "#2b3a33"
+borderColor = "#b9c5bf"
 
-primaryColor = "#4078f2"
-# The one accent that deliberately leaves the One Light palette. #4078f2 is 3.88:1 on #fafafa
-# — fine for `primaryColor`, which tints widget chrome (1.4.11 wants 3:1), and under AA for
-# link *text*, which wants 4.5:1. #155aef is the same hue two steps darker, at 5.38:1. Dark
-# mode needs no equivalent: #61afef is already 5.92:1 on #282c34.
-linkColor = "#155aef"
-blueColor = "#4078f2"
-greenColor = "#50a14f"
-yellowColor = "#c18401"
-orangeColor = "#986801"
-redColor = "#e45649"
-violetColor = "#a626a4"
-chartCategoricalColors = ["#4078f2", "#50a14f", "#a626a4", "#e45649", "#c18401", "#0184bc", "#986801"]
+# Dark enough to carry the white text Streamlit puts on a primary button.
+primaryColor = "#1e6b52"
+linkColor = "#17604a"
+blueColor = "#1f5fa8"
+greenColor = "#1b7446"
+yellowColor = "#7f5f00"
+orangeColor = "#9c4e0c"
+redColor = "#b02e2b"
+violetColor = "#6d3d9e"
+grayColor = "#55635c"
+chartCategoricalColors = ["#1e6b52", "#1f5fa8", "#6d3d9e", "#b02e2b", "#7f5f00", "#0f7c8a", "#9c4e0c"]
 
-# Dark mode — One Dark Pro (the Atom/VS Code palette). Body #abb2bf on #282c34 is 6.57:1.
-# Same hue order as light, different values: each accent is the one One Dark picked against
-# its own field, which is why every one clears 4.38:1 here rather than scraping 3:1.
+# Dark mode — house lights down. Body is about 8:1 on the page.
 [theme.dark]
-backgroundColor = "#282c34"
-secondaryBackgroundColor = "#21252b"
-codeBackgroundColor = "#1e2127"
-textColor = "#abb2bf"
-codeTextColor = "#abb2bf"
-borderColor = "#3e4451"
+backgroundColor = "#1d2a26"
+secondaryBackgroundColor = "#16211d"
+codeBackgroundColor = "#121b18"
+textColor = "#bac6be"
+codeTextColor = "#bac6be"
+borderColor = "#3a4c45"
 
-primaryColor = "#61afef"
-linkColor = "#61afef"
-blueColor = "#61afef"
-greenColor = "#98c379"
-yellowColor = "#e5c07b"
-orangeColor = "#d19a66"
-redColor = "#e06c75"
-violetColor = "#c678dd"
-chartCategoricalColors = ["#61afef", "#98c379", "#c678dd", "#e06c75", "#e5c07b", "#56b6c2", "#d19a66"]
+# The tightest choice in the file. Streamlit uses primary as *text* on selected tabs and pills, and
+# as a fill under a white icon on the chat send button. No colour reaches 4.5:1 for both on this
+# field, so it clears 4.5:1 as text and 3:1 under the icon. The app has no `type="primary"` button,
+# whose white label would need 4.5:1. Links use a paler step of the same green.
+primaryColor = "#3fa37f"
+linkColor = "#86d1b5"
+blueColor = "#8abaea"
+greenColor = "#84cf9c"
+yellowColor = "#dfbe66"
+orangeColor = "#e8a36a"
+redColor = "#f09188"
+violetColor = "#c5a8ec"
+grayColor = "#98a69e"
+chartCategoricalColors = ["#5fbf9c", "#8abaea", "#c5a8ec", "#f09188", "#dfbe66", "#6fc6d1", "#e8a36a"]
 
 # The reading field is the lightest surface in both modes, and secondaryBackgroundColor steps
-# away from it — so the chat bubbles, containers and expanders this app leans on read as
-# panels and the prose stays the most prominent thing on screen. Sidebars take that same step,
-# sitting one layer off the main content in both modes.
+# away from it, so chat bubbles, containers and expanders read as panels and the prose stays the
+# most prominent thing on screen. Sidebars take that same step in both modes.
 [theme.light.sidebar]
-backgroundColor = "#eaeaeb"
-secondaryBackgroundColor = "#fafafa"
-codeBackgroundColor = "#f0f0f1"
-borderColor = "#c6c6c8"
+backgroundColor = "#e5ece8"
+secondaryBackgroundColor = "#f4f7f5"
+codeBackgroundColor = "#ecf1ee"
+borderColor = "#b9c5bf"
 
 [theme.dark.sidebar]
-backgroundColor = "#21252b"
-secondaryBackgroundColor = "#282c34"
-codeBackgroundColor = "#1e2127"
-borderColor = "#3e4451"
+backgroundColor = "#16211d"
+secondaryBackgroundColor = "#1d2a26"
+codeBackgroundColor = "#121b18"
+borderColor = "#3a4c45"

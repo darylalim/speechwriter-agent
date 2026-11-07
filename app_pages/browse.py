@@ -240,10 +240,13 @@ def document_browser(
     if measured is not None and measured.wav:
         st.audio(measured.wav, format="audio/wav")
 
-    # Rendered as metadata rather than passed through st.markdown: a `---` fence directly
-    # after the header's last line would otherwise turn the whole block into one setext H2.
+    # Rebuilt from the parsed pairs rather than passed through raw: a `---` fence directly after
+    # the header's last line would otherwise turn the whole block into one setext H2. Rebuilt,
+    # it holds no fence, so st.markdown is safe. And it must be st.markdown, not st.caption:
+    # Streamlit draws captions as a 60% mix of text and background, which is under AA in both
+    # modes, and speaker, audience and occasion are what a reader needs before reading on.
     if document.front_matter:
-        st.caption(
+        st.markdown(
             "  \n".join(
                 f"**{label}** — {value}" if label else value
                 for label, value in document.front_matter
