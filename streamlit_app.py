@@ -32,6 +32,8 @@ from speechwriter.webui import (
 st.set_page_config(
     page_title="Speechwriter",
     page_icon=":material/edit_note:",
+    # Centred for Write, because chat is one column. Workspace widens itself with its own
+    # `st.set_page_config(layout="wide")`, which overrides this for that page alone.
     layout="centered",
 )
 
