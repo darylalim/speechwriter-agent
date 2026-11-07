@@ -13,9 +13,9 @@ permissions:
   contents: read
 
 env:
-  # Pinned, unlike the bare `uvx ruff` / `uvx ty` in .claude/hooks — unpinned, uvx
-  # resolves the newest release at run time, so an Astral release could redden a PR that
-  # changed nothing. ty is pre-1.0 and moves fastest; bump both together, on purpose.
+  # Pinned because unpinned, uvx resolves the newest release at run time, so an Astral
+  # release could redden a PR that changed nothing. ty is pre-1.0 and moves fastest. These
+  # pins are repeated at the other sites CLAUDE.md names, and a test keeps them in step.
   RUFF_VERSION: "0.17.4"
   TY_VERSION: "0.0.99"
 
@@ -32,9 +32,9 @@ jobs:
 
       # Outside the matrix and with no `uv sync`: ruff needs no project deps, and
       # target-version = "py311" fixes its syntax target, so the verdict is identical on
-      # every interpreter. `ruff format --check` is omitted deliberately — Ruff 0.16 also
-      # formats Python inside Markdown and would churn README.md's aligned fences.
+      # every interpreter.
       - run: uvx ruff@"$RUFF_VERSION" check --output-format=github .
+      - run: uvx ruff@"$RUFF_VERSION" format --check .
 
   test:
     name: pytest + ty (py${{ matrix.python-version }})
