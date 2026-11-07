@@ -53,9 +53,9 @@ Still open:
 2. **The double-tracing check for `opentelemetry-api`.** It needs traces to land, so it waits on the
    same limit. Any `--langsmith` run in Workstream 2 is blocked by this too. The limit resets on
    2026-12-01.
-3. **The startup check on the `.claude/settings.json` permission rules.** The user made this edit,
-   and the wildcard form is valid. The docs warn that a `*` before the subcommand may trigger a
-   startup warning, so check for one, and confirm that the pinned commands run without a prompt.
+3. ~~**The startup check on the `.claude/settings.json` permission rules.**~~ **Closed
+   2026-11-07.** The user saw no startup warning, and `uvx ruff@0.17.4 check .` and
+   `uvx ty@0.0.99 check` ran without a permission prompt.
 
 ### Workstream 2, Phase 0 status (2026-11-07)
 
