@@ -8,6 +8,7 @@ be discovered by a human opening a browser.
 
 from __future__ import annotations
 
+import colorsys
 import contextlib
 import json
 import os
@@ -115,6 +116,29 @@ def test_front_matter_is_split_off_rather_than_rendered_or_counted(monkeypatch, 
     assert document.words == body_words  # header excluded from the count
     assert document.minutes == 2.0
     assert document.text.startswith("---")  # a download still gets the file as written
+
+
+def test_the_header_block_renders_as_body_text_not_a_caption(monkeypatch, tmp_path):
+    # Speaker, audience and occasion are what a reader needs before reading the draft, and
+    # Streamlit draws st.caption as a 60% mix of text and background: under AA in both theme
+    # modes, and no config key can raise it. So the block goes through st.markdown, which is
+    # safe because it is rebuilt from parsed pairs and so holds no `---` fence.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    st.cache_resource.clear()
+    settings = load_settings()
+    _write(
+        settings.workspace_dir / config.SPEECHES_SUBDIR / "toast.md",
+        "---\nSpeaker: Daryl (best man)\nOccasion: Wedding\n---\n\nGood evening, everyone.",
+        mtime=1_000_000,
+    )
+
+    app = AppTest.from_file(str(_REPO_ROOT / "streamlit_app.py"), default_timeout=60)
+    app.run().switch_page("app_pages/browse.py").run()
+
+    assert not app.exception
+    header = "**Speaker** — Daryl (best man)  \n**Occasion** — Wedding"
+    assert any(block.value == header for block in app.main.markdown)
+    assert not any("Daryl (best man)" in block.value for block in app.main.caption)
 
 
 def test_stage_directions_do_not_count_as_spoken_words(monkeypatch, tmp_path):
@@ -414,13 +438,35 @@ def _contrast(one: str, other: str) -> float:
     return (max(first, second) + 0.05) / (min(first, second) + 0.05)
 
 
-def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
-    # The palette in .streamlit/config.toml already replaced Solarized Light *for failing AA*
-    # — its body text was 4.13:1 — and the link color then slipped past the same audit at
-    # 3.88:1, because nothing measured it. Both halves are asserted here rather than the hex
-    # literals, so a future repalette is free to pick any colors that pass.
+def _theme() -> dict:
     data = tomllib.loads((_REPO_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
-    theme = data["theme"]
+    return data["theme"]
+
+
+def _surfaces(palette: dict) -> list[str]:
+    """Every background a mode's text can sit on, main area and sidebar alike.
+
+    Not just the page ground: chat bubbles, expanders and code blocks sit on the other
+    backgrounds, and the whole sidebar has its own set. The tightest surface is rarely the page
+    — for dark-mode primary it is the code background, at 4.79:1 against 5.65:1 on the page.
+    """
+    surfaces = {v for k, v in palette.items() if k.endswith("ackgroundColor")}
+    surfaces |= {v for k, v in palette.get("sidebar", {}).items() if k.endswith("ackgroundColor")}
+    return sorted(surfaces)
+
+
+def _hue(hex_color: str) -> float:
+    """HLS hue in degrees, 0 to 360."""
+    red, green, blue = (int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5))
+    return colorsys.rgb_to_hls(red, green, blue)[0] * 360
+
+
+def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
+    # An earlier palette replaced Solarized Light *for failing AA* — its body text was 4.13:1 —
+    # and the link color then slipped past the same audit at 3.88:1, because nothing measured
+    # it. Both halves are asserted here rather than the hex literals, so a future repalette is
+    # free to pick any colors that pass.
+    theme = _theme()
     # Read once and named: underlining satisfies F73 for every mode at once, so this is the
     # switch that decides whether the per-mode contrast rule below has any work to do.
     underlined = theme.get("linkUnderline", True)
@@ -428,23 +474,62 @@ def test_theme_links_clear_wcag_aa_and_stay_visible_without_color():
     for mode in ("light", "dark"):
         palette = theme[mode]
         link, body = palette["linkColor"], palette["textColor"]
-        # Every surface a link can be read on, not just the page ground: chat bubbles,
-        # expanders and the whole sidebar sit on secondaryBackgroundColor, and in light mode
-        # that is the tightest of them — 4.67:1, against 5.38:1 on the background that used to
-        # be the only one checked.
-        surfaces = {v for k, v in palette.items() if k.endswith("ackgroundColor")}
-        surfaces |= {
-            v for k, v in palette.get("sidebar", {}).items() if k.endswith("ackgroundColor")
-        }
-        for surface in sorted(surfaces):
+        for surface in _surfaces(palette):
             # 1.4.3 Contrast (Minimum), for text.
             assert _contrast(link, surface) >= 4.5, f"{mode} linkColor is under AA on {surface}"
         # F73: a link may not be marked by color alone. Either it is underlined, or it stands
-        # 3:1 clear of the prose around it — #61afef sits 1.11:1 against dark-mode body text,
-        # which is why the underline is what carries this today.
+        # 3:1 clear of the prose around it. Dark mode's link is a paler step of the body's own
+        # green, close enough to it that the underline is what carries this.
         assert underlined or _contrast(link, body) >= 3.0, (
             f"{mode} links are distinguished by color alone"
         )
+
+
+def test_theme_primary_and_body_text_clear_wcag_in_both_modes():
+    # Streamlit spends primaryColor two ways, and each needs its own bar. As *text*, on
+    # selected tabs and pills, it needs 4.5:1 on every surface (1.4.3). As a *fill* under the
+    # white icon on the chat send button, white on it needs 3:1 (1.4.11, non-text). The
+    # One Dark palette this replaced passed the first and failed the second: white on
+    # #61afef is 2.36:1. In dark mode no colour reaches 4.5:1 both ways on this field, which
+    # is why the fill is held to 3:1 and not to the 4.5:1 a white *label* would need — see
+    # `test_no_page_uses_a_primary_button`.
+    theme = _theme()
+    for mode in ("light", "dark"):
+        palette = theme[mode]
+        primary, body = palette["primaryColor"], palette["textColor"]
+        for surface in _surfaces(palette):
+            assert _contrast(primary, surface) >= 4.5, (
+                f"{mode} primaryColor is under AA as text on {surface}"
+            )
+            assert _contrast(body, surface) >= 4.5, f"{mode} textColor is under AA on {surface}"
+        assert _contrast("#ffffff", primary) >= 3.0, (
+            f"{mode} primaryColor cannot carry the white icon Streamlit draws on it"
+        )
+
+
+def test_theme_accent_hues_agree_between_modes():
+    # What makes the two modes one theme rather than two: the accent keeps its hue and only
+    # its lightness moves. Measured, primary differs by 2.1 degrees and links by 4.3. Page
+    # surfaces are deliberately left out — their green tints are faint enough that a
+    # one-step change in a channel swings the hue by tens of degrees, so the comparison
+    # would be noise.
+    theme = _theme()
+    for key in ("primaryColor", "linkColor"):
+        light, dark = _hue(theme["light"][key]), _hue(theme["dark"][key])
+        gap = min(abs(light - dark), 360 - abs(light - dark))
+        assert gap <= 6.0, f"{key} hue is {light:.0f} in light mode but {dark:.0f} in dark"
+
+
+def test_no_page_uses_a_primary_button():
+    # Dark mode's primaryColor gives a white label 3.11:1, which is under the 4.5:1 that
+    # button *text* needs. It clears 3:1, which is all an icon needs, and that is the only way
+    # the app spends it today. A `type="primary"` button would put white text on that fill, so
+    # adding one means re-picking dark primary first, not just adding the widget.
+    sources = [_REPO_ROOT / "streamlit_app.py", *sorted((_REPO_ROOT / "app_pages").glob("*.py"))]
+    pattern = re.compile(r"""type\s*=\s*["']primary["']""")
+    offenders = [path.name for path in sources if pattern.search(path.read_text("utf-8"))]
+    assert len(sources) > 1  # anti-vacuity: the glob must still find the pages
+    assert not offenders, f"type='primary' in {offenders}"
 
 
 def test_the_status_badge_gates_on_the_key(monkeypatch, tmp_path):

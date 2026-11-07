@@ -34,7 +34,7 @@ names and results under the relevant phase.
 | Workstream 2, Phase 3: Per-role effort | Not started | Priced from the Phase 0 figures | |
 | Workstream 2, Phase 4: Haiku researcher | Optional | Priced if it goes ahead | |
 | Workstream 2, Phase 5: Adopt the results | Not started | A few dollars | |
-| Workstream 3: Theme | Not started | Free | |
+| Workstream 3: Theme | Done 2026-11-07, except step 6 | Free | README images wait for Workstream 4 |
 | Workstream 4: Layout | Not started | Free | |
 | Release 0.3.0 | Not started | Free | Needs the user's go-ahead |
 
@@ -100,6 +100,24 @@ draft fails, and a lightly tidied draft passes. There is no row when the critic 
 and the row is unscored when no draft came before the call. Regraded with `--regrade`, the kept
 2026-11-07 run now scores **9/10**, with the critic given 12% of the draft. Phase 2 can count this
 row directly.
+
+### Workstream 3 status (2026-11-07)
+
+Steps 1 to 5 and 7 are done; step 6 (the README images) waits for Workstream 4, as planned.
+
+- The theme is in `.streamlit/config.toml` with the `[server]` block unchanged. The browse page's
+  header block is `st.markdown` now, and a new AppTest checks it renders as body text and never as
+  a caption. No existing test read it as a caption, so none needed updating.
+- Four contrast tests: links (now on shared `_surfaces` and `_theme` helpers), primary and body
+  text, accent hue agreement (primary 2.1 degrees apart, links 4.3, bar 6), and no
+  `type="primary"` button. Five mutants, all killed. The old `#61afef` dark primary fails only on
+  white-on-primary (2.36:1): it still clears 4.5:1 as text on the new dark surfaces.
+- Rendered with Playwright and Chrome in both modes on a scratch copy of the workspace: a long
+  draft, the open **Storage** expander, and the chat input with text typed. The send button fills
+  with primary in both modes. Type with `keyboard.type`, not `fill`, or React never enables it and
+  the button renders faded.
+- **Not checked: a finished turn.** That needs a live model call. Check it during the first paid
+  run of Workstream 2, or during Workstream 4's render check.
 
 ## Commits
 
@@ -567,9 +585,8 @@ the way to bring `trajectory` off its ceiling.
 ### Goal
 
 Replace the One Light and One Dark code-editor palette with "The Chamber", a pair designed for
-this app. The user approved this direction on 2026-11-06. The complete theme is in `docs/plans/chamber-theme.toml`, and renders of it are in
-`docs/plans/theme-preview/`. It was rendered in the real app on Streamlit 1.64 from a scratch
-folder, so `.streamlit/config.toml` has not been changed.
+this app. The user approved this direction on 2026-11-06. It now lives in `.streamlit/config.toml`;
+the draft file and its preview renders were deleted in step 7.
 
 ### Design
 
