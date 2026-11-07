@@ -34,8 +34,8 @@ names and results under the relevant phase.
 | Workstream 2, Phase 3: Per-role effort | Not started | Priced from the Phase 0 figures | |
 | Workstream 2, Phase 4: Haiku researcher | Optional | Priced if it goes ahead | |
 | Workstream 2, Phase 5: Adopt the results | Not started | A few dollars | |
-| Workstream 3: Theme | Done 2026-11-07, except step 6 | Free | README images wait for Workstream 4 |
-| Workstream 4: Layout | Not started | Free | |
+| Workstream 3: Theme | Done 2026-11-07, except step 6 | Free | README images wait for Workstream 2, with Workstream 4's |
+| Workstream 4: Layout | Done 2026-11-07, except the README images | Free | Images wait for Workstream 2's default model |
 | Release 0.3.0 | Not started | Free | Needs the user's go-ahead |
 
 ### Workstream 1 status (2026-11-06)
@@ -118,6 +118,59 @@ Steps 1 to 5 and 7 are done; step 6 (the README images) waits for Workstream 4, 
   the button renders faded.
 - **Not checked: a finished turn.** That needs a live model call. Check it during the first paid
   run of Workstream 2, or during Workstream 4's render check.
+
+### Workstream 4 status (2026-11-07)
+
+Steps 1 to 6 and 8 are done, on branch `workstream-4-layout`. The CLAUDE.md half of step 7 is done
+too. The README images wait for Workstream 2, because they show the model picker, and the default
+model may change.
+
+- **Tests read the built element tree, not the source.** `AppTest` exposes each container's pixel
+  width, gap size and wrap flag. Five tests: the frame equals rail + gap + reading width, the row
+  wraps at the large gap, the reading column is 560px, unwrapped and holds only the speech, Research
+  and Memory share the column, a replayed chat reply takes the same width, and only Workspace is
+  wide. The page layout is still read from source, because `set_page_config` is not in the tree.
+- **Eleven mutants, all killed.** "Change `RAIL_WIDTH` alone" only fails if `PAGE_WIDTH` is a
+  literal, since a computed one follows it, so the mutant tested was `RAIL_WIDTH = 300` with
+  `PAGE_WIDTH = 896`. Not covered: the width of a reply while it streams, which needs a live call.
+  The replay path, which is the same container, is covered.
+- **Render check, Streamlit 1.67, Chrome via Playwright.** The fixtures were a 792-word draft
+  with a three-field header, a 281-word draft with a 96-character slug, a research note with a
+  six-column table and a 130-character URL, and one memory profile. A stubbed copy of the page
+  returned a canned measurement and WAV for the three-metric rail.
+
+| Window | Sidebar | Arrangement | Rail | Reading | Speech starts |
+|---|---|---|---|---|---|
+| 320x568 | closed | stacked | 288 | 288 | 650 |
+| 360x740 | closed | stacked | 328 | 328 | 624 |
+| 780x360 | open | stacked | 448 | 448 | 605 |
+| 768x1024 | closed | stacked | 736 | 560 | 549 |
+| 820x1180, 834x1194 | open | stacked | 488, 502 | 488, 502 | 549 |
+| 1024x768, 1180x820 | open | stacked | 564, 720 | 560 | 549 |
+| 1240x800 (added) | open | side by side | **156** | 560 | 255 |
+| 1280x800 | open | side by side | 196 | 560 | 255 |
+| 1366 to 2560 | open | side by side | 272 | 560 | 255 |
+| 1280x800 at 200% zoom | closed | stacked | 608 | 560 | 517 |
+
+- No sideways page scroll at any size, in any view (`scrollWidth` matched `clientWidth` on both the
+  `section` and the document). The research table scrolls inside the column, and the long URL wraps.
+- No element in the rail clips or spills out, including the three metrics plus audio at 1240.
+- The longest line is about 73 characters at 560px, against the prototype's 74.
+- **The sidebar check:** at 1280 the page is already side by side with the sidebar open, as the
+  design table says, so the plan's "1280 moves from stacked" could not happen. At 1024 and 1180,
+  closing the sidebar moved the page from stacked to side by side and lifted the speech from 549
+  to 255.
+- Moving Write, Workspace, Write, Workspace at 1440 switched the main block between 736 and 1140
+  each time.
+- **The narrow band is real:** a 156px rail at 1240 with the sidebar open, which is below the
+  plan's 190px guide. The picker shows "margaret-retire" and the audio player drops its time
+  readout, but it works. This is the known limit, now measured at one point.
+- **The Write and Workspace links at 360px** move into the sidebar, behind its `»` control.
+- Both colour modes were checked at 360, 768, 1280 and 1920.
+- Recipe notes: `full_page` screenshots stop at the viewport, because Streamlit scrolls inside
+  its `section`. The sidebar collapse button is `visibility: hidden` until hover, so click it with
+  JavaScript. Scope the document picker to `stMainBlockContainer`, or the sidebar's model picker
+  matches first.
 
 ## Commits
 

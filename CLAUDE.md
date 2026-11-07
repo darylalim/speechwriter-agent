@@ -295,7 +295,21 @@ Each `skills/<slug>/SKILL.md` is loaded on demand by the agent (progressive disc
 
 - Added with `uv add streamlit` (main dep, in `uv.lock`) — not the pip line the Streamlit skill's discovery script prints, which `uv sync` would undo.
 - `.streamlit/config.toml` holds the theme **and** `server.address = "localhost"`: Streamlit otherwise binds all interfaces and prints an External URL, exposing an unauthenticated, budget-spending agent. `.streamlit/secrets.toml` is gitignored; config is read from `.env` via `load_settings()`, never `st.secrets`.
-- `tests/test_webapp.py` renders both pages headlessly with `streamlit.testing.v1.AppTest` — still offline/free. Call `st.cache_resource.clear()` before each `AppTest` run or a cached bundle pins the wrong `SPEECHWRITER_HOME`.
+- `tests/test_webapp.py` renders both pages headlessly with `streamlit.testing.v1.AppTest` — still offline/free. Call `st.cache_resource.clear()` before each `AppTest` run or a cached bundle pins the wrong `SPEECHWRITER_HOME`. Clear it *before* seeding the bundle's Store, not after, or the seed goes with the cache.
+
+### Layout: the reading width is the constant
+
+The layout holds one thing fixed, the width of the text being read (`webui.READING_WIDTH`, 560px, about 74 characters of Literata at 16px), and lets everything around it move. Chat replies, drafts and memory profiles all take that width. Re-measure it if the font or `baseFontSize` changes.
+
+- **Streamlit cannot tell Python the viewport size** (`st.context` has none), so nothing branches on the screen. There is **no CSS and no breakpoint**: Workspace is a centred `PAGE_WIDTH` frame holding one wrapping row, a stretchy rail and the reading column, side by side with room and stacked, rail first, without it. The row wraps on the space the browser actually lays out, so the sidebar counts: at 1024 and 1180, closing it moves the page from stacked to side by side. A screen-width rule could not do that.
+- **Write stays `layout="centered"`; Workspace calls `st.set_page_config(layout="wide")` itself**, which overrides the router's setting for that page alone. Moving between them switches the width each way.
+- **Four findings set the shape. Don't "simplify" them away:**
+  - The rail **stretches and the frame caps it**. A fixed rail stacks at its own width and wastes the row. An uncapped one grew to 1096px.
+  - **`gap="large"` sets the wrap point.** A stretchy container shrinks to about 128px, and with `gap="medium"` a tablet went side by side with a 144px rail. `LARGE_GAP` (64) is what `large` renders at the 16px root.
+  - **`wrap=False` on the reading column** makes a wide table scroll inside the column rather than the page. It only suits a one-child container, because `wrap=False` lays children out in a row. That is also why a chat reply, whose prose container holds several elements, cannot use it.
+  - The page's own `set_page_config` overrides the router's.
+- **The layout tests read the built element tree, not the source.** Each container's proto carries `width_config.pixel_width`, `flex_container.gap_config.gap_size` and `flex_container.wrap`, so `_workspace_row` asserts the frame equals rail + gap + reading width, the row wraps at the large gap, and the column is unwrapped with one child. Walk with `isinstance(child.proto, BlockProto)`: a chat message or an expander is a `Block` carrying its own inner proto. `AppTest` does not render, so **where** the row wraps is checked only by the manual Playwright render in `docs/plans/upgrade-plan.md` (Workstream 4).
+- **Known narrow band:** with the sidebar open, a window around 1212–1274px puts a 128–190px rail beside the column (156px measured at 1240). It still works there, with the picker label and the audio player's time cut short. Fixing it needs CSS.
 
 ## Gotchas
 
