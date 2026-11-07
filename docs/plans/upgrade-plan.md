@@ -28,7 +28,7 @@ names and results under the relevant phase.
 | Part | Status | Expected spend | Notes |
 |---|---|---|---|
 | Workstream 1: Dependency upgrade | In progress | Under $1 | Open items are listed below |
-| Workstream 2, Phase 0: Prove the evals | Not started | Priced in Phase 0, Step 2 | Includes about an hour of the user's reading |
+| Workstream 2, Phase 0: Prove the evals | In progress | Priced in Phase 0, Step 2 | Step 1 code done 2026-11-07; the cost check waits on the LangSmith limit |
 | Workstream 2, Phase 1: Effort option | Not started | Free | |
 | Workstream 2, Phase 2: Main sweep | Not started | About $45 to $50 | |
 | Workstream 2, Phase 3: Per-role effort | Not started | Priced from the Phase 0 figures | |
@@ -56,6 +56,26 @@ Still open:
 3. **The startup check on the `.claude/settings.json` permission rules.** The user made this edit,
    and the wildcard form is valid. The docs warn that a `*` before the subcommand may trigger a
    startup warning, so check for one, and confirm that the pinned commands run without a prompt.
+
+### Workstream 2, Phase 0 status (2026-11-07)
+
+Step 1 done, apart from the cost check:
+
+- `--trials N` works on both live paths. On `--langsmith` it passes `num_repetitions`, and the
+  target counts its own repeats, because LangSmith does not say which repeat it is running. Each
+  trial gets its own home and its own thread (`<id>-<trial>`; a single trial keeps the bare id).
+  `--trials` is refused alongside `--dry-run` or `--regrade` (exit 2).
+- `--keep` now keeps runs under `.speechwriter/eval-runs/<experiment>/<example>-<trial>/` and
+  writes a `record.json` there. Every tool call in it carries the index of the model message that
+  made it, which is what Step 2, item 6 needs. On `--langsmith`, the experiment's LangSmith name is
+  written to `experiment.txt`. The `SPEECHWRITER_EVAL_KEEP` variable is gone, and the folder is
+  passed down explicitly instead.
+- `--regrade <dir>` scores saved records against the dataset as it is now, with no agent call.
+  Exit codes: `0` all graded, `1` some could not be, `2` none found.
+- Eleven mutants, and the tests killed all of them.
+
+Still open: **the agent and judge cost per run**. It needs one `--langsmith` run, which the trace
+limit blocks until 2026-12-01.
 
 ## Commits
 

@@ -35,6 +35,7 @@ import os
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +59,12 @@ from evaluators import (  # noqa: E402  -- needs the sys.path line above
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EV = Path(__file__).resolve().parent / "datasets"
 DATASETS = ("final_response", "trajectory", "single_step", "rag")
+
+EVAL_RUNS = REPO_ROOT / ".speechwriter" / "eval-runs"
+"""Where ``--keep`` leaves runs: gitignored, and not a system temp folder macOS may clear."""
+
+RECORD_FILE = "record.json"
+"""The saved :class:`RunRecord` in each kept home, which ``--regrade`` scores again."""
 
 
 def to_messages(inputs: dict[str, Any]) -> list[dict[str, str]]:
@@ -98,9 +105,11 @@ def extract(state: dict[str, Any], workspace: Path) -> RunRecord:
     """Turn a finished graph state plus the files it left behind into a RunRecord."""
     calls: list[ToolCall] = []
     text = ""
-    for message in state.get("messages", []):
+    for index, message in enumerate(state.get("messages", [])):
         for call in getattr(message, "tool_calls", None) or []:
-            calls.append(ToolCall(str(call.get("name", "")), dict(call.get("args") or {})))
+            calls.append(
+                ToolCall(str(call.get("name", "")), dict(call.get("args") or {}), message=index)
+            )
         if getattr(message, "type", "") == "ai":
             spoken = message_text(message)
             if spoken.strip():
@@ -202,8 +211,13 @@ def invoke_agent(
     *,
     research: bool | None = None,
     store_seed: list[dict[str, Any]] | None = None,
+    home: Path | None = None,
 ) -> RunRecord:
     """One graded run of the real agent, in a workspace of its own.
+
+    ``home`` is where to run when the run is being **kept** (``--keep``): a directory that must
+    not exist yet, created here and left behind. Omitted, the run gets a temp home that is
+    deleted on the way out.
 
     ``research`` is the example's ``metadata.tavily_enabled``, and it decides whether the agent
     under test *has* a researcher — which changes the agent's shape, not just a setting: with no
@@ -232,10 +246,13 @@ def invoke_agent(
             "this example is written for the research branch, but TAVILY_API_KEY is not set"
         )
 
-    keep = os.environ.get("SPEECHWRITER_EVAL_KEEP") == "1"
+    if home is not None:
+        # `exist_ok=False`: a kept home that already holds a run would mix two runs' files, and
+        # the write-path criteria would pass on whichever wrote first.
+        home.mkdir(parents=True, exist_ok=False)
     context = (
-        contextlib.nullcontext(tempfile.mkdtemp(prefix="speechwriter-eval-"))
-        if keep
+        contextlib.nullcontext(str(home))
+        if home is not None
         else tempfile.TemporaryDirectory(prefix="speechwriter-eval-")
     )
     # Restored afterwards, because SPEECHWRITER_HOME otherwise outlives the directory it names:
@@ -245,7 +262,7 @@ def invoke_agent(
     # the real project root, which is what the criteria are written against.
     previous_home = os.environ.get("SPEECHWRITER_HOME")
     previous_key = os.environ.get("TAVILY_API_KEY")
-    with context as home:
+    with context as root:
         # skills_dir is project_root / "skills", and project_root IS the temp home -- so a bare
         # one silently runs the agent with the rhetoric library absent. That does not just fail
         # every required_skill_reads criterion, it changes the behaviour under test.
@@ -254,8 +271,8 @@ def invoke_agent(
         # `path.resolve().relative_to(project_root)`, and resolve() follows the link straight
         # back to the real repo -- which is not under the temp root, so skills_vpath raises
         # before a single model call. The tree is four SKILL.md files; a copy costs nothing.
-        shutil.copytree(REPO_ROOT / "skills", Path(home) / "skills")
-        os.environ["SPEECHWRITER_HOME"] = home
+        shutil.copytree(REPO_ROOT / "skills", Path(root) / "skills")
+        os.environ["SPEECHWRITER_HOME"] = root
         if research is False:
             # Blank, never popped: `load_dotenv` skips a key already present in os.environ, so an
             # empty one stays empty through every load_settings() the build makes, where a popped
@@ -276,10 +293,7 @@ def invoke_agent(
             state = bundle.agent.invoke(
                 {"messages": to_messages(inputs)}, config=bundle.turn_config(thread_id)
             )
-            record = extract(state, Path(home) / "workspace")
-            if keep:
-                print(f"   [kept] artifacts under {home}")
-            return record
+            return extract(state, Path(root) / "workspace")
         finally:
             for name, previous in (
                 ("SPEECHWRITER_HOME", previous_home),
@@ -289,6 +303,44 @@ def invoke_agent(
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = previous
+
+
+def thread_for(example_id: str, trial: int, trials: int) -> str:
+    """The thread a trial runs on: the example id alone for a single trial, as it always was.
+
+    Repeats get a suffix so LangSmith, which groups threads on this id, files each trial as a
+    conversation of its own rather than one conversation that restarted N times.
+    """
+    return example_id if trials == 1 else f"{example_id}-{trial}"
+
+
+def kept_home(keep_root: Path | None, example_id: str, trial: int) -> Path | None:
+    """``<experiment>/<example>-<trial>/`` under ``keep_root``, or ``None`` when not keeping."""
+    return None if keep_root is None else keep_root / f"{example_id}-{trial}"
+
+
+def save_record(home: Path, *, dataset: str, example_id: str, trial: int, run: RunRecord) -> Path:
+    """Write the run next to the files it left, so a fixed scorer can grade it without a rerun.
+
+    The record is the same JSON an experiment row stores (:func:`task_output`), so
+    ``--regrade`` and a recorded experiment rebuild it through one function.
+    """
+    path = home / RECORD_FILE
+    payload = {
+        "dataset": dataset,
+        "example_id": example_id,
+        "trial": trial,
+        "run": task_output(run),
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(f"   [kept] {home}")
+    return path
+
+
+def experiment_dir(dataset: str) -> Path:
+    """A fresh folder under :data:`EVAL_RUNS` for one invocation's kept runs."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return EVAL_RUNS / f"speechwriter-{dataset}-{model_slug()}-{stamp}"
 
 
 def grade(
@@ -318,15 +370,27 @@ def grade(
 
 
 def run_one(
-    example: dict[str, Any], no_judge: bool, judge: Settings | None = None
+    example: dict[str, Any],
+    no_judge: bool,
+    judge: Settings | None = None,
+    *,
+    trial: int = 1,
+    trials: int = 1,
+    keep_root: Path | None = None,
 ) -> tuple[RunRecord, list[Score]]:
     dataset = example["metadata"]["dataset_type"]
+    eid = example["metadata"]["id"]
+    home = kept_home(keep_root, eid, trial)
     run = invoke_agent(
         example["inputs"],
-        example["metadata"]["id"],
+        thread_for(eid, trial, trials),
         research=example["metadata"].get("tavily_enabled"),
         store_seed=example["metadata"].get("store_seed"),
+        home=home,
     )
+    # Saved before grading, so a judge that fails still leaves a run --regrade can score.
+    if home is not None:
+        save_record(home, dataset=dataset, example_id=eid, trial=trial, run=run)
     return run, grade(dataset, run, example, no_judge, judge)
 
 
@@ -340,9 +404,14 @@ def task_output(run: RunRecord) -> dict[str, Any]:
     """
     return {
         "text": run.text,
-        "calls": [{"name": c.name, "args": c.args} for c in run.calls],
+        "calls": [{"name": c.name, "args": c.args, "message": c.message} for c in run.calls],
         "artifacts": [{"path": path, "content": content} for path, content in run.artifacts],
     }
+
+
+def _message_index(value: Any) -> int | None:
+    # `bool` is an `int` subclass, and a JSON `true` is not a message index.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def as_run_record(output: Any) -> RunRecord:
@@ -355,7 +424,11 @@ def as_run_record(output: Any) -> RunRecord:
     return RunRecord(
         text=str(out.get("text") or ""),
         calls=tuple(
-            ToolCall(str(c.get("name", "")), dict(c.get("args") or {}))
+            ToolCall(
+                str(c.get("name", "")),
+                dict(c.get("args") or {}),
+                message=_message_index(c.get("message")),
+            )
             for c in out.get("calls") or []
             if isinstance(c, dict)
         ),
@@ -411,7 +484,15 @@ def in_local_order(examples: list[Any], local_ids: list[str]) -> list[Any]:
     return sorted(examples, key=lambda e: rank.get(_example_id(e), len(rank)))
 
 
-def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | None = None) -> int:
+def run_langsmith(
+    dataset: str,
+    limit: int,
+    no_judge: bool,
+    judge: Settings | None = None,
+    *,
+    trials: int = 1,
+    keep_root: Path | None = None,
+) -> int:
     """Record the run as a LangSmith experiment against the mirrored dataset.
 
     Capped by ``--limit`` on purpose: an experiment otherwise sweeps every example in the
@@ -469,21 +550,29 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | No
     # in a round-tripped dict cannot miss the match.
     by_inputs = {canon(e.inputs or {}): e for e in chosen}
 
+    started: dict[str, int] = {}
+
     def run_agent(inputs: dict[str, Any]) -> dict[str, Any]:
         # Named for what it does, because LangSmith names each row's root run after it and the
         # agent's whole trace hangs off that run. The example id, not a slice of the input, is
         # the thread: it names the conversation exactly as the plain live path does.
         example = by_inputs.get(canon(inputs))
-        thread = _example_id(example) if example is not None else "langsmith-run"
+        eid = _example_id(example) if example is not None else "langsmith-run"
         metadata = getattr(example, "metadata", None) or {}
-        return task_output(
-            invoke_agent(
-                dict(inputs),
-                thread_id=thread,
-                research=metadata.get("tavily_enabled"),
-                store_seed=metadata.get("store_seed"),
-            )
+        # The target is not told which repetition it is, so it counts. Safe only because the
+        # targets run sequentially (`max_concurrency=0` below).
+        started[eid] = trial = started.get(eid, 0) + 1
+        home = kept_home(keep_root, eid, trial)
+        run = invoke_agent(
+            dict(inputs),
+            thread_id=thread_for(eid, trial, trials),
+            research=metadata.get("tavily_enabled"),
+            store_seed=metadata.get("store_seed"),
+            home=home,
         )
+        if home is not None:
+            save_record(home, dataset=dataset, example_id=eid, trial=trial, run=run)
+        return task_output(run)
 
     def speechwriter_criteria(run: Any, example: Any) -> dict[str, list[dict[str, Any]]]:
         output = getattr(run, "outputs", None)
@@ -514,13 +603,18 @@ def run_langsmith(dataset: str, limit: int, no_judge: bool, judge: Settings | No
             "model": settings.model,
             "judge": None if no_judge else graded_by.model,
             "examples": [_example_id(e) for e in chosen],
+            "trials": trials,
         },
+        num_repetitions=trials,
         # Sequential. `invoke_agent` repoints the process-wide SPEECHWRITER_HOME per example,
         # so concurrent targets would write into each other's homes. (LangSmith does not retry
         # a failed target, so a failed turn costs one run, not several.)
         max_concurrency=0,
     )
     print(f"\nrecorded experiment: {results.experiment_name}")
+    if keep_root is not None and keep_root.is_dir():
+        # The local folder is named before LangSmith picks its suffix, so the two are tied here.
+        (keep_root / "experiment.txt").write_text(results.experiment_name + "\n", encoding="utf-8")
     return 0
 
 
@@ -535,11 +629,13 @@ CANNED = RunRecord(
 )
 
 
-def report(dataset: str, example: dict[str, Any], scores: list[Score]) -> dict[str, Any]:
+def report(
+    dataset: str, example: dict[str, Any], scores: list[Score], label: str = ""
+) -> dict[str, Any]:
     graded = [s for s in scores if s.machine_scored]
     passed = sum(1 for s in graded if s.score == 1.0)
     eid = example["metadata"]["id"]
-    print(f"\n── {dataset} / {eid}")
+    print(f"\n── {dataset} / {eid}{f'  ({label})' if label else ''}")
     for s in scores:
         mark = " -- " if not s.machine_scored else (" ok " if s.score else "FAIL")
         print(f"   [{mark}] {s.key:<30} {s.comment[:78]}")
@@ -552,6 +648,64 @@ def report(dataset: str, example: dict[str, Any], scores: list[Score]) -> dict[s
     }
 
 
+def print_total(rows: list[dict[str, Any]]) -> None:
+    total_p = sum(r["passed"] for r in rows)
+    total_g = sum(r["graded"] for r in rows)
+    examples = len({r["id"] for r in rows})
+    print(
+        f"\nTOTAL {total_p}/{total_g} machine-scored criteria passed across {len(rows)} run(s) "
+        f"of {examples} example(s)"
+    )
+
+
+def regrade(target: Path, no_judge: bool, judge: Settings | None = None) -> int:
+    """Score saved runs again with no agent call: one ``record.json``, or every one under a folder.
+
+    Graded against the dataset file as it stands *now*, which is the point: a scorer or a
+    criterion fixed after the run applies without paying for the run again. The judge still
+    costs a little; ``--no-judge`` makes it free.
+
+    Exit codes follow ``sync_datasets.py``: ``0`` every record graded, ``1`` some could not be
+    (an unreadable record, or an example the dataset no longer has), ``2`` none found at all.
+    """
+    records = [target] if target.is_file() else sorted(target.rglob(RECORD_FILE))
+    if not records:
+        print(f"no {RECORD_FILE} under {target}", file=sys.stderr)
+        return 2
+
+    by_dataset: dict[str, dict[str, dict[str, Any]]] = {}
+    rows: list[dict[str, Any]] = []
+    skipped = 0
+    for path in records:
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            dataset, eid = str(saved["dataset"]), str(saved["example_id"])
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f"cannot read {path}: {error}", file=sys.stderr)
+            skipped += 1
+            continue
+        if dataset not in DATASETS:
+            print(f"{path} names an unknown dataset {dataset!r}", file=sys.stderr)
+            skipped += 1
+            continue
+        if dataset not in by_dataset:
+            examples = json.loads((EV / f"{dataset}.json").read_text(encoding="utf-8"))
+            by_dataset[dataset] = {e["metadata"]["id"]: e for e in examples}
+        example = by_dataset[dataset].get(eid)
+        if example is None:
+            print(f"{path}: {dataset} has no example {eid!r} any more", file=sys.stderr)
+            skipped += 1
+            continue
+        scores = grade(dataset, as_run_record(saved.get("run")), example, no_judge, judge)
+        rows.append(report(dataset, example, scores, f"trial {saved.get('trial')}, regraded"))
+
+    print_total(rows)
+    if skipped:
+        print(f"{skipped} record(s) could not be graded -- see above", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--dataset", choices=DATASETS, default="trajectory")
@@ -559,27 +713,55 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--dry-run", action="store_true", help="score a canned run; no model call")
     p.add_argument("--no-judge", action="store_true", help="deterministic scorers only")
     p.add_argument("--langsmith", action="store_true", help="record as a LangSmith experiment")
-    p.add_argument("--keep", action="store_true", help="leave each run's temp home on disk")
+    p.add_argument(
+        "--keep",
+        action="store_true",
+        help="keep each run's home and record under .speechwriter/eval-runs/",
+    )
+    p.add_argument("--trials", type=int, default=1, help="runs per example (default 1)")
+    p.add_argument(
+        "--regrade",
+        type=Path,
+        metavar="DIR",
+        help=f"score kept runs again (a {RECORD_FILE}, or a folder of them); no agent call",
+    )
     p.add_argument(
         "--model",
         help="model to grade: a roster label ('Opus 5.5'), a model id, or omit for the .env one",
     )
     args = p.parse_args(argv)
 
-    if args.dry_run and (args.langsmith or args.model):
-        # `--dry-run` scores a canned record and never calls a model, so both of these would be
-        # silently ignored — and `--model` would still rewrite SPEECHWRITER_MODEL for the
-        # process on its way to doing nothing. Rejected rather than dropped, so the flag that
-        # was going to have no effect says so.
-        other = "--langsmith" if args.langsmith else "--model"
-        print(f"{other} and --dry-run are contradictory", file=sys.stderr)
+    if args.trials < 1:
+        print("--trials must be at least 1", file=sys.stderr)
         return 2
+
+    # `--dry-run` scores a canned record and `--regrade` a saved one; neither runs the agent, so
+    # each of these would be silently ignored -- and `--model` would still rewrite
+    # SPEECHWRITER_MODEL for the process on its way to doing nothing. Rejected rather than
+    # dropped, so the flag that was going to have no effect says so.
+    for mode, active in (("--dry-run", args.dry_run), ("--regrade", args.regrade is not None)):
+        if not active:
+            continue
+        clashes = {
+            "--langsmith": args.langsmith,
+            "--model": bool(args.model),
+            "--trials": args.trials != 1,
+            "--dry-run": mode == "--regrade" and args.dry_run,
+            "--keep": mode == "--regrade" and args.keep,
+        }
+        other = next((name for name, on in clashes.items() if on), None)
+        if other is not None:
+            print(f"{other} and {mode} are contradictory", file=sys.stderr)
+            return 2
 
     # Primed once, here, for every live path. It pops SPEECHWRITER_HOME, reloads the dotenv and
     # clears the langsmith env cache — an ordering this module is otherwise careful about, so
     # doing it twice is worth avoiding even where it is harmless.
     if not args.dry_run:
         prime_environment()
+
+    if args.regrade is not None:
+        return regrade(args.regrade, args.no_judge)
 
     # `--model` moves the system under test; the judge must not move with it. `grade()` builds
     # its model from `load_settings()`, which reads the same SPEECHWRITER_MODEL, so the pair in
@@ -592,32 +774,41 @@ def main(argv: list[str] | None = None) -> int:
         apply_model(args.model)
 
     # Before the dispatch, so both live paths honour it: a recorded experiment is exactly where a
-    # surprising result gets inspected after the fact.
-    if args.keep:
-        os.environ["SPEECHWRITER_EVAL_KEEP"] = "1"
+    # surprising result gets inspected after the fact. Named after the model under test, so it
+    # comes after `apply_model`.
+    keep_root = experiment_dir(args.dataset) if args.keep and not args.dry_run else None
 
     if args.langsmith:
-        return run_langsmith(args.dataset, args.limit, args.no_judge, judge)
+        return run_langsmith(
+            args.dataset, args.limit, args.no_judge, judge, trials=args.trials, keep_root=keep_root
+        )
 
     examples = json.loads((EV / f"{args.dataset}.json").read_text(encoding="utf-8"))[: args.limit]
     print(
-        f"{args.dataset}: {len(examples)} example(s), "
+        f"{args.dataset}: {len(examples)} example(s) x {args.trials} trial(s), "
         f"{'DRY RUN — no model calls' if args.dry_run else 'LIVE — this costs tokens'}"
     )
 
     rows = []
     for example in examples:
-        if args.dry_run:
-            scores = score_example(args.dataset, CANNED, example)
-        else:
-            _, scores = run_one(example, args.no_judge, judge)
-        rows.append(report(args.dataset, example, scores))
+        for trial in range(1, args.trials + 1):
+            if args.dry_run:
+                scores = score_example(args.dataset, CANNED, example)
+            else:
+                _, scores = run_one(
+                    example,
+                    args.no_judge,
+                    judge,
+                    trial=trial,
+                    trials=args.trials,
+                    keep_root=keep_root,
+                )
+            label = f"trial {trial}/{args.trials}" if args.trials > 1 else ""
+            rows.append(report(args.dataset, example, scores, label))
 
-    total_p = sum(r["passed"] for r in rows)
-    total_g = sum(r["graded"] for r in rows)
-    print(
-        f"\nTOTAL {total_p}/{total_g} machine-scored criteria passed across {len(rows)} example(s)"
-    )
+    print_total(rows)
+    if keep_root is not None:
+        print(f"kept runs: {keep_root}  (score again with --regrade {keep_root})")
     return 0
 
 

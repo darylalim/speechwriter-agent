@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -275,7 +276,8 @@ def test_every_live_grading_path_pins_the_judge_when_the_model_is_overridden():
     # was that one of the two call sites never passed one. Read the source rather than the
     # behaviour, because the second path (`--langsmith`) needs a live workspace to exercise.
     source = (REPO_ROOT / "evals" / "run_experiment.py").read_text(encoding="utf-8")
-    calls = re.findall(r"\b(run_one|run_langsmith)\((.*?)\)", source)
+    # DOTALL, because the formatter wraps a long call across lines and the arguments with it.
+    calls = re.findall(r"\b(run_one|run_langsmith)\((.*?)\)", source, re.DOTALL)
     invocations = [(name, args) for name, args in calls if "args." in args]
 
     assert {name for name, _ in invocations} == {"run_one", "run_langsmith"}, (
@@ -779,7 +781,7 @@ def test_a_graded_run_does_not_leave_speechwriter_home_pointing_at_a_deleted_dir
     harness = _harness_module()
     source = harness.__loader__.get_source("speechwriter_run_experiment") or ""
     assert "previous_home" in source, "invoke_agent no longer restores SPEECHWRITER_HOME"
-    assert source.index("previous_home = os.environ.get") < source.index("with context as home:"), (
+    assert source.index("previous_home = os.environ.get") < source.index("with context as root:"), (
         "the prior SPEECHWRITER_HOME must be captured before the temp home replaces it"
     )
 
@@ -1310,20 +1312,23 @@ def test_keep_is_honoured_when_recording_an_experiment(monkeypatch, tmp_path):
     # dispatched, so that path deleted every run's home while the flag said otherwise.
     harness = _harness_module()
     monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
-    # Set, not deleted: monkeypatch records nothing for deleting an absent variable, so the "1"
-    # main() writes would outlive this test. Setting records the absence, and teardown removes it.
-    monkeypatch.setenv("SPEECHWRITER_EVAL_KEEP", "0")
+    monkeypatch.setattr(harness, "EVAL_RUNS", tmp_path / "eval-runs")
     # Priming loads the real project's dotenv into os.environ -- never from a test.
     monkeypatch.setattr(harness, "prime_environment", lambda: None)
-    seen: list[str | None] = []
+    seen: list[object] = []
     monkeypatch.setattr(
-        harness,
-        "run_langsmith",
-        lambda *a, **k: seen.append(os.environ.get("SPEECHWRITER_EVAL_KEEP")) or 0,
+        harness, "run_langsmith", lambda *a, **k: seen.append(k.get("keep_root")) or 0
     )
 
     assert harness.main(["--langsmith", "--keep"]) == 0
-    assert seen == ["1"]
+    (root,) = seen
+    assert isinstance(root, harness.Path) and root.parent == tmp_path / "eval-runs"
+    # Named after the model under test, so two models' kept runs never share a folder.
+    assert harness.model_slug() in root.name
+
+    seen.clear()
+    assert harness.main(["--langsmith"]) == 0
+    assert seen == [None], "runs were kept without --keep"
 
 
 def test_a_run_that_raised_is_not_graded(monkeypatch, tmp_path):
@@ -1380,3 +1385,186 @@ def test_an_experiment_is_named_after_the_model_under_test(monkeypatch, tmp_path
     assert harness.model_slug() == "claude-sonnet-5-5"
     monkeypatch.setenv("SPEECHWRITER_MODEL", "Claude_Opus/5.5")
     assert harness.model_slug() == "claude-opus-5-5"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--trials", "0"],
+        ["--dry-run", "--trials", "2"],
+        ["--regrade", "runs", "--trials", "2"],
+        ["--regrade", "runs", "--model", "Opus 5.5"],
+        ["--regrade", "runs", "--langsmith"],
+        ["--regrade", "runs", "--keep"],
+        ["--regrade", "runs", "--dry-run"],
+    ],
+)
+def test_flags_a_mode_would_ignore_are_refused(argv, monkeypatch, tmp_path):
+    # `--dry-run` and `--regrade` never run the agent, so a flag about running it would do
+    # nothing -- and `--model` would still rewrite SPEECHWRITER_MODEL on its way to doing nothing.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setattr(harness, "prime_environment", lambda: None)
+    monkeypatch.setattr(harness, "regrade", lambda *a, **k: 0)
+
+    assert harness.main(argv) == 2
+
+
+def _recording_build(threads: list[str]):
+    """A stand-in ``build_agent`` whose one turn writes a draft and makes two calls together."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    def build():
+        home = Path(os.environ["SPEECHWRITER_HOME"])
+
+        class _Graph:
+            @staticmethod
+            def invoke(inputs, config):
+                threads.append(config["configurable"]["thread_id"])
+                draft = home / "workspace" / "speeches" / "toast.md"
+                draft.parent.mkdir(parents=True, exist_ok=True)
+                draft.write_text(f"A toast from {home.name}.", encoding="utf-8")
+                calls = [
+                    {"name": "write_file", "args": {"file_path": "/workspace/speeches/toast.md"}},
+                    {"name": "task", "args": {"subagent_type": "style-critic"}},
+                ]
+                return {
+                    "messages": [
+                        HumanMessage("brief"),
+                        AIMessage(
+                            "Saved.",
+                            tool_calls=[{**c, "id": str(i)} for i, c in enumerate(calls)],
+                        ),
+                    ]
+                }
+
+        class _Bundle:
+            agent = _Graph()
+
+            @staticmethod
+            def turn_config(thread_id):
+                return {"configurable": {"thread_id": thread_id}}
+
+        return _Bundle()
+
+    return build
+
+
+def test_each_trial_is_kept_apart_and_regrades_exactly_as_it_graded(monkeypatch, tmp_path):
+    # Phase 0 of the upgrade plan: a run that is kept must be re-gradable without paying for it
+    # again, so a fixed scorer can be applied to it. That only holds if the saved record is the
+    # *same* record the live path graded -- calls, their message index, and the files.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setattr(harness, "EVAL_RUNS", tmp_path / "eval-runs")
+    monkeypatch.setattr(harness, "prime_environment", lambda: None)
+    threads: list[str] = []
+    monkeypatch.setattr("speechwriter.agent.build_agent", _recording_build(threads))
+    # RunRecords, but from a module imported by path, so ty cannot name the class.
+    graded: list[Any] = []
+    real_grade = harness.grade
+    monkeypatch.setattr(
+        harness, "grade", lambda d, run, *a: graded.append(run) or real_grade(d, run, *a)
+    )
+
+    argv = ["--dataset", "final_response", "--trials", "2", "--keep", "--no-judge"]
+    assert harness.main(argv) == 0
+
+    eid = json.loads((REPO_ROOT / "evals/datasets/final_response.json").read_text())[0]["metadata"][
+        "id"
+    ]
+    (root,) = (tmp_path / "eval-runs").iterdir()
+    homes = sorted(p.name for p in root.iterdir())
+    assert homes == [f"{eid}-1", f"{eid}-2"]
+    # Each trial is a conversation of its own, as LangSmith groups threads on this id.
+    assert threads == [f"{eid}-1", f"{eid}-2"]
+
+    live = list(graded)
+    first, second = live
+    # Two homes, so neither trial can pass on a file the other wrote.
+    assert first.artifacts != second.artifacts
+    # Calls sent in one model message share its index; the write recovered from disk has none
+    # here because the stream already carried it.
+    assert [c.message for c in first.calls] == [1, 1]
+
+    graded.clear()
+
+    def no_agent():
+        raise AssertionError("--regrade ran the agent")
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", no_agent)
+    assert harness.main(["--regrade", str(root), "--no-judge"]) == 0
+    assert graded == live
+
+
+def test_regrade_says_when_it_could_not_grade(monkeypatch, tmp_path, capsys):
+    # Never 0 for a check that did not happen: no records is 2, a record it cannot place is 1.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setattr(harness, "prime_environment", lambda: None)
+
+    assert harness.main(["--regrade", str(tmp_path), "--no-judge"]) == 2
+
+    home = tmp_path / "gone-1"
+    home.mkdir()
+    harness.save_record(
+        home,
+        dataset="final_response",
+        example_id="no-such-example",
+        trial=1,
+        run=harness.RunRecord("text"),
+    )
+    assert harness.main(["--regrade", str(tmp_path), "--no-judge"]) == 1
+    assert "no-such-example" in capsys.readouterr().err
+
+
+def test_a_repeated_experiment_counts_its_trials(monkeypatch, tmp_path):
+    # LangSmith repeats each example `num_repetitions` times but never tells the target which
+    # repetition it is in, so the target counts -- and each repeat needs its own home and thread.
+    harness = _harness_module()
+    sync = _sync_module()
+    local = sync.load_local("final_response")[:1]
+
+    class _Remote:
+        id = "u"
+        inputs = local[0]["inputs"]
+        outputs = local[0]["outputs"]
+        metadata = local[0]["metadata"]
+
+    class _Client:
+        def has_dataset(self, *, dataset_name):
+            return True
+
+        def list_examples(self, *, dataset_name):
+            return [_Remote()]
+
+    captured: dict[str, Any] = {}
+
+    def fake_evaluate(target, *, data, evaluators, **kwargs):
+        captured.update(kwargs)
+        for _ in range(kwargs["num_repetitions"]):
+            target(dict(_Remote.inputs))
+        return type("R", (), {"experiment_name": "speechwriter-x-123"})()
+
+    invoked: list[tuple[str, object]] = []
+
+    def fake_invoke(inputs, thread_id, *, research, store_seed, home):
+        invoked.append((thread_id, home))
+        home.mkdir(parents=True)
+        return harness.RunRecord("ok")
+
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setattr("langsmith.evaluate", fake_evaluate)
+    monkeypatch.setattr("sync_datasets.connect", lambda: _Client())
+    monkeypatch.setattr("sync_datasets.load_local", lambda stem: local)
+    monkeypatch.setattr(harness, "invoke_agent", fake_invoke)
+
+    root = tmp_path / "kept"
+    assert harness.run_langsmith("final_response", 1, True, trials=2, keep_root=root) == 0
+
+    eid = local[0]["metadata"]["id"]
+    assert captured["num_repetitions"] == 2
+    assert captured["metadata"]["trials"] == 2
+    assert invoked == [(f"{eid}-1", root / f"{eid}-1"), (f"{eid}-2", root / f"{eid}-2")]
+    assert (root / f"{eid}-2" / harness.RECORD_FILE).is_file()
+    assert (root / "experiment.txt").read_text().strip() == "speechwriter-x-123"

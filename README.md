@@ -174,6 +174,8 @@ uv run python evals/run_experiment.py --dry-run          # check the eval wiring
 uv run python evals/sync_datasets.py                     # is the LangSmith mirror in sync?
 uv run python evals/sync_datasets.py --push              # make it so
 uv run python evals/run_experiment.py --langsmith --dataset trajectory --limit 1   # costs tokens
+uv run python evals/run_experiment.py --keep --trials 3  # repeat each example, keeping every run
+uv run python evals/run_experiment.py --regrade .speechwriter/eval-runs/<experiment> --no-judge   # re-score kept runs for free
 ```
 
 The files in this repo are the source of truth. A push never deletes an example unless you pass `--allow-delete`, because LangSmith deletes can't be undone. An experiment refuses to run against a stale mirror. Each criterion is recorded as its own feedback column. Anything no scorer could measure is reported as `criteria_coverage` and never counted as a pass.

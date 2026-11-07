@@ -53,6 +53,10 @@ SUBAGENT_KEY = "subagent_type"
 class ToolCall:
     name: str
     args: dict[str, Any] = field(default_factory=dict)
+    message: int | None = None
+    """Index of the model message that made the call, so two calls sent together can be told
+    apart from two sent in turn. ``None`` for a write recovered from disk, which no message in
+    the orchestrator's stream made (a subagent's, usually)."""
 
     @property
     def path(self) -> str:
