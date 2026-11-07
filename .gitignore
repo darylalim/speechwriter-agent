@@ -5,9 +5,13 @@ __pycache__/
 .venv/
 .pytest_cache/
 .ruff_cache/
+dist/
 
 # Secrets
 .env
+.env.*
+!.env.example
+.claude/settings.local.json
 # The web app reads config from .env via load_settings(), not st.secrets — but Streamlit
 # will pick this file up if it ever exists, so it must never be committable.
 .streamlit/secrets.toml
