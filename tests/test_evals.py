@@ -1397,6 +1397,8 @@ def test_an_experiment_is_named_after_the_model_under_test(monkeypatch, tmp_path
         ["--regrade", "runs", "--langsmith"],
         ["--regrade", "runs", "--keep"],
         ["--regrade", "runs", "--dry-run"],
+        ["--dry-run", "--effort", "high"],
+        ["--regrade", "runs", "--effort", "high"],
     ],
 )
 def test_flags_a_mode_would_ignore_are_refused(argv, monkeypatch, tmp_path):
@@ -1548,7 +1550,7 @@ def test_a_repeated_experiment_counts_its_trials(monkeypatch, tmp_path):
 
     invoked: list[tuple[str, object]] = []
 
-    def fake_invoke(inputs, thread_id, *, research, store_seed, home):
+    def fake_invoke(inputs, thread_id, *, research, store_seed, home, effort):
         invoked.append((thread_id, home))
         home.mkdir(parents=True)
         return harness.RunRecord("ok")
@@ -1568,3 +1570,116 @@ def test_a_repeated_experiment_counts_its_trials(monkeypatch, tmp_path):
     assert invoked == [(f"{eid}-1", root / f"{eid}-1"), (f"{eid}-2", root / f"{eid}-2")]
     assert (root / f"{eid}-2" / harness.RECORD_FILE).is_file()
     assert (root / "experiment.txt").read_text().strip() == "speechwriter-x-123"
+
+
+@pytest.mark.parametrize("model", [None, "Opus 5.5"])
+def test_effort_moves_the_agent_and_never_the_judge(model, monkeypatch, tmp_path):
+    # The rule `--model` already follows, for `--effort`: move the system under test, never the
+    # instrument. A judge that followed the agent's effort would grade each level with itself,
+    # so a sweep would measure two changes at once. Driven through main(), with and without
+    # --model, because the bug this guards against lives in how the two are wired together.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    # Recorded so apply_model's write is undone at teardown.
+    monkeypatch.setenv("SPEECHWRITER_MODEL", config.DEFAULT_MODEL)
+    monkeypatch.setattr(harness, "prime_environment", lambda: None)
+
+    agent_efforts: list[str | None] = []
+    inner = _recording_build([])
+
+    def build(settings=None):
+        agent_efforts.append(None if settings is None else settings.effort)
+        return inner()
+
+    judge_efforts: list[str] = []
+
+    def spy_judge(settings):
+        judge_efforts.append(settings.effort)
+        return object()
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", build)
+    monkeypatch.setattr("speechwriter.agent._build_model", spy_judge)
+    monkeypatch.setattr(harness, "score_example", lambda *a, **k: [])
+    monkeypatch.setattr(harness, "judge_example", lambda *a, **k: [])
+
+    argv = ["--dataset", "final_response", "--effort", "high"]
+    assert harness.main(argv + (["--model", model] if model else [])) == 0
+
+    assert agent_efforts == ["high"], "--effort did not reach the agent under test"
+    assert judge_efforts == [config.DEFAULT_EFFORT], (
+        "the judge followed --effort, so every effort level would be graded by itself"
+    )
+
+
+def test_an_effort_run_builds_inside_its_own_home(monkeypatch, tmp_path):
+    # `--effort` builds from `load_settings()`, and when that is read decides where the run
+    # writes. Read before SPEECHWRITER_HOME names the temp home, it would point the agent at the
+    # real project's workspace -- and the write-path criteria would grade the wrong folder.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    built: list[tuple[str | None, object, str]] = []
+    inner = _recording_build([])
+
+    def build(settings=None):
+        built.append(
+            (
+                None if settings is None else settings.effort,
+                None if settings is None else settings.project_root,
+                os.environ["SPEECHWRITER_HOME"],
+            )
+        )
+        return inner()
+
+    monkeypatch.setattr("speechwriter.agent.build_agent", build)
+    inputs = {"messages": [{"role": "user", "content": "hi"}]}
+
+    harness.invoke_agent(inputs, "t", effort="low")
+    harness.invoke_agent(inputs, "t")
+
+    (effort, root, home), (default_effort, default_root, _) = built
+    assert effort == "low"
+    assert root == Path(home).resolve() and home != str(tmp_path), "the effort run left its home"
+    # No override builds exactly as before: no settings handed in at all.
+    assert (default_effort, default_root) == (None, None)
+
+
+def test_an_experiment_names_the_effort_it_ran_at(monkeypatch, tmp_path):
+    # Two efforts' experiments must not be filed under one name, which is the reason the effort
+    # is selectable. A Control run is named too ("medium"), so a reader need not know the default.
+    harness = _harness_module()
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.setenv("SPEECHWRITER_MODEL", "claude-sonnet-5-5")
+    sync = _sync_module()
+    local = sync.load_local("final_response")[:1]
+
+    class _Remote:
+        id = "u"
+        inputs = local[0]["inputs"]
+        outputs = local[0]["outputs"]
+        metadata = local[0]["metadata"]
+
+    class _Client:
+        def has_dataset(self, *, dataset_name):
+            return True
+
+        def list_examples(self, *, dataset_name):
+            return [_Remote()]
+
+    captured: dict[str, Any] = {}
+
+    def fake_evaluate(target, *, data, evaluators, **kwargs):
+        captured.update(kwargs)
+        return type("R", (), {"experiment_name": "x"})()
+
+    monkeypatch.setattr("langsmith.evaluate", fake_evaluate)
+    monkeypatch.setattr("sync_datasets.connect", lambda: _Client())
+    monkeypatch.setattr("sync_datasets.load_local", lambda stem: local)
+
+    assert harness.run_langsmith("final_response", 1, False, effort="high") == 0
+    assert captured["experiment_prefix"] == "speechwriter-final_response-claude-sonnet-5-5-high"
+    assert captured["metadata"]["effort"] == "high"
+    assert captured["metadata"]["judge_effort"] == config.DEFAULT_EFFORT
+
+    assert harness.experiment_name("rag", None).endswith(f"-{config.DEFAULT_EFFORT}")
+    assert harness.experiment_dir("rag", "max").name.startswith("speechwriter-rag-")
+    assert "-max-" in harness.experiment_dir("rag", "max").name

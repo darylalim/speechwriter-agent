@@ -221,3 +221,28 @@ def test_a_refused_turn_is_reported_rather_than_passed_off_as_finished(repl, mon
 
     out = capsys.readouterr().out
     assert "declined by a safety classifier (general_harms)" in out, out
+
+
+def test_the_banner_reports_the_effort_the_bundle_was_built_with(repl, monkeypatch, capsys):
+    # The banner used to print the constant, which was true only while nothing could override
+    # it. It must describe the bundle that exists, before and after a switch -- and a switch
+    # keeps the level, because `applied_to` moves only the model id.
+    import dataclasses
+
+    real_build = cli.build_agent
+
+    def build(settings=None):
+        settings = settings or config.load_settings()
+        if settings.effort == config.DEFAULT_EFFORT:
+            settings = dataclasses.replace(settings, effort="high")
+        return real_build(settings)
+
+    monkeypatch.setattr(cli, "build_agent", build)
+    _offer(monkeypatch, config.MODEL_CHOICES[0], _UNPROFILED)
+
+    repl("/model 2", "exit")
+    cli.main()
+
+    banners = [line for line in capsys.readouterr().out.splitlines() if "effort" in line]
+    assert len(banners) == 2, banners
+    assert all(line.split()[2] == "high" for line in banners), banners  # │ effort <level> │

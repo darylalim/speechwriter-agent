@@ -31,7 +31,6 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.base import BaseStore
 
 from speechwriter.config import (
-    DEFAULT_EFFORT,
     DEFAULT_MAX_TOKENS,
     Settings,
     load_settings,
@@ -241,7 +240,7 @@ def _chat_anthropic(settings: Settings, max_tokens: int | None) -> ChatAnthropic
     return ChatAnthropic(
         model=settings.model,
         max_tokens=max_tokens,
-        effort=DEFAULT_EFFORT,
+        effort=settings.effort,
         thinking=_THINKING,
         betas=list(_BETAS),
         streaming=True,

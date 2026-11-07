@@ -163,6 +163,12 @@ class Settings:
     # which times a draft by synthesising it with Deepgram (`workspace.measure_spoken_length`).
     # Optional in the way Tavily's key is: without it the button says what to set.
     deepgram_api_key: str | None = None
+    # Appended and defaulted, like the two above. Still not a `SPEECHWRITER_*` knob (see
+    # `DEFAULT_EFFORT`): `load_settings()` never sets it, so it is `medium` everywhere except
+    # where code overrides it on purpose -- the eval harness's `--effort`, which measures what a
+    # different level would cost and score. `ModelChoice.applied_to` uses `dataclasses.replace`,
+    # so an override survives a model switch.
+    effort: Effort = DEFAULT_EFFORT
 
     # -- derived helpers -------------------------------------------------
 

@@ -29,7 +29,7 @@ names and results under the relevant phase.
 |---|---|---|---|
 | Workstream 1: Dependency upgrade | In progress | Under $1 | Open items are listed below |
 | Workstream 2, Phase 0: Prove the evals | In progress | Priced in Phase 0, Step 2 | Step 1 code done 2026-11-07; the cost check waits on the LangSmith limit |
-| Workstream 2, Phase 1: Effort option | Not started | Free | |
+| Workstream 2, Phase 1: Effort option | Done 2026-11-07 | Free | All 7 planned tests; 11 mutants, all killed |
 | Workstream 2, Phase 2: Main sweep | Not started | About $45 to $50 | |
 | Workstream 2, Phase 3: Per-role effort | Not started | Priced from the Phase 0 figures | |
 | Workstream 2, Phase 4: Haiku researcher | Optional | Priced if it goes ahead | |
@@ -76,6 +76,20 @@ Step 1 done, apart from the cost check:
 
 Still open: **the agent and judge cost per run**. It needs one `--langsmith` run, which the trace
 limit blocks until 2026-12-01.
+
+**Live check of the new harness (2026-11-07, about $1).** `--limit 1 --keep` on the plain path
+ran `ceremonial-wedding-toast-best-man` in about 63 seconds and scored 9/9. `--regrade --no-judge`
+on the kept folder gave the same 9/9 with no agent call. The 429s from the trace upload printed
+throughout, but they did not affect the run. Until the limit resets, set `LANGSMITH_TRACING=false`
+for plain-path runs to keep the output readable.
+
+**Finding for Step 2, item 6: the critic was told to read the file.** In that run the draft was
+written in message 5 and the critic's `task` was sent in message 7, so the file existed and the
+review was sound. But the `task` description held a 684-character brief and "saved at
+/workspace/speeches/joel-nadia-best-man.md (read it)", not the 1,761-character draft. The
+orchestrator prompt says to give the critic the full draft. This is a real agent defect, reported
+and not fixed, because Phase 0 changes no prompts. One run is not a rate: the Step 2 baseline
+should count how often it happens, and a scored check must exist before Phase 2.
 
 ## Commits
 

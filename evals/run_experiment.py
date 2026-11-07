@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import json
 import os
 import shutil
@@ -37,12 +38,12 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 if TYPE_CHECKING:
     # Annotation-only, so the heavy `speechwriter` import this module otherwise defers into
     # function bodies stays deferred; `from __future__ import annotations` makes it sufficient.
-    from speechwriter.config import Settings
+    from speechwriter.config import Effort, Settings
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -212,8 +213,12 @@ def invoke_agent(
     research: bool | None = None,
     store_seed: list[dict[str, Any]] | None = None,
     home: Path | None = None,
+    effort: Effort | None = None,
 ) -> RunRecord:
     """One graded run of the real agent, in a workspace of its own.
+
+    ``effort`` overrides the agent's ``output_config.effort`` for this run (``--effort``);
+    ``None`` builds it as configured. The judge never sees it -- see :func:`grade`.
 
     ``home`` is where to run when the run is being **kept** (``--keep``): a directory that must
     not exist yet, created here and left behind. Omitted, the run gets a temp home that is
@@ -239,6 +244,7 @@ def invoke_agent(
     the fixture's own note says about the two being interchangeable.
     """
     from speechwriter.agent import build_agent
+    from speechwriter.config import load_settings
 
     had_key = bool((os.environ.get("TAVILY_API_KEY") or "").strip())
     if research is True and not had_key:
@@ -282,7 +288,14 @@ def invoke_agent(
         # not end the process -- LangSmith records the error and moves on to the next example,
         # which would otherwise inherit (and later restore) a home that has been deleted.
         try:
-            bundle = build_agent()
+            # Read here, inside the `try` and after SPEECHWRITER_HOME names the temp home: read
+            # any earlier and the settings would point at the real project, and the run would
+            # write into the real workspace instead of its own.
+            bundle = (
+                build_agent()
+                if effort is None
+                else build_agent(dataclasses.replace(load_settings(), effort=effort))
+            )
             for item in store_seed or []:
                 key = str(item["key"])
                 bundle.store.put(
@@ -337,10 +350,21 @@ def save_record(home: Path, *, dataset: str, example_id: str, trial: int, run: R
     return path
 
 
-def experiment_dir(dataset: str) -> Path:
+def experiment_name(dataset: str, effort: Effort | None) -> str:
+    """``speechwriter-<dataset>-<model>-<effort>``: everything that moves between two runs.
+
+    The effort is named even when it was not overridden, so a Control run reads ``medium``
+    rather than leaving the reader to know the default.
+    """
+    from speechwriter.config import DEFAULT_EFFORT
+
+    return f"speechwriter-{dataset}-{model_slug()}-{effort or DEFAULT_EFFORT}"
+
+
+def experiment_dir(dataset: str, effort: Effort | None = None) -> Path:
     """A fresh folder under :data:`EVAL_RUNS` for one invocation's kept runs."""
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    return EVAL_RUNS / f"speechwriter-{dataset}-{model_slug()}-{stamp}"
+    return EVAL_RUNS / f"{experiment_name(dataset, effort)}-{stamp}"
 
 
 def grade(
@@ -377,6 +401,7 @@ def run_one(
     trial: int = 1,
     trials: int = 1,
     keep_root: Path | None = None,
+    effort: Effort | None = None,
 ) -> tuple[RunRecord, list[Score]]:
     dataset = example["metadata"]["dataset_type"]
     eid = example["metadata"]["id"]
@@ -387,6 +412,7 @@ def run_one(
         research=example["metadata"].get("tavily_enabled"),
         store_seed=example["metadata"].get("store_seed"),
         home=home,
+        effort=effort,
     )
     # Saved before grading, so a judge that fails still leaves a run --regrade can score.
     if home is not None:
@@ -492,6 +518,7 @@ def run_langsmith(
     *,
     trials: int = 1,
     keep_root: Path | None = None,
+    effort: Effort | None = None,
 ) -> int:
     """Record the run as a LangSmith experiment against the mirrored dataset.
 
@@ -569,6 +596,7 @@ def run_langsmith(
             research=metadata.get("tavily_enabled"),
             store_seed=metadata.get("store_seed"),
             home=home,
+            effort=effort,
         )
         if home is not None:
             save_record(home, dataset=dataset, example_id=eid, trial=trial, run=run)
@@ -598,9 +626,13 @@ def run_langsmith(
         # The model is part of the experiment's identity, not incidental to it: comparing two
         # models is the reason the model is selectable at all, and a name that said only the
         # dataset would file both runs under one indistinguishable prefix.
-        experiment_prefix=f"speechwriter-{dataset}-{model_slug()}",
+        experiment_prefix=experiment_name(dataset, effort),
         metadata={
             "model": settings.model,
+            "effort": effort or settings.effort,
+            # The judge is built from settings `--effort` never touches, so it always runs at
+            # the configured level -- named, so a reader need not take that on trust.
+            "judge_effort": None if no_judge else graded_by.effort,
             "judge": None if no_judge else graded_by.model,
             "examples": [_example_id(e) for e in chosen],
             "trials": trials,
@@ -707,6 +739,8 @@ def regrade(target: Path, no_judge: bool, judge: Settings | None = None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from speechwriter.config import Effort
+
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--dataset", choices=DATASETS, default="trajectory")
     p.add_argument("--limit", type=int, default=1, help="examples to run (default 1)")
@@ -719,6 +753,11 @@ def main(argv: list[str] | None = None) -> int:
         help="keep each run's home and record under .speechwriter/eval-runs/",
     )
     p.add_argument("--trials", type=int, default=1, help="runs per example (default 1)")
+    p.add_argument(
+        "--effort",
+        choices=get_args(Effort),
+        help="the agent's effort level (default: the configured one); the judge's never moves",
+    )
     p.add_argument(
         "--regrade",
         type=Path,
@@ -745,6 +784,7 @@ def main(argv: list[str] | None = None) -> int:
         clashes = {
             "--langsmith": args.langsmith,
             "--model": bool(args.model),
+            "--effort": bool(args.effort),
             "--trials": args.trials != 1,
             "--dry-run": mode == "--regrade" and args.dry_run,
             "--keep": mode == "--regrade" and args.keep,
@@ -776,11 +816,19 @@ def main(argv: list[str] | None = None) -> int:
     # Before the dispatch, so both live paths honour it: a recorded experiment is exactly where a
     # surprising result gets inspected after the fact. Named after the model under test, so it
     # comes after `apply_model`.
-    keep_root = experiment_dir(args.dataset) if args.keep and not args.dry_run else None
+    keep_root = (
+        experiment_dir(args.dataset, args.effort) if args.keep and not args.dry_run else None
+    )
 
     if args.langsmith:
         return run_langsmith(
-            args.dataset, args.limit, args.no_judge, judge, trials=args.trials, keep_root=keep_root
+            args.dataset,
+            args.limit,
+            args.no_judge,
+            judge,
+            trials=args.trials,
+            keep_root=keep_root,
+            effort=args.effort,
         )
 
     examples = json.loads((EV / f"{args.dataset}.json").read_text(encoding="utf-8"))[: args.limit]
@@ -802,6 +850,7 @@ def main(argv: list[str] | None = None) -> int:
                     trial=trial,
                     trials=args.trials,
                     keep_root=keep_root,
+                    effort=args.effort,
                 )
             label = f"trial {trial}/{args.trials}" if args.trials > 1 else ""
             rows.append(report(args.dataset, example, scores, label))

@@ -26,7 +26,6 @@ from rich.table import Table
 
 from speechwriter.agent import SpeechwriterAgent, build_agent
 from speechwriter.config import (
-    DEFAULT_EFFORT,
     ModelChoice,
     Settings,
     model_choices,
@@ -135,7 +134,7 @@ def _banner(console: Console, bundle: SpeechwriterAgent) -> None:
             f"[bold]✒  Speechwriter[/] — a Deep Agent that plans, researches, drafts, "
             f"critiques, and remembers.\n\n"
             f"[dim]model[/]      {s.model}\n"
-            f"[dim]effort[/]     {DEFAULT_EFFORT}\n"
+            f"[dim]effort[/]     {s.effort}\n"
             f"[dim]max tokens[/] {ceiling}\n"
             f"[dim]research[/]   {research}\n"
             f"[dim]traces[/]     {traces}\n"

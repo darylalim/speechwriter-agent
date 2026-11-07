@@ -1099,3 +1099,25 @@ def test_an_ambiguous_model_name_is_refused_rather_than_passed_through():
     assert config.resolve_choice(ambiguous, opus.label) is None
     # A row number is never ambiguous.
     assert config.resolve_choice(ambiguous, "3") == twin
+
+
+def test_an_overridden_effort_reaches_the_payload_and_survives_a_model_switch(
+    monkeypatch, tmp_path
+):
+    # `Settings.effort` exists for the eval sweep, which compares levels. An override that was
+    # accepted but not sent would measure the default N times under N names. And a switch keeps
+    # it: `applied_to` moves only the id, so the level a session chose outlives the model.
+    monkeypatch.setenv("SPEECHWRITER_HOME", str(tmp_path))
+    monkeypatch.delenv("SPEECHWRITER_MAX_TOKENS", raising=False)
+    base = load_settings()
+    assert base.effort == config.DEFAULT_EFFORT, "load_settings() should not set an effort"
+
+    for effort in ("low", "high", "max"):
+        chosen = dataclasses.replace(base, effort=effort)
+        assert _build_model(chosen)._get_request_payload([])["output_config"]["effort"] == effort
+
+        switched = config.MODEL_CHOICES[1].applied_to(chosen)
+        assert switched.model == config.MODEL_CHOICES[1].model
+        assert switched.effort == effort
+        payload = _build_model(switched)._get_request_payload([])
+        assert payload["output_config"]["effort"] == effort
